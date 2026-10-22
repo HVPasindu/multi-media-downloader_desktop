@@ -1,4 +1,8 @@
-import { app, shell, BrowserWindow, ipcMain } from 'electron'
+import { app, shell, BrowserWindow, ipcMain,dialog  } from 'electron'
+
+
+import { initializeDatabase } from './backend/config/database.js'
+
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
@@ -38,7 +42,7 @@ function createWindow() {
 // This method will be called when Electron has finished
 // initialization and is ready to create browser windows.
 // Some APIs can only be used after this event occurs.
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   // Set app user model id for windows
   electronApp.setAppUserModelId('com.electron')
 
@@ -51,6 +55,29 @@ app.whenReady().then(() => {
 
   // IPC test
   ipcMain.on('ping', () => console.log('pong'))
+
+  try {
+  const { sequelize, databasePath } =
+    await initializeDatabase()
+
+  console.log('Database path:', databasePath)
+
+  const tables =
+    await sequelize.getQueryInterface().showAllTables()
+
+  console.log('Database tables:', tables)
+
+} catch (error) {
+  console.error('Database initialization failed:', error)
+
+  dialog.showErrorBox(
+    'Database Error',
+    error.message
+  )
+
+  app.quit()
+  return
+}
 
   createWindow()
 
