@@ -1,11 +1,15 @@
 import { app, shell, BrowserWindow, ipcMain,dialog  } from 'electron'
 
+import { startServer, stopServer } from './backend/server.js'
 
 import { initializeDatabase } from './backend/config/database.js'
 
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
+
+let databaseConnection = null
+let shutdownStarted = false
 
 function createWindow() {
   // Create the browser window.
@@ -57,22 +61,32 @@ app.whenReady().then(async () => {
   ipcMain.on('ping', () => console.log('pong'))
 
   try {
+    // 1. Initialize SQLite Database
   const { sequelize, databasePath } =
     await initializeDatabase()
 
+    // 2. Store Sequelize connection for shutdown
+  databaseConnection = sequelize
+
   console.log('Database path:', databasePath)
 
-  const tables =
-    await sequelize.getQueryInterface().showAllTables()
+  // 3. Check database tables
+  // const tables =
+  //   await sequelize.getQueryInterface().showAllTables()
 
-  console.log('Database tables:', tables)
+  // console.log('Database tables:', tables)
+
+  // 4. Start Express Backend
+  const { baseUrl } = await startServer()
+
+  console.log('Backend URL:', baseUrl)
 
 } catch (error) {
-  console.error('Database initialization failed:', error)
+  console.error('Application startup failed:', error)
 
   dialog.showErrorBox(
-    'Database Error',
-    error.message
+    'Startup Error',
+    error instanceof Error ? error.message : String(error)
   )
 
   app.quit()
@@ -86,6 +100,38 @@ app.whenReady().then(async () => {
     // dock icon is clicked and there are no other windows open.
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
+})
+
+// Cleanup when application quits
+app.on('before-quit', (event) => {
+  if (shutdownStarted) {
+    return
+  }
+
+  event.preventDefault()
+  shutdownStarted = true
+
+  async function shutdown() {
+    try {
+      // Stop Express Server
+      await stopServer()
+
+      // Close SQLite connection
+      if (databaseConnection) {
+        await databaseConnection.close()
+      }
+
+      console.log('Application resources closed')
+
+    } catch (error) {
+      console.error('Shutdown error:', error)
+
+    } finally {
+      app.quit()
+    }
+  }
+
+  void shutdown()
 })
 
 // Quit when all windows are closed, except on macOS. There, it's common
