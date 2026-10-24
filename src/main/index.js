@@ -5,7 +5,9 @@ import { startServer, stopServer } from './backend/server.js'
 import { initializeDatabase } from './backend/config/database.js'
 
 
-
+import { getDatabase } from './backend/config/database.js'
+import { saveDownloadPath,getSavedDownloadPath } from './backend/services/downloadSettingsService.js'
+import { getDefaultDownloadPath } from './backend/services/downloadPathService.js'
 
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
@@ -110,8 +112,28 @@ app.whenReady().then(async () => {
       return null
     }
 
-    return result.filePaths[0]
+    const selectedPath = result.filePaths[0]
+
+    const AppSetting = getDatabase().models.AppSetting
+
+    await saveDownloadPath(AppSetting, selectedPath)
+
+    return selectedPath
   })
+
+
+ipcMain.handle('downloads:get-folder', async () => {
+  const AppSetting = getDatabase().models.AppSetting
+
+  const savedPath = await getSavedDownloadPath(AppSetting)
+
+  if (savedPath) {
+    return savedPath
+  }
+
+  return await getDefaultDownloadPath()
+})
+
 
 
 } catch (error) {

@@ -6,6 +6,10 @@ import { electronAPI } from '@electron-toolkit/preload'
 const api = {
   chooseDownloadFolder: () => {
     return ipcRenderer.invoke('downloads:choose-folder')
+  },
+
+  getDownloadFolder: () => {
+    return ipcRenderer.invoke('downloads:get-folder')
   }
 }
 
