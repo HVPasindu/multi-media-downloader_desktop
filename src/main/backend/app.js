@@ -3,6 +3,7 @@ import express from 'express'
 
 import healthRoutes from './routes/healthRoutes.js'
 import mediaRoutes from './routes/mediaRoutes.js'
+import downloadRoutes from './routes/downloadRoutes.js'
 import { errorMiddleware } from './middleware/errorMiddleware.js'
 
 export function createApiApp() {
@@ -20,6 +21,8 @@ export function createApiApp() {
 
   // Media routes
   app.use('/api/media', mediaRoutes)
+  //Download routes
+  app.use('/api/downloads', downloadRoutes)
 
   // Handle unknown endpoints
   app.use((req, res) => {

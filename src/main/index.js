@@ -9,6 +9,7 @@ import { getDatabase } from './backend/config/database.js'
 import { saveDownloadPath,getSavedDownloadPath } from './backend/services/downloadSettingsService.js'
 import { getDefaultDownloadPath } from './backend/services/downloadPathService.js'
 
+
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
