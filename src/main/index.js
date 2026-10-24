@@ -1,8 +1,13 @@
-import { app, shell, BrowserWindow, ipcMain,dialog  } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, dialog  } from 'electron'
 
 import { startServer, stopServer } from './backend/server.js'
 
 import { initializeDatabase } from './backend/config/database.js'
+
+
+import { getDatabase } from './backend/config/database.js'
+import { saveDownloadPath,getSavedDownloadPath } from './backend/services/downloadSettingsService.js'
+import { getDefaultDownloadPath } from './backend/services/downloadPathService.js'
 
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
@@ -60,10 +65,18 @@ app.whenReady().then(async () => {
   // IPC test
   ipcMain.on('ping', () => console.log('pong'))
 
+
+
   try {
     // 1. Initialize SQLite Database
   const { sequelize, databasePath } =
     await initializeDatabase()
+
+
+
+
+
+
 
     // 2. Store Sequelize connection for shutdown
   databaseConnection = sequelize
@@ -80,6 +93,48 @@ app.whenReady().then(async () => {
   const { baseUrl } = await startServer()
 
   console.log('Backend URL:', baseUrl)
+
+
+  // Allow the frontend to choose a download folder
+  ipcMain.handle('downloads:choose-folder', async (event) => {
+    const ownerWindow = BrowserWindow.fromWebContents(event.sender)
+
+    if (!ownerWindow) {
+      throw new Error('Application window not found')
+    }
+
+    const result = await dialog.showOpenDialog(ownerWindow, {
+      title: 'Choose Download Folder',
+      properties: ['openDirectory']
+    })
+
+    if (result.canceled || result.filePaths.length === 0) {
+      return null
+    }
+
+    const selectedPath = result.filePaths[0]
+
+    const AppSetting = getDatabase().models.AppSetting
+
+    await saveDownloadPath(AppSetting, selectedPath)
+
+    return selectedPath
+  })
+
+
+ipcMain.handle('downloads:get-folder', async () => {
+  const AppSetting = getDatabase().models.AppSetting
+
+  const savedPath = await getSavedDownloadPath(AppSetting)
+
+  if (savedPath) {
+    return savedPath
+  }
+
+  return await getDefaultDownloadPath()
+})
+
+
 
 } catch (error) {
   console.error('Application startup failed:', error)

@@ -33,12 +33,44 @@ export async function analyzeMedia(sourceUrl) {
 
   const metadata = JSON.parse(stdout)
 
+//quality_video
+const qualityHeights = new Set()
+
+for (const format of metadata.formats ?? []) {
+  if (
+    typeof format.vcodec === 'string' &&
+    format.vcodec !== 'none' &&
+    Number.isInteger(format.height) &&
+    format.height > 0
+  ) {
+    qualityHeights.add(format.height)
+  }
+}
+
+const videoQualities = [...qualityHeights]
+  .sort((a, b) => b - a)
+  .map((height) => `${height}p`)
+
+
+//MP3 option
+const hasAudioStream = (metadata.formats ?? []).some(
+  (format) =>
+    format.vcodec === 'none' &&
+    typeof format.acodec === 'string' &&
+    format.acodec !== 'none'
+)
+
+const audioOptions = hasAudioStream ? ['mp3'] : []
+
+
   return {
     id: metadata.id ?? null,
     platform,
     sourceUrl: cleanUrl,
     title: metadata.title ?? null,
     thumbnailUrl: metadata.thumbnail ?? null,
-    durationSeconds: metadata.duration ?? null
+    durationSeconds: metadata.duration ?? null,
+    videoQualities,
+    audioOptions
   }
 }
