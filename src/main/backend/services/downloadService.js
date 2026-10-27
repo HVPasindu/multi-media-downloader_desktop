@@ -5,6 +5,7 @@ import { getSavedDownloadPath } from './downloadSettingsService.js'
 import { getDefaultDownloadPath } from './downloadPathService.js'
 import { stat } from 'node:fs/promises'
 import { basename, extname } from 'node:path'
+import { Op } from 'sequelize'
 
 export async function createDownloadJob({
   mediaItemId,
@@ -76,6 +77,7 @@ export function buildYtDlpArgs({
 
   const args = [
     '--js-runtimes', 'node',
+    '--encoding', 'utf-8',
     '--no-playlist',
     '--no-simulate',
     '--progress',
@@ -127,7 +129,7 @@ export function buildYtDlpArgs({
 
 
 
-export function runYtDlp(args) {
+export function runYtDlp(args, onProgress = null) {
   if (
     !Array.isArray(args) ||
     args.length === 0 ||
@@ -138,7 +140,11 @@ export function runYtDlp(args) {
 
   return new Promise((resolve, reject) => {
     const child = spawn('yt-dlp', args, {
-      windowsHide: true
+      windowsHide: true,
+      env: {
+        ...process.env,
+        PYTHONIOENCODING: 'utf-8'
+      }
     })
 
     let errorOutput = ''
@@ -162,8 +168,27 @@ export function runYtDlp(args) {
 
         console.log('[yt-dlp] Final file:', finalFilePath)
       } else {
+        // Print the yt-dlp output
         console.log('[yt-dlp]', cleanLine)
-      }
+
+        // Extract download percentage from the line
+        const percent = parseYtDlpProgressLine(cleanLine)
+
+        // Send progress to the caller if a callback exists
+        if (
+          percent !== null &&
+          typeof onProgress === 'function'
+        ) {
+          try {
+          onProgress(percent)
+          } catch (callbackError) {
+            console.error(
+              '[yt-dlp] Progress callback error:',
+            callbackError
+        )
+    }
+  }
+}
     }
 
     child.stdout.setEncoding('utf8')
@@ -483,6 +508,7 @@ export async function saveDownloadedFile(jobId, finalFilePath) {
 
 
 
+
 export async function executeDownloadJob(jobId) {
   // 1. Prepare download information
   const execution = await prepareDownloadJobExecution(jobId)
@@ -494,24 +520,80 @@ export async function executeDownloadJob(jobId) {
     throw new Error('Download Job is no longer queued')
   }
 
-  try {
-    // 3. Execute yt-dlp and get the final file path
-    const result = await runYtDlp(execution.args)
+  // 3. Prepare ordered progress database updates
+  let progressWriteChain = Promise.resolve()
+  let lastScheduledProgress = 0
+  let progressWriteError = null
 
+  try {
+    // 4. Run yt-dlp with the progress callback
+    const result = await runYtDlp(
+      execution.args,
+      (streamPercent) => {
+        // Convert stream percentage to overall percentage
+        const overallPercent = calculateOverallDownloadProgress(
+          claimedJob.output_format,
+          streamPercent
+        )
+
+        // MP4 overall progress is not implemented yet
+        if (overallPercent === null) {
+          return
+        }
+
+        // Update in steps of 5%
+        const nextProgress =
+          Math.floor(overallPercent / 5) * 5
+
+        // Ignore duplicate or lower percentages
+        if (nextProgress <= lastScheduledProgress) {
+          return
+        }
+
+        lastScheduledProgress = nextProgress
+
+        // Queue database writes in the correct order
+        progressWriteChain = progressWriteChain
+          .then(async () => {
+            if (progressWriteError) {
+              return
+            }
+
+            await updateDownloadJobProgress(
+              jobId,
+              nextProgress
+            )
+          })
+          .catch((error) => {
+            progressWriteError ??= error
+          })
+      }
+    )
+
+    // 5. Wait for all queued progress writes
+    await progressWriteChain
+
+    if (progressWriteError) {
+      throw progressWriteError
+    }
+
+    // 6. Ensure yt-dlp returned a final path
     if (!result.finalFilePath) {
       throw new Error(
         'yt-dlp did not return a final file path'
       )
     }
 
-    // 4. Verify the file and save details in SQLite
+    // 7. Verify and save downloaded file
     const savedFile = await saveDownloadedFile(
       jobId,
       result.finalFilePath
     )
 
-    // 5. Mark the job as completed
-    const completedJob = await markDownloadJobCompleted(jobId)
+    // 8. Mark download as completed
+    const completedJob = await markDownloadJobCompleted(
+      jobId
+    )
 
     if (!completedJob) {
       throw new Error(
@@ -519,14 +601,15 @@ export async function executeDownloadJob(jobId) {
       )
     }
 
-    // 6. Return the completed job and saved file
     return {
       job: completedJob,
       file: savedFile
     }
 
   } catch (error) {
-    // 7. Mark the claimed job as failed
+    // Let any pending progress writes finish
+    await progressWriteChain
+
     try {
       const failedJob = await markDownloadJobFailed(
         jobId,
@@ -547,7 +630,227 @@ export async function executeDownloadJob(jobId) {
       )
     }
 
-    // 8. Pass the original error to the caller
     throw error
   }
+}
+
+
+
+export async function getDownloadJobDetails(jobId) {
+  // 1. Validate Download Job ID
+  if (!Number.isInteger(jobId) || jobId <= 0) {
+    throw new Error('A valid Download Job ID is required')
+  }
+
+  // 2. Get Sequelize models
+  const { DownloadJob, DownloadFile } =
+    getDatabase().models
+
+  // 3. Find the Download Job
+  const job = await DownloadJob.findByPk(jobId)
+
+  if (!job) {
+    return null
+  }
+
+  // 4. Find the related downloaded file
+  const file = await DownloadFile.findOne({
+    where: {
+      download_job_id: jobId
+    }
+  })
+
+  // 5. Return both records
+  return {
+    job: job.toJSON(),
+    file: file ? file.toJSON() : null
+  }
+}
+
+
+
+
+
+export async function listDownloadJobs() {
+  // 1. Get existing Sequelize models
+  const { DownloadJob, DownloadFile, MediaItem } =
+    getDatabase().models
+
+  // 2. Get latest 50 download jobs
+  const jobs = await DownloadJob.findAll({
+    order: [
+      ['createdAt', 'DESC'],
+      ['id', 'DESC']
+    ],
+    limit: 50
+  })
+
+  // 3. Return empty history if no jobs exist
+  if (jobs.length === 0) {
+    return []
+  }
+
+  // 4. Collect Job IDs and unique Media IDs
+  const jobIds = jobs.map((job) => job.id)
+
+  const mediaIds = [
+    ...new Set(jobs.map((job) => job.media_id))
+  ]
+
+  // 5. Get related files and media records
+  const files = await DownloadFile.findAll({
+    where: {
+      download_job_id: jobIds
+    }
+  })
+
+  const mediaItems = await MediaItem.findAll({
+    where: {
+      id: mediaIds
+    }
+  })
+
+  // 6. Build lookup Maps
+  const fileByJobId = new Map(
+    files.map((file) => [
+      file.download_job_id,
+      file.toJSON()
+    ])
+  )
+
+  const mediaById = new Map(
+    mediaItems.map((media) => [
+      media.id,
+      media.toJSON()
+    ])
+  )
+
+  // 7. Combine Job + File + Media
+  return jobs.map((job) => ({
+    ...job.toJSON(),
+    file: fileByJobId.get(job.id) ?? null,
+    media: mediaById.get(job.media_id) ?? null
+  }))
+}
+
+
+
+//get precentage
+export function parseYtDlpProgressLine(line) {
+  // 1. Validate the input
+  if (typeof line !== 'string') {
+    return null
+  }
+
+  // 2. Remove unnecessary spaces
+  const cleanLine = line.trim()
+
+  // 3. Find yt-dlp download percentage
+  const match = cleanLine.match(
+    /^\[download\]\s+(\d+(?:\.\d+)?)%/
+  )
+
+  // 4. Return null if no percentage was found
+  if (!match) {
+    return null
+  }
+
+  // 5. Convert the percentage into a number
+  const percent = Number(match[1])
+
+  if (!Number.isFinite(percent)) {
+    return null
+  }
+
+  // 6. Return the extracted percentage
+  return percent
+}
+
+
+
+
+export async function updateDownloadJobProgress(
+  jobId,
+  overallPercent
+) {
+  // 1. Validate the Download Job ID
+  if (!Number.isInteger(jobId) || jobId <= 0) {
+    throw new Error('A valid Download Job ID is required')
+  }
+
+  // 2. Validate the overall progress percentage
+  if (
+    !Number.isFinite(overallPercent) ||
+    overallPercent < 0 ||
+    overallPercent > 100
+  ) {
+    throw new Error('A valid progress percentage is required')
+  }
+
+  // 3. Keep progress below 100 until job completion
+  const safePercent = Math.min(
+    99,
+    Math.round(overallPercent * 10) / 10
+  )
+
+  // 4. Get the DownloadJob model
+  const DownloadJob = getDatabase().models.DownloadJob
+
+  // 5. Update only an active job with lower progress
+  const [updatedCount] = await DownloadJob.update(
+    {
+      progress: safePercent
+    },
+    {
+      where: {
+        id: jobId,
+        status: 'downloading',
+        progress: {
+          [Op.lt]: safePercent
+        }
+      }
+    }
+  )
+
+  // 6. Return null if nothing was updated
+  if (updatedCount !== 1) {
+    return null
+  }
+
+  
+
+  // 7. Return the updated Download Job
+  return await DownloadJob.findByPk(jobId)
+}
+
+
+
+export function calculateOverallDownloadProgress(
+  outputFormat,
+  streamPercent
+) {
+  // 1. Validate output format
+  if (!['mp3', 'mp4'].includes(outputFormat)) {
+    throw new Error('Unsupported output format')
+  }
+
+  // 2. Validate stream percentage
+  if (
+    !Number.isFinite(streamPercent) ||
+    streamPercent < 0 ||
+    streamPercent > 100
+  ) {
+    return null
+  }
+
+  // 3. MP4 needs separate multi-stream progress handling
+  if (outputFormat === 'mp4') {
+    return null
+  }
+
+  // 4. Map MP3 audio download from 0-100% to 0-90%
+  const overallPercent = streamPercent * 0.9
+
+  // 5. Round to one decimal place
+  return Math.round(overallPercent * 10) / 10
 }
