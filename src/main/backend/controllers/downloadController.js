@@ -6,6 +6,8 @@ import {
   listDownloadJobs
 } from '../services/downloadService.js'
 
+import { getDatabase } from '../config/database.js'
+import { analyzeMedia } from '../services/mediaAnalyzerService.js'
 
 export async function createDownloadJobController(req, res, next) {
   try {
@@ -42,6 +44,46 @@ export async function createDownloadJobController(req, res, next) {
         message: 'Invalid download job details'
       })
     }
+
+
+    // Validate the requested MP4 quality before creating a job
+    if (outputFormat === 'mp4') {
+      const MediaItem = getDatabase().models.MediaItem
+
+      const media = await MediaItem.findByPk(mediaItemId)
+
+      if (!media) {
+        return res.status(404).json({
+          success: false,
+          message: 'Media Item not found'
+        })
+      }
+
+      if (
+        typeof media.source_url !== 'string' ||
+        !media.source_url.trim()
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: 'Media source URL is missing'
+        })
+      }
+
+      // Reuse the existing analyzer
+      const analysis = await analyzeMedia(media.source_url)
+
+      const availableQualities = analysis.videoQualities
+
+      // Reject unavailable video resolutions
+      if (!availableQualities.includes(quality)) {
+        return res.status(400).json({
+          success: false,
+          message: `Requested video quality ${quality} is not available`,
+          availableQualities
+        })
+      }
+    }
+
 
     // Create the download job in SQLite
     const job = await createDownloadJob({
