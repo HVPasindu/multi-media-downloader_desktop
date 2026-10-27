@@ -1,5 +1,11 @@
 
-import { createDownloadJob } from '../services/downloadService.js'
+import {
+  createDownloadJob,
+  executeDownloadJob,
+  getDownloadJobDetails,
+  listDownloadJobs
+} from '../services/downloadService.js'
+
 
 export async function createDownloadJobController(req, res, next) {
   try {
@@ -45,6 +51,15 @@ export async function createDownloadJobController(req, res, next) {
       audioBitrateKbps
     })
 
+
+  void executeDownloadJob(job.id).catch((error) => {
+    console.error(
+      `Download Job ${job.id} execution failed:`,
+      error
+    )
+  })
+
+
     return res.status(201).json({
       success: true,
       data: job.toJSON()
@@ -58,6 +73,74 @@ export async function createDownloadJobController(req, res, next) {
       })
     }
 
+    next(error)
+  }
+}
+
+
+
+export async function getDownloadJobController(req, res, next) {
+  try {
+    // 1. Get the Download Job ID from the URL
+    const rawJobId = req.params.id
+
+    // 2. Validate the ID
+    if (
+      typeof rawJobId !== 'string' ||
+      !/^[1-9]\d*$/.test(rawJobId)
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: 'A valid Download Job ID is required'
+      })
+    }
+
+    const jobId = Number(rawJobId)
+
+    if (!Number.isSafeInteger(jobId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'A valid Download Job ID is required'
+      })
+    }
+
+    // 3. Get job and file details from SQLite
+    const details = await getDownloadJobDetails(jobId)
+
+    // 4. Return 404 if the job does not exist
+    if (!details) {
+      return res.status(404).json({
+        success: false,
+        message: 'Download Job not found'
+      })
+    }
+
+    // 5. Return the download details
+    return res.status(200).json({
+      success: true,
+      data: details
+    })
+
+  } catch (error) {
+    next(error)
+  }
+}
+
+
+
+export async function listDownloadJobsController(req, res, next) {
+  try {
+    // 1. Get the latest download jobs from SQLite
+    const jobs = await listDownloadJobs()
+
+    // 2. Return the download history
+    return res.status(200).json({
+      success: true,
+      data: jobs
+    })
+
+  } catch (error) {
+    // 3. Forward unexpected errors to Express
     next(error)
   }
 }
