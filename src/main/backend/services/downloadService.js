@@ -1,12 +1,15 @@
 
 import { getDatabase } from '../config/database.js'
-import { spawn } from 'node:child_process'
+import { spawn, execFile } from 'node:child_process'
 import { getSavedDownloadPath } from './downloadSettingsService.js'
 import { getDefaultDownloadPath } from './downloadPathService.js'
 import { stat } from 'node:fs/promises'
 import { basename, extname } from 'node:path'
 import { Op } from 'sequelize'
 import { analyzeMedia } from './mediaAnalyzerService.js'
+import { promisify } from 'node:util'
+
+const execFileAsync = promisify(execFile)
 
 // Supported MP3 output bitrates (kbps)
 export const SUPPORTED_MP3_BITRATES = Object.freeze([
@@ -583,6 +586,96 @@ export async function verifyDownloadedFile(finalFilePath) {
 }
 
 
+export async function verifyFinalMediaContent(
+  filePath,
+  expectedFormat
+) {
+  // Inspect the actual output container and media streams.
+  let probeData
+
+  try {
+    const { stdout } = await execFileAsync(
+      'ffprobe',
+      [
+        '-v', 'error',
+        '-show_entries',
+        'format=format_name:stream=codec_type,codec_name',
+        '-of', 'json',
+        filePath
+      ],
+      {
+        windowsHide: true,
+        timeout: 30000,
+        maxBuffer: 1024 * 1024
+      }
+    )
+
+    probeData = JSON.parse(stdout)
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
+      throw new Error(
+        'FFprobe was not found. FFmpeg tools must be available in PATH'
+      )
+    }
+
+    throw new Error(
+      `Final media verification failed: ${error.message}`
+    )
+  }
+
+  const containerNames = String(
+    probeData?.format?.format_name ?? ''
+  ).split(',')
+
+  const streams = Array.isArray(probeData?.streams)
+    ? probeData.streams
+    : []
+
+  const audioStreams = streams.filter(
+    (stream) =>
+      stream?.codec_type === 'audio' &&
+      typeof stream.codec_name === 'string' &&
+      stream.codec_name !== 'unknown'
+  )
+
+  const videoStreams = streams.filter(
+    (stream) =>
+      stream?.codec_type === 'video' &&
+      typeof stream.codec_name === 'string' &&
+      stream.codec_name !== 'unknown'
+  )
+
+  if (expectedFormat === 'mp3') {
+    const validMp3 =
+      containerNames.includes('mp3') &&
+      audioStreams.some(
+        (stream) => stream.codec_name === 'mp3'
+      )
+
+    if (!validMp3) {
+      throw new Error(
+        'Final MP3 verification failed: invalid MP3 audio'
+      )
+    }
+  } else if (expectedFormat === 'mp4') {
+    const validMp4 =
+      containerNames.includes('mp4') &&
+      videoStreams.length > 0 &&
+      audioStreams.length > 0
+
+    if (!validMp4) {
+      throw new Error(
+        'Final MP4 verification failed: video or audio stream is missing'
+      )
+    }
+  } else {
+    throw new Error('Unsupported final media format')
+  }
+
+  return true
+}
+
+
 
 //save download file in downloadfile table
 export async function saveDownloadedFile(jobId, finalFilePath, transaction = null) {
@@ -619,6 +712,12 @@ export async function saveDownloadedFile(jobId, finalFilePath, transaction = nul
   if (fileFormat !== job.output_format) {
     throw new Error('Downloaded file format does not match the job')
   }
+
+  // Verify actual media container and streams before saving
+  await verifyFinalMediaContent(
+    verifiedFile.filePath,
+    job.output_format
+)
 
   // 7. Prevent multiple file records for the same job
   const existingFile = await DownloadFile.findOne({
