@@ -6,6 +6,14 @@ import { getDefaultDownloadPath } from './downloadPathService.js'
 import { stat } from 'node:fs/promises'
 import { basename, extname } from 'node:path'
 import { Op } from 'sequelize'
+import { analyzeMedia } from './mediaAnalyzerService.js'
+
+// Supported MP3 output bitrates (kbps)
+export const SUPPORTED_MP3_BITRATES = Object.freeze([
+  128,
+  192,
+  320
+])
 
 export async function createDownloadJob({
   mediaItemId,
@@ -30,7 +38,7 @@ export async function createDownloadJob({
 
   if (
     outputFormat === 'mp3' &&
-    (!Number.isInteger(audioBitrateKbps) || audioBitrateKbps <= 0)
+    !SUPPORTED_MP3_BITRATES.includes(audioBitrateKbps)
   ) {
     throw new Error('A valid audio bitrate is required')
   }
@@ -64,7 +72,8 @@ export function buildYtDlpArgs({
   outputFormat,
   quality = null,
   audioBitrateKbps = null,
-  downloadPath
+  downloadPath,
+  mp4FormatSelector = null
 }) {
   if (typeof sourceUrl !== 'string' || !sourceUrl.trim()) {
     throw new Error('A valid source URL is required')
@@ -106,17 +115,26 @@ const args = [
 
     const height = Number.parseInt(quality, 10)
 
+
+    // Prefer the exact MP4 source formats selected
+    // from the media analyzer.
+    const formatSelector =
+      typeof mp4FormatSelector === 'string' &&
+      mp4FormatSelector.trim()
+        ? mp4FormatSelector
+        : `bv[height=${height}][ext=mp4]+ba[ext=m4a]/b[height=${height}][ext=mp4]`
+
     args.push(
       '-f',
-      `bv[height=${height}][ext=mp4]+ba[ext=m4a]/b[height=${height}][ext=mp4]`,
+      formatSelector,
       '--merge-output-format',
       'mp4'
     )
 
+
   } else if (outputFormat === 'mp3') {
     if (
-      !Number.isInteger(audioBitrateKbps) ||
-      audioBitrateKbps <= 0
+      !SUPPORTED_MP3_BITRATES.includes(audioBitrateKbps)
     ) {
       throw new Error('A valid audio bitrate is required')
     }
@@ -416,13 +434,100 @@ export async function prepareDownloadJobExecution(jobId) {
   const downloadPath =
     savedPath || await getDefaultDownloadPath()
 
+
+
+  // Select exact MP4 video and audio source formats
+  let mp4FormatSelector = null
+
+  if (job.output_format === 'mp4') {
+    const analysis = await analyzeMedia(media.source_url)
+
+    const availableFormats = analysis.availableFormats ?? {}
+
+    const mp4Formats = Array.isArray(availableFormats.mp4Formats)
+      ? availableFormats.mp4Formats
+      : []
+
+    const audioFormats = Array.isArray(availableFormats.audioFormats)
+      ? availableFormats.audioFormats
+      : []
+
+    const hasFormatId = (format) =>
+      typeof format?.formatId === 'string' &&
+      format.formatId.trim().length > 0
+
+    const matchingVideos = mp4Formats.filter(
+      (format) =>
+        format?.quality === job.quality &&
+        hasFormatId(format)
+    )
+
+    // Prefer video-only MP4 with separate M4A audio
+    const videoOnly = [...matchingVideos]
+      .reverse()
+      .find((format) => format.audioIncluded === false)
+
+    const m4aAudio = [...audioFormats]
+      .reverse()
+      .find(
+        (format) =>
+          format?.extension === 'm4a' &&
+          hasFormatId(format)
+      )
+
+    // Otherwise use an MP4 source containing audio
+    const combinedVideo = [...matchingVideos]
+      .reverse()
+      .find((format) => format.audioIncluded === true)
+
+
+    if (videoOnly && m4aAudio) {
+      mp4FormatSelector =
+        `${videoOnly.formatId}+${m4aAudio.formatId}`
+    } else if (combinedVideo) {
+      mp4FormatSelector = combinedVideo.formatId
+    }
+
+    // Step 04.26 - Unsupported MP4 quality handling
+    if (!mp4FormatSelector) {
+      const availableQualities = Array.isArray(
+        availableFormats.mp4Qualities
+      )
+        ? availableFormats.mp4Qualities
+        : []
+
+      const qualityExists = mp4Formats.some(
+        (format) => format?.quality === job.quality
+      )
+
+      if (!qualityExists) {
+        const qualityList = availableQualities.length
+          ? availableQualities.join(', ')
+          : 'None available'
+
+        throw new Error(
+          `Unsupported MP4 quality "${job.quality}". ` +
+          `Available MP4 qualities: ${qualityList}`
+        )
+      }
+
+      throw new Error(
+        `No compatible MP4 video/audio format found ` +
+        `for quality "${job.quality}"`
+      )
+    }
+
+  }
+
+
   // Prepare yt-dlp arguments
   const args = buildYtDlpArgs({
     sourceUrl: media.source_url,
     outputFormat: job.output_format,
     quality: job.quality,
     audioBitrateKbps: job.audio_bitrate_kbps,
-    downloadPath
+    downloadPath,
+    mp4FormatSelector
   })
 
   return {

@@ -109,6 +109,77 @@ const hasAudioStream = formats.some(
 const audioOptions = hasAudioStream ? ['mp3'] : []
 
 
+  // Identify actual downloadable source formats
+  const validFormats = formats.filter(
+    (format) =>
+      format &&
+      typeof format === 'object' &&
+      !Array.isArray(format)
+  )
+
+  // Audio-only source formats
+  const audioFormats = validFormats
+    .filter(
+      (format) =>
+        format.vcodec === 'none' &&
+        typeof format.acodec === 'string' &&
+        format.acodec !== 'none'
+    )
+    .map((format) => ({
+      formatId: format.format_id ?? null,
+      extension: format.ext ?? null,
+      audioCodec: format.acodec
+    }))
+
+  // Our current MP4 download selector uses M4A audio
+  const hasM4aAudio = audioFormats.some(
+    (format) => format.extension === 'm4a'
+  )
+
+  // Find MP4 video sources compatible with our selector
+  const mp4Formats = validFormats
+    .filter((format) => {
+      const hasVideo =
+        typeof format.vcodec === 'string' &&
+        format.vcodec !== 'none'
+
+      const hasAudio =
+        typeof format.acodec === 'string' &&
+        format.acodec !== 'none'
+
+      return (
+        format.ext === 'mp4' &&
+        hasVideo &&
+        Number.isInteger(format.height) &&
+        format.height > 0 &&
+        (hasAudio || hasM4aAudio)
+      )
+    })
+    .map((format) => ({
+      formatId: format.format_id ?? null,
+      quality: `${format.height}p`,
+      height: format.height,
+      videoCodec: format.vcodec,
+      audioIncluded:
+        typeof format.acodec === 'string' &&
+        format.acodec !== 'none'
+    }))
+
+  // Build unique MP4 quality options
+  const mp4Qualities = [
+    ...new Set(
+      mp4Formats.map((format) => format.height)
+    )
+  ]
+    .sort((a, b) => b - a)
+    .map((height) => `${height}p`)
+
+  const availableFormats = {
+    mp4Qualities,
+    mp4Formats,
+    audioFormats
+  }
+
   return {
     id: metadata.id.trim(),
     platform,
@@ -124,6 +195,7 @@ const audioOptions = hasAudioStream ? ['mp3'] : []
         ? Math.floor(metadata.duration)
         : null,
     videoQualities,
-    audioOptions
+    audioOptions,
+    availableFormats
   }
 }

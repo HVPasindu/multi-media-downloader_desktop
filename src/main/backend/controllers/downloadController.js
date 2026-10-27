@@ -3,7 +3,8 @@ import {
   createDownloadJob,
   executeDownloadJob,
   getDownloadJobDetails,
-  listDownloadJobs
+  listDownloadJobs,
+  SUPPORTED_MP3_BITRATES
 } from '../services/downloadService.js'
 
 import { getDatabase } from '../config/database.js'
@@ -31,7 +32,7 @@ export async function createDownloadJobController(req, res, next) {
 
     const invalidBitrate =
       outputFormat === 'mp3' &&
-      (!Number.isInteger(audioBitrateKbps) || audioBitrateKbps <= 0)
+      !SUPPORTED_MP3_BITRATES.includes(audioBitrateKbps)
 
     if (
       invalidMediaId ||
