@@ -308,7 +308,7 @@ export async function claimQueuedDownloadJob(jobId) {
 }
 
 
-export async function markDownloadJobCompleted(jobId) {
+export async function markDownloadJobCompleted(jobId, transaction = null) {
   if (!Number.isInteger(jobId) || jobId <= 0) {
     throw new Error('A valid Download Job ID is required')
   }
@@ -316,24 +316,27 @@ export async function markDownloadJobCompleted(jobId) {
   const DownloadJob = getDatabase().models.DownloadJob
 
   const [updatedCount] = await DownloadJob.update(
-    {
-      status: 'completed',
-      progress: 100,
-      error_message: null
+  {
+    status: 'completed',
+    progress: 100,
+    error_message: null
+  },
+  {
+    where: {
+      id: jobId,
+      status: 'downloading'
     },
-    {
-      where: {
-        id: jobId,
-        status: 'downloading'
-      }
-    }
-  )
+    transaction
+  }
+)
 
   if (updatedCount !== 1) {
     return null
   }
 
-  return await DownloadJob.findByPk(jobId)
+  return await DownloadJob.findByPk(jobId, {
+  transaction
+})
 }
 
 
@@ -477,7 +480,7 @@ export async function verifyDownloadedFile(finalFilePath) {
 
 
 //save download file in downloadfile table
-export async function saveDownloadedFile(jobId, finalFilePath) {
+export async function saveDownloadedFile(jobId, finalFilePath, transaction = null) {
   // 1. Validate Download Job ID
   if (!Number.isInteger(jobId) || jobId <= 0) {
     throw new Error('A valid Download Job ID is required')
@@ -487,7 +490,9 @@ export async function saveDownloadedFile(jobId, finalFilePath) {
   const { DownloadJob, DownloadFile } = getDatabase().models
 
   // 3. Find the related Download Job
-  const job = await DownloadJob.findByPk(jobId)
+  const job = await DownloadJob.findByPk(jobId, {
+    transaction
+  })
 
   if (!job) {
     throw new Error('Download Job not found')
@@ -514,7 +519,8 @@ export async function saveDownloadedFile(jobId, finalFilePath) {
   const existingFile = await DownloadFile.findOne({
     where: {
       download_job_id: jobId
-    }
+    },
+    transaction
   })
 
   if (existingFile) {
@@ -522,13 +528,18 @@ export async function saveDownloadedFile(jobId, finalFilePath) {
   }
 
   // 8. Save downloaded file details in SQLite
-  const downloadFile = await DownloadFile.create({
+  const downloadFile = await DownloadFile.create(
+  {
     download_job_id: jobId,
     file_name: basename(verifiedFile.filePath),
     file_path: verifiedFile.filePath,
     file_format: fileFormat,
     file_size: verifiedFile.fileSizeBytes
-  })
+  },
+  {
+    transaction
+  }
+)
 
   // 9. Return the saved Sequelize record
   return downloadFile
@@ -778,22 +789,38 @@ await progressWriteChain
       )
     }
 
-    // 9. Verify and save the downloaded file
-    const savedFile = await saveDownloadedFile(
-      jobId,
-      result.finalFilePath
-    )
 
-    // 10. Mark the job completed
-    const completedJob = await markDownloadJobCompleted(
-      jobId
-    )
+    // 9. Save file record and complete job atomically
+    const { savedFile, completedJob } =
+      await getDatabase().transaction(
+        async (transaction) => {
 
-    if (!completedJob) {
-      throw new Error(
-        'Could not mark Download Job as completed'
+          // Save the downloaded file record
+          const savedFile = await saveDownloadedFile(
+            jobId,
+            result.finalFilePath,
+            transaction
+          )
+
+          // Complete the job within the same transaction
+          const completedJob = await markDownloadJobCompleted(
+            jobId,
+            transaction
+          )
+
+          if (!completedJob) {
+            throw new Error(
+              'Could not mark Download Job as completed'
+            )
+          }
+
+          return {
+            savedFile,
+            completedJob
+          }
+        }
       )
-    }
+
 
     return {
       job: completedJob,
@@ -1297,7 +1324,11 @@ export function calculateMp4OverallProgress(snapshot) {
   // 7. Reserve the remaining progress for processing
   const postprocess = snapshot.postprocess
 
-  if (postprocess?.postprocessor === 'FFmpegMerger') {
+  if (
+  ['Merger', 'FFmpegMerger'].includes(
+    postprocess?.postprocessor
+  )
+) {
     if (postprocess.status === 'started') {
       overallPercent = Math.max(overallPercent, 90)
     }
