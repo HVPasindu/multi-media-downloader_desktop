@@ -75,16 +75,28 @@ export function buildYtDlpArgs({
   }
 
 
-  const args = [
-    '--js-runtimes', 'node',
-    '--encoding', 'utf-8',
-    '--no-playlist',
-    '--no-simulate',
-    '--progress',
-    '--newline',
-    '-P', downloadPath,
-    '-o', '%(title).180B [%(id)s].%(ext)s'
+
+const args = [
+  '--js-runtimes', 'node',
+  '--encoding', 'utf-8',
+  '--no-playlist',
+  '--no-simulate',
+  '--progress',
+  '--newline',
+
+  // Structured download progress output
+  '--progress-template',
+  'download:[download] %(progress._percent_str)s APPLAN2_PROGRESS:%(progress.{status,downloaded_bytes,total_bytes,total_bytes_estimate,filename})j',
+
+  // Structured post-processing events
+  '--progress-template',
+  'postprocess:APPLAN2_POSTPROCESS:%(progress.{status,postprocessor})j',
+
+  // Keep the existing download folder and filename format
+  '-P', downloadPath,
+  '-o', '%(title).180B [%(id)s].%(ext)s'
 ]
+
 
 
   if (outputFormat === 'mp4') {
@@ -129,7 +141,7 @@ export function buildYtDlpArgs({
 
 
 
-export function runYtDlp(args, onProgress = null) {
+export function runYtDlp(args, onProgress = null,onOutputLine = null) {
   if (
     !Array.isArray(args) ||
     args.length === 0 ||
@@ -170,6 +182,18 @@ export function runYtDlp(args, onProgress = null) {
       } else {
         // Print the yt-dlp output
         console.log('[yt-dlp]', cleanLine)
+
+        // Forward structured output lines to the caller
+      if (typeof onOutputLine === 'function') {
+        try {
+          onOutputLine(cleanLine)
+        } catch (error) {
+          console.error(
+            '[yt-dlp] Output line callback error:',
+            error
+        )
+        }
+      }
 
         // Extract download percentage from the line
         const percent = parseYtDlpProgressLine(cleanLine)
@@ -314,10 +338,14 @@ export async function markDownloadJobCompleted(jobId) {
 
 
 
-export async function markDownloadJobFailed(jobId, error) {
+export async function markDownloadJobFailed(jobId, error, expectedStatus = 'downloading') {
   if (!Number.isInteger(jobId) || jobId <= 0) {
     throw new Error('A valid Download Job ID is required')
   }
+
+  if (!['queued', 'downloading'].includes(expectedStatus)) {
+  throw new Error('Invalid status for marking a job as failed')
+}
 
   const DownloadJob = getDatabase().models.DownloadJob
 
@@ -340,7 +368,7 @@ export async function markDownloadJobFailed(jobId, error) {
     {
       where: {
         id: jobId,
-        status: 'downloading'
+        status: expectedStatus
       }
     }
   )
@@ -509,9 +537,39 @@ export async function saveDownloadedFile(jobId, finalFilePath) {
 
 
 
+
 export async function executeDownloadJob(jobId) {
-  // 1. Prepare download information
-  const execution = await prepareDownloadJobExecution(jobId)
+
+  // 1. Prepare download information safely
+  let execution
+
+  try {
+    execution = await prepareDownloadJobExecution(jobId)
+  } catch (error) {
+    // Mark only a still-queued job as failed
+    try {
+      const failedJob = await markDownloadJobFailed(
+        jobId,
+        error,
+        'queued'
+      )
+
+      if (!failedJob) {
+        console.warn(
+          '[download] Job was not queued when preparation failed:',
+          jobId
+        )
+      }
+    } catch (statusError) {
+      console.error(
+        '[download] Failed to save preparation error:',
+        statusError
+      )
+    }
+
+    throw error
+  }
+
 
   // 2. Claim the queued job
   const claimedJob = await claimQueuedDownloadJob(jobId)
@@ -525,72 +583,208 @@ export async function executeDownloadJob(jobId) {
   let lastScheduledProgress = 0
   let progressWriteError = null
 
+
+
+  // Both MP3 and MP4 use structured download information
+  const streamTracker = createMultiStreamProgressTracker()
+
+  // Last scheduled network byte count
+  let lastScheduledBytes = 0
+  let latestObservedBytes = 0
+  let lastBytesWriteAt = 0
+
+  // 5. Schedule progress updates safely
+  const scheduleOverallProgress = (overallPercent) => {
+    if (overallPercent === null) {
+      return
+    }
+
+    // Regular downloading: update every 5%
+    // Processing stages: preserve 90%, 95%, 97%, 99%
+    const nextProgress =
+      overallPercent >= 90
+        ? Math.round(overallPercent * 10) / 10
+        : Math.floor(overallPercent / 5) * 5
+
+    if (nextProgress <= lastScheduledProgress) {
+      return
+    }
+
+    lastScheduledProgress = nextProgress
+
+    progressWriteChain = progressWriteChain
+      .then(async () => {
+        if (progressWriteError) {
+          return
+        }
+
+        await updateDownloadJobProgress(
+          jobId,
+          nextProgress
+        )
+      })
+      .catch((error) => {
+        progressWriteError ??= error
+      })
+  }
+
+
+  // Schedule downloaded byte updates
+
+const scheduleDownloadedBytes = (
+  downloadedBytes,
+  force = false
+) => {
+  // Validate byte count
+  if (
+    !Number.isSafeInteger(downloadedBytes) ||
+    downloadedBytes < 0
+  ) {
+    return
+  }
+
+  // Remember the latest observed network bytes
+  latestObservedBytes = Math.max(
+    latestObservedBytes,
+    downloadedBytes
+  )
+
+  // Never schedule a lower or duplicate value
+  if (downloadedBytes <= lastScheduledBytes) {
+    return
+  }
+
+  const BYTE_UPDATE_STEP = 1024 * 1024
+  const MIN_UPDATE_INTERVAL_MS = 1000
+
+  const now = Date.now()
+
+  const reachedCheckpoint =
+    downloadedBytes - lastScheduledBytes >=
+    BYTE_UPDATE_STEP
+
+  const intervalElapsed =
+    now - lastBytesWriteAt >=
+    MIN_UPDATE_INTERVAL_MS
+
+  // Limit unnecessary SQLite updates
+  if (
+    !force &&
+    (!reachedCheckpoint || !intervalElapsed)
+  ) {
+    return
+  }
+
+  lastScheduledBytes = downloadedBytes
+  lastBytesWriteAt = now
+
+  // Preserve the existing ordered database queue
+  progressWriteChain = progressWriteChain
+    .then(async () => {
+      if (progressWriteError) {
+        return
+      }
+
+      await updateDownloadJobDownloadedBytes(
+        jobId,
+        downloadedBytes
+      )
+    })
+    .catch((error) => {
+      progressWriteError ??= error
+    })
+}
+
+
+
   try {
-    // 4. Run yt-dlp with the progress callback
+    // 6. Execute yt-dlp with MP3 and MP4 callbacks
     const result = await runYtDlp(
       execution.args,
+
+      // Existing MP3 percentage callback
       (streamPercent) => {
-        // Convert stream percentage to overall percentage
-        const overallPercent = calculateOverallDownloadProgress(
-          claimedJob.output_format,
-          streamPercent
-        )
-
-        // MP4 overall progress is not implemented yet
-        if (overallPercent === null) {
+        if (claimedJob.output_format !== 'mp3') {
           return
         }
 
-        // Update in steps of 5%
-        const nextProgress =
-          Math.floor(overallPercent / 5) * 5
+        const overallPercent =
+          calculateOverallDownloadProgress(
+            'mp3',
+            streamPercent
+          )
 
-        // Ignore duplicate or lower percentages
-        if (nextProgress <= lastScheduledProgress) {
-          return
-        }
+        scheduleOverallProgress(overallPercent)
+      },
 
-        lastScheduledProgress = nextProgress
+      // New MP4 structured output callback
 
-        // Queue database writes in the correct order
-        progressWriteChain = progressWriteChain
-          .then(async () => {
-            if (progressWriteError) {
-              return
-            }
+// Structured output callback for both MP3 and MP4
+(line) => {
+  const snapshot = streamTracker.consumeLine(line)
 
-            await updateDownloadJobProgress(
-              jobId,
-              nextProgress
-            )
-          })
-          .catch((error) => {
-            progressWriteError ??= error
-          })
-      }
+  if (!snapshot) {
+    return
+  }
+
+  // Sum downloaded network bytes from tracked streams
+  const totalDownloadedBytes = snapshot.streams.reduce(
+    (total, stream) => {
+      return total + stream.downloadedBytes
+    },
+    0
+  )
+
+  const allStreamsFinished =
+    snapshot.streams.length > 0 &&
+    snapshot.streams.every(
+      (stream) => stream.status === 'finished'
     )
 
-    // 5. Wait for all queued progress writes
-    await progressWriteChain
+  // Save downloaded bytes for both formats
+  scheduleDownloadedBytes(
+    totalDownloadedBytes,
+    allStreamsFinished
+  )
+
+  // MP4 needs separate overall progress calculation
+  if (claimedJob.output_format === 'mp4') {
+    const overallPercent =
+      calculateMp4OverallProgress(snapshot)
+
+    scheduleOverallProgress(overallPercent)
+  }
+}
+
+    )
+
+    // Flush any remaining downloaded bytes
+scheduleDownloadedBytes(
+  latestObservedBytes,
+  true
+)
+
+// Wait until all progress and byte writes finish
+await progressWriteChain
 
     if (progressWriteError) {
       throw progressWriteError
     }
 
-    // 6. Ensure yt-dlp returned a final path
+    // 8. Verify final path
     if (!result.finalFilePath) {
       throw new Error(
         'yt-dlp did not return a final file path'
       )
     }
 
-    // 7. Verify and save downloaded file
+    // 9. Verify and save the downloaded file
     const savedFile = await saveDownloadedFile(
       jobId,
       result.finalFilePath
     )
 
-    // 8. Mark download as completed
+    // 10. Mark the job completed
     const completedJob = await markDownloadJobCompleted(
       jobId
     )
@@ -607,7 +801,7 @@ export async function executeDownloadJob(jobId) {
     }
 
   } catch (error) {
-    // Let any pending progress writes finish
+    // Complete any pending progress database writes
     await progressWriteChain
 
     try {
@@ -633,6 +827,7 @@ export async function executeDownloadJob(jobId) {
     throw error
   }
 }
+
 
 
 
@@ -817,9 +1012,52 @@ export async function updateDownloadJobProgress(
     return null
   }
 
-  
+
 
   // 7. Return the updated Download Job
+  return await DownloadJob.findByPk(jobId)
+}
+
+
+
+export async function updateDownloadJobDownloadedBytes(
+  jobId,
+  downloadedBytes
+) {
+  // Validate incoming values
+  if (!Number.isSafeInteger(jobId) || jobId <= 0) {
+    throw new Error('A valid Download Job ID is required')
+  }
+
+  if (
+    !Number.isSafeInteger(downloadedBytes) ||
+    downloadedBytes < 0
+  ) {
+    throw new Error('Valid downloaded bytes are required')
+  }
+
+  const DownloadJob = getDatabase().models.DownloadJob
+
+  // Update only an active job with higher byte count
+  const [updatedCount] = await DownloadJob.update(
+    {
+      downloaded_bytes: downloadedBytes
+    },
+    {
+      where: {
+        id: jobId,
+        status: 'downloading',
+        downloaded_bytes: {
+          [Op.lt]: downloadedBytes
+        }
+      }
+    }
+  )
+
+  if (updatedCount !== 1) {
+    return null
+  }
+
   return await DownloadJob.findByPk(jobId)
 }
 
@@ -853,4 +1091,236 @@ export function calculateOverallDownloadProgress(
 
   // 5. Round to one decimal place
   return Math.round(overallPercent * 10) / 10
+}
+
+
+
+export function createMultiStreamProgressTracker() {
+  // 1. Store each download stream separately
+  const streams = new Map()
+
+  // 2. Store the latest postprocessing event
+  let postprocess = null
+
+  // 3. Return a safe copy of current progress information
+  const getSnapshot = () => ({
+    streams: Array.from(streams.values(), (stream) => ({
+      ...stream
+    })),
+    postprocess: postprocess ? { ...postprocess } : null
+  })
+
+  return {
+    consumeLine(line) {
+      // 4. Validate input
+      if (typeof line !== 'string') {
+        return null
+      }
+
+      const downloadMarker = 'APPLAN2_PROGRESS:'
+      const postprocessMarker = 'APPLAN2_POSTPROCESS:'
+
+      const downloadIndex = line.indexOf(downloadMarker)
+      const postprocessIndex = line.indexOf(postprocessMarker)
+
+      // 5. Handle a structured download event
+      if (downloadIndex !== -1) {
+        let data
+
+        try {
+          data = JSON.parse(
+            line.slice(
+              downloadIndex + downloadMarker.length
+            ).trim()
+          )
+        } catch {
+          return null
+        }
+
+        // Each stream needs a valid filename
+        if (
+          !data ||
+          typeof data.filename !== 'string' ||
+          !data.filename
+        ) {
+          return null
+        }
+
+        // Find previous progress for this stream
+        const previous = streams.get(data.filename)
+
+        // Extract downloaded bytes
+        const downloadedBytes =
+          Number.isFinite(data.downloaded_bytes) &&
+          data.downloaded_bytes >= 0
+            ? data.downloaded_bytes
+            : (previous?.downloadedBytes ?? 0)
+
+        // Extract total bytes when available
+        const reportedTotal =
+          data.total_bytes ?? data.total_bytes_estimate
+
+        const totalBytes =
+          Number.isFinite(reportedTotal) &&
+          reportedTotal >= 0
+            ? reportedTotal
+            : (previous?.totalBytes ?? null)
+
+        // Reuse the existing percentage parser
+        const percent = parseYtDlpProgressLine(line)
+
+        // Update only this stream's information
+        streams.set(data.filename, {
+          filename: data.filename,
+          status:
+            typeof data.status === 'string'
+              ? data.status
+              : (previous?.status ?? 'unknown'),
+          downloadedBytes,
+          totalBytes,
+          percent: percent ?? previous?.percent ?? null
+        })
+
+        return getSnapshot()
+      }
+
+      // 6. Handle a structured postprocessing event
+      if (postprocessIndex !== -1) {
+        let data
+
+        try {
+          data = JSON.parse(
+            line.slice(
+              postprocessIndex + postprocessMarker.length
+            ).trim()
+          )
+        } catch {
+          return null
+        }
+
+        if (
+          !data ||
+          typeof data.status !== 'string'
+        ) {
+          return null
+        }
+
+        postprocess = {
+          status: data.status,
+          postprocessor:
+            typeof data.postprocessor === 'string'
+              ? data.postprocessor
+              : null
+        }
+
+        return getSnapshot()
+      }
+
+      // 7. Ignore unrelated yt-dlp output
+      return null
+    },
+
+    // 8. Read current tracker state whenever needed
+    getSnapshot
+  }
+}
+
+
+//MP4 Overall Download Progress Calculator
+export function calculateMp4OverallProgress(snapshot) {
+  // 1. Validate the tracker snapshot
+  if (
+    !snapshot ||
+    !Array.isArray(snapshot.streams)
+  ) {
+    return null
+  }
+
+  const streams = snapshot.streams
+
+  // 2. No download stream information yet
+  if (streams.length === 0) {
+    return null
+  }
+
+  // 3. This version supports up to two streams
+  if (streams.length > 2) {
+    return null
+  }
+
+  // 4. Read a stream's progress safely
+  const getStreamPercent = (stream) => {
+    if (!stream || typeof stream !== 'object') {
+      return null
+    }
+
+    // A finished stream has reached 100%
+    if (stream.status === 'finished') {
+      return 100
+    }
+
+    const percent = stream.percent
+
+    if (
+      !Number.isFinite(percent) ||
+      percent < 0 ||
+      percent > 100
+    ) {
+      return null
+    }
+
+    return percent
+  }
+
+  // 5. Read progress for the two download stages
+  const firstStreamPercent = getStreamPercent(
+    streams[0]
+  )
+
+  const secondStreamPercent =
+    streams.length === 2
+      ? getStreamPercent(streams[1])
+      : 0
+
+  if (
+    firstStreamPercent === null ||
+    secondStreamPercent === null
+  ) {
+    return null
+  }
+
+  // 6. Allocate 45% to each download stream
+  let overallPercent =
+    firstStreamPercent * 0.45 +
+    secondStreamPercent * 0.45
+
+  // 7. Reserve the remaining progress for processing
+  const postprocess = snapshot.postprocess
+
+  if (postprocess?.postprocessor === 'FFmpegMerger') {
+    if (postprocess.status === 'started') {
+      overallPercent = Math.max(overallPercent, 90)
+    }
+
+    if (postprocess.status === 'finished') {
+      overallPercent = Math.max(overallPercent, 95)
+    }
+  }
+
+  // 8. Track final file moving
+  if (postprocess?.postprocessor === 'MoveFiles') {
+    if (postprocess.status === 'started') {
+      overallPercent = Math.max(overallPercent, 97)
+    }
+
+    if (postprocess.status === 'finished') {
+      overallPercent = Math.max(overallPercent, 99)
+    }
+  }
+
+  // 9. Keep 100% reserved for completed jobs
+  return Math.min(
+    99,
+    Math.round(overallPercent * 10) / 10
+  )
 }
