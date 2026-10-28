@@ -3,6 +3,7 @@ import { app, shell, BrowserWindow, ipcMain, dialog  } from 'electron'
 import { startServer, stopServer } from './backend/server.js'
 
 import { initializeDatabase } from './backend/config/database.js'
+import { recoverInterruptedDownloadJobs } from './backend/services/downloadRecoveryService.js'
 
 
 import { getDatabase } from './backend/config/database.js'
@@ -85,11 +86,13 @@ app.whenReady().then(async () => {
 
   console.log('Database path:', databasePath)
 
-  // 3. Check database tables
-  // const tables =
-  //   await sequelize.getQueryInterface().showAllTables()
+  // 3. Recover incomplete jobs from the previous application session
+  const recoveryResult = await recoverInterruptedDownloadJobs()
 
-  // console.log('Database tables:', tables)
+  console.log(
+    'Download restart recovery completed:',
+    recoveryResult
+  )
 
   // 4. Start Express Backend
   const { baseUrl } = await startServer()
