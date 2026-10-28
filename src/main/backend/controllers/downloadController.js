@@ -6,7 +6,10 @@ import {
   SUPPORTED_MP3_BITRATES
 } from '../services/downloadService.js'
 
-import { enqueueDownloadJob } from '../services/downloadQueueService.js'
+import {
+  enqueueDownloadJob,
+  cancelDownloadJob
+} from '../services/downloadQueueService.js'
 
 import { getDatabase } from '../config/database.js'
 import { analyzeMedia } from '../services/mediaAnalyzerService.js'
@@ -157,6 +160,89 @@ export async function getDownloadJobController(req, res, next) {
     return res.status(200).json({
       success: true,
       data: details
+    })
+
+  } catch (error) {
+    next(error)
+  }
+}
+
+
+
+export async function cancelDownloadJobController(req, res, next) {
+  try {
+    // 1. Get the Download Job ID from the URL
+    const rawJobId = req.params.id
+
+    // 2. Validate the ID
+    if (
+      typeof rawJobId !== 'string' ||
+      !/^[1-9]\d*$/.test(rawJobId)
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: 'A valid Download Job ID is required'
+      })
+    }
+
+    const jobId = Number(rawJobId)
+
+    if (!Number.isSafeInteger(jobId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'A valid Download Job ID is required'
+      })
+    }
+
+    // 3. Orchestrate cancellation
+    const result = await cancelDownloadJob(jobId)
+
+    // 4. Handle results based on outcome
+    if (result.outcome === 'not_found') {
+      return res.status(404).json({
+        success: false,
+        message: 'Download Job not found'
+      })
+    }
+
+    if (result.outcome === 'conflict') {
+      return res.status(409).json({
+        success: false,
+        message: result.message || 'This download job cannot be cancelled',
+        status: result.status
+      })
+    }
+
+    if (result.outcome === 'cancellation_requested') {
+      return res.status(202).json({
+        success: true,
+        data: {
+          id: jobId,
+          status: 'cancellation_requested',
+          message: 'Download cancellation is in progress'
+        }
+      })
+    }
+
+    if (result.outcome === 'already_cancelled') {
+      return res.status(200).json({
+        success: true,
+        data: {
+          id: jobId,
+          status: 'cancelled',
+          message: result.message || 'Download is already cancelled'
+        }
+      })
+    }
+
+    // Default success: 200 OK with cancelled status
+    return res.status(200).json({
+      success: true,
+      data: {
+        id: jobId,
+        status: 'cancelled',
+        message: result.message || 'Download cancelled successfully'
+      }
     })
 
   } catch (error) {

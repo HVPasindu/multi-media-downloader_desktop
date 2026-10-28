@@ -4,7 +4,8 @@ import { Router } from 'express'
 import {
   createDownloadJobController,
   getDownloadJobController,
-  listDownloadJobsController
+  listDownloadJobsController,
+  cancelDownloadJobController
 } from '../controllers/downloadController.js'
 
 const router = Router()
@@ -14,6 +15,9 @@ router.post('/', createDownloadJobController)
 
 // Get recent download history
 router.get('/', listDownloadJobsController)
+
+// Cancel a queued or running download job
+router.post('/:id/cancel', cancelDownloadJobController)
 
 // Get details of a specific download job
 router.get('/:id', getDownloadJobController)

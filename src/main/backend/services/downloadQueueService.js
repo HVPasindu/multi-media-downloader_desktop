@@ -1,5 +1,6 @@
 
-import { executeDownloadJob } from './downloadService.js'
+import { executeDownloadJob, cancelRunningDownload } from './downloadService.js'
+import { getDatabase } from '../config/database.js'
 
 // Maximum number of download jobs running at once
 const MAX_CONCURRENT_DOWNLOADS = 2
@@ -66,6 +67,172 @@ export function enqueueDownloadJob(jobId) {
   processDownloadQueue()
 
   return true
+}
+
+export async function cancelDownloadJob(jobId) {
+  if (!Number.isSafeInteger(jobId) || jobId <= 0) {
+    throw new Error('A valid Download Job ID is required')
+  }
+
+  const { DownloadJob } = getDatabase().models
+
+  // 1. Fetch current job record from SQLite
+  const job = await DownloadJob.findByPk(jobId)
+
+  if (!job) {
+    return {
+      outcome: 'not_found'
+    }
+  }
+
+  // 2. Check terminal states
+  if (job.status === 'completed') {
+    return {
+      outcome: 'conflict',
+      status: 'completed',
+      message: 'This download job cannot be cancelled'
+    }
+  }
+
+  if (job.status === 'failed') {
+    return {
+      outcome: 'conflict',
+      status: 'failed',
+      message: 'This download job cannot be cancelled'
+    }
+  }
+
+  if (job.status === 'cancelled') {
+    return {
+      outcome: 'already_cancelled',
+      status: 'cancelled',
+      message: 'Download is already cancelled'
+    }
+  }
+
+  // 3. Handle Queued Job
+  if (job.status === 'queued') {
+    const queueIndex = waitingJobIds.indexOf(jobId)
+
+    if (queueIndex !== -1) {
+      // Remove from the in-memory waiting list immediately
+      waitingJobIds.splice(queueIndex, 1)
+
+      // Guarded update in SQLite: only update if still 'queued'
+      const [updatedCount] = await DownloadJob.update(
+        {
+          status: 'cancelled',
+          error_message: null
+        },
+        {
+          where: {
+            id: jobId,
+            status: 'queued'
+          }
+        }
+      )
+
+      if (updatedCount === 1) {
+        scheduledJobIds.delete(jobId)
+
+        return {
+          outcome: 'cancelled',
+          status: 'cancelled',
+          message: 'Download cancelled successfully'
+        }
+      }
+
+      // If guarded update failed (race with job execution starting), restore position
+      waitingJobIds.splice(queueIndex, 0, jobId)
+    }
+
+    // Re-check status in database in case it transitioned to 'downloading'
+    const recheckedJob = await DownloadJob.findByPk(jobId)
+
+    if (recheckedJob?.status === 'downloading') {
+      job.status = 'downloading'
+    } else if (recheckedJob?.status === 'queued') {
+      // Job was not in the current in-memory queue (e.g. from previous application session)
+      const [updatedCount] = await DownloadJob.update(
+        {
+          status: 'cancelled',
+          error_message: null
+        },
+        {
+          where: {
+            id: jobId,
+            status: 'queued'
+          }
+        }
+      )
+
+      if (updatedCount === 1) {
+        return {
+          outcome: 'cancelled',
+          status: 'cancelled',
+          message: 'Download cancelled successfully'
+        }
+      }
+    } else {
+      return {
+        outcome: recheckedJob?.status === 'cancelled' ? 'already_cancelled' : 'conflict',
+        status: recheckedJob?.status ?? 'conflict',
+        message: 'This download job cannot be cancelled'
+      }
+    }
+  }
+
+  // 4. Handle Running Job (status === 'downloading')
+  if (job.status === 'downloading') {
+    const cancelResult = await cancelRunningDownload(jobId)
+
+    if (cancelResult.success) {
+      // Brief check to see if SQLite status updated to 'cancelled'
+      for (let i = 0; i < 10; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 50))
+        const currentJob = await DownloadJob.findByPk(jobId)
+        if (currentJob?.status === 'cancelled') {
+          return {
+            outcome: 'cancelled',
+            status: 'cancelled',
+            message: 'Download cancelled successfully'
+          }
+        }
+      }
+
+      return {
+        outcome: 'cancellation_requested',
+        status: 'cancellation_requested',
+        message: 'Download cancellation is in progress'
+      }
+    }
+
+    if (cancelResult.reason === 'not_running') {
+      const refreshedJob = await DownloadJob.findByPk(jobId)
+
+      if (refreshedJob?.status === 'cancelled') {
+        return {
+          outcome: 'already_cancelled',
+          status: 'cancelled',
+          message: 'Download is already cancelled'
+        }
+      }
+
+      return {
+        outcome: 'conflict',
+        status: refreshedJob?.status ?? 'downloading',
+        message: 'This download job cannot be cancelled'
+      }
+    }
+
+    throw new Error(cancelResult.error || 'Failed to cancel running download process')
+  }
+
+  return {
+    outcome: 'conflict',
+    status: job.status,
+    message: 'This download job cannot be cancelled'
+  }
 }
 
 // Optional helper function to inspect queue state during testing and verification
