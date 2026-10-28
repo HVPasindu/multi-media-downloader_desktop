@@ -5,7 +5,8 @@ import {
   createDownloadJobController,
   getDownloadJobController,
   listDownloadJobsController,
-  cancelDownloadJobController
+  cancelDownloadJobController,
+  retryDownloadJobController
 } from '../controllers/downloadController.js'
 
 const router = Router()
@@ -18,6 +19,9 @@ router.get('/', listDownloadJobsController)
 
 // Cancel a queued or running download job
 router.post('/:id/cancel', cancelDownloadJobController)
+
+// Retry a failed or cancelled download job
+router.post('/:id/retry', retryDownloadJobController)
 
 // Get details of a specific download job
 router.get('/:id', getDownloadJobController)

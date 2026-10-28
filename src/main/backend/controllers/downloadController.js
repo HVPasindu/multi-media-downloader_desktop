@@ -11,6 +11,8 @@ import {
   cancelDownloadJob
 } from '../services/downloadQueueService.js'
 
+import { retryDownloadJob } from '../services/downloadRetryService.js'
+
 import { getDatabase } from '../config/database.js'
 import { analyzeMedia } from '../services/mediaAnalyzerService.js'
 
@@ -242,6 +244,82 @@ export async function cancelDownloadJobController(req, res, next) {
         id: jobId,
         status: 'cancelled',
         message: result.message || 'Download cancelled successfully'
+      }
+    })
+
+  } catch (error) {
+    next(error)
+  }
+}
+
+
+
+export async function retryDownloadJobController(req, res, next) {
+  try {
+    // 1. Get the Download Job ID from the URL
+    const rawJobId = req.params.id
+
+    // 2. Validate the ID
+    if (
+      typeof rawJobId !== 'string' ||
+      !/^[1-9]\d*$/.test(rawJobId)
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: 'A valid Download Job ID is required'
+      })
+    }
+
+    const originalJobId = Number(rawJobId)
+
+    if (!Number.isSafeInteger(originalJobId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'A valid Download Job ID is required'
+      })
+    }
+
+    // 3. Orchestrate retry
+    const result = await retryDownloadJob(originalJobId)
+
+    // 4. Handle results based on outcome
+    if (result.outcome === 'not_found') {
+      return res.status(404).json({
+        success: false,
+        message: 'Download Job not found'
+      })
+    }
+
+    if (result.outcome === 'not_retryable') {
+      return res.status(409).json({
+        success: false,
+        message: result.message || 'Only failed or cancelled downloads can be retried',
+        status: result.status
+      })
+    }
+
+    if (result.outcome === 'retry_in_progress') {
+      return res.status(409).json({
+        success: false,
+        message: result.message || 'A retry is already in progress for this job'
+      })
+    }
+
+    if (result.outcome === 'media_missing') {
+      return res.status(404).json({
+        success: false,
+        message: result.message || 'Related media item or source URL not found'
+      })
+    }
+
+    // Default success: 201 Created
+    return res.status(201).json({
+      success: true,
+      data: {
+        originalJobId: result.originalJobId,
+        retryJobId: result.retryJobId,
+        status: result.status,
+        message: result.message || 'Download retry job created successfully'
       }
     })
 
