@@ -10,10 +10,7 @@ let sequelize = null
 
 export async function initializeDatabase() {
   // Electron user data folder
-  const dataDirectory = path.join(
-    app.getPath('userData'),
-    'data'
-  )
+  const dataDirectory = path.join(app.getPath('userData'), 'data')
 
   // Create folder if it does not exist
   fs.mkdirSync(dataDirectory, {
@@ -21,16 +18,17 @@ export async function initializeDatabase() {
   })
 
   // SQLite database file path
-  const databasePath = path.join(
-    dataDirectory,
-    'downloader.db'
-  )
+  const databasePath = path.join(dataDirectory, 'downloader.db')
 
   // Create Sequelize connection
   sequelize = new Sequelize({
     dialect: 'sqlite',
     storage: databasePath,
     logging: false,
+    dialectOptions: {
+      // Set SQLite busy timeout so driver waits for table locks instead of failing immediately
+      busyTimeout: 30000
+    },
     pool: {
       max: 1,
       min: 0,
@@ -40,6 +38,11 @@ export async function initializeDatabase() {
 
   try {
     await sequelize.authenticate()
+
+    // Configure SQLite PRAGMAs for high-concurrency desktop operations
+    await sequelize.query('PRAGMA journal_mode = WAL;')
+    await sequelize.query('PRAGMA busy_timeout = 30000;')
+    await sequelize.query('PRAGMA synchronous = NORMAL;')
 
     console.log('SQLite connected:', databasePath)
 

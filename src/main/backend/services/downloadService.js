@@ -4,7 +4,7 @@ import { getSavedDownloadPath } from './downloadSettingsService.js'
 import { getDefaultDownloadPath } from './downloadPathService.js'
 import { stat } from 'node:fs/promises'
 import { basename, extname } from 'node:path'
-import { Op } from 'sequelize'
+import { Op, Transaction } from 'sequelize'
 import { analyzeMedia } from './mediaAnalyzerService.js'
 import { promisify } from 'node:util'
 import {
@@ -31,6 +31,43 @@ export const SUPPORTED_MP3_BITRATES = Object.freeze([128, 192, 320])
 
 // Track yt-dlp processes for actively running jobs
 const activeDownloadProcesses = new Map()
+
+// Helper to detect transient SQLite lock/busy errors across Sequelize and sqlite3 driver
+export function isSqliteBusyError(error) {
+  if (!error) return false
+  const message = String(error?.message || '').toLowerCase()
+  const name = String(error?.name || '').toLowerCase()
+  const originalMessage = String(
+    error?.original?.message || error?.parent?.message || ''
+  ).toLowerCase()
+  const code = String(
+    error?.original?.code || error?.parent?.code || error?.code || ''
+  ).toUpperCase()
+
+  return (
+    name.includes('timeout') ||
+    code === 'SQLITE_BUSY' ||
+    code === 'SQLITE_LOCKED' ||
+    message.includes('sqlite_busy') ||
+    message.includes('database is locked') ||
+    message.includes('database locked') ||
+    originalMessage.includes('sqlite_busy') ||
+    originalMessage.includes('database is locked') ||
+    originalMessage.includes('database locked')
+  )
+}
+
+// In-memory queue to serialize download completion write transactions
+let completionWriteQueue = Promise.resolve()
+
+export function withCompletionWriteLock(task) {
+  const next = completionWriteQueue.then(
+    () => task(),
+    () => task()
+  )
+  completionWriteQueue = next.catch(() => {})
+  return next
+}
 
 // Custom error to distinguish intentional cancellation from unexpected errors
 export class DownloadCancelledError extends Error {
@@ -484,24 +521,34 @@ export async function markDownloadJobFailed(jobId, error, expectedStatus = 'down
     formattedMessage.trim().slice(0, 2000) ||
     `[${DOWNLOAD_ERROR_CODES.UNKNOWN_ERROR}] ${DEFAULT_ERROR_MESSAGES.UNKNOWN_ERROR}`
 
-  const [updatedCount] = await DownloadJob.update(
-    {
-      status: 'failed',
-      error_message: errorMessage
-    },
-    {
-      where: {
-        id: jobId,
-        status: expectedStatus
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const [updatedCount] = await DownloadJob.update(
+        {
+          status: 'failed',
+          error_message: errorMessage
+        },
+        {
+          where: {
+            id: jobId,
+            status: expectedStatus
+          }
+        }
+      )
+
+      if (updatedCount !== 1) {
+        return null
       }
+
+      return await DownloadJob.findByPk(jobId)
+    } catch (updateError) {
+      if (isSqliteBusyError(updateError) && attempt < 3) {
+        await new Promise((resolve) => setTimeout(resolve, 100 * attempt))
+        continue
+      }
+      throw updateError
     }
-  )
-
-  if (updatedCount !== 1) {
-    return null
   }
-
-  return await DownloadJob.findByPk(jobId)
 }
 
 export async function markDownloadJobCancelled(jobId) {
@@ -511,24 +558,34 @@ export async function markDownloadJobCancelled(jobId) {
 
   const DownloadJob = getDatabase().models.DownloadJob
 
-  const [updatedCount] = await DownloadJob.update(
-    {
-      status: 'cancelled',
-      error_message: null
-    },
-    {
-      where: {
-        id: jobId,
-        status: 'downloading'
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const [updatedCount] = await DownloadJob.update(
+        {
+          status: 'cancelled',
+          error_message: null
+        },
+        {
+          where: {
+            id: jobId,
+            status: 'downloading'
+          }
+        }
+      )
+
+      if (updatedCount !== 1) {
+        return null
       }
+
+      return await DownloadJob.findByPk(jobId)
+    } catch (updateError) {
+      if (isSqliteBusyError(updateError) && attempt < 3) {
+        await new Promise((resolve) => setTimeout(resolve, 100 * attempt))
+        continue
+      }
+      throw updateError
     }
-  )
-
-  if (updatedCount !== 1) {
-    return null
   }
-
-  return await DownloadJob.findByPk(jobId)
 }
 
 export async function cancelRunningDownload(jobId) {
@@ -841,7 +898,12 @@ export async function verifyFinalMediaContent(filePath, expectedFormat) {
 }
 
 //save download file in downloadfile table
-export async function saveDownloadedFile(jobId, finalFilePath, transaction = null) {
+export async function saveDownloadedFile(
+  jobId,
+  finalFilePath,
+  transaction = null,
+  preVerifiedFile = null
+) {
   // 1. Validate Download Job ID
   if (!Number.isInteger(jobId) || jobId <= 0) {
     throw new Error('A valid Download Job ID is required')
@@ -864,8 +926,8 @@ export async function saveDownloadedFile(jobId, finalFilePath, transaction = nul
     throw new Error('Download Job must be downloading')
   }
 
-  // 5. Verify the actual downloaded file
-  const verifiedFile = await verifyDownloadedFile(finalFilePath)
+  // 5. Verify the actual downloaded file if not already pre-verified outside transaction
+  const verifiedFile = preVerifiedFile || (await verifyDownloadedFile(finalFilePath))
 
   // 6. Check whether the file format matches the job
   const fileFormat = extname(verifiedFile.filePath).slice(1).toLowerCase()
@@ -877,8 +939,10 @@ export async function saveDownloadedFile(jobId, finalFilePath, transaction = nul
     )
   }
 
-  // Verify actual media container and streams before saving
-  await verifyFinalMediaContent(verifiedFile.filePath, job.output_format)
+  // Verify actual media container and streams before saving if not already pre-verified
+  if (!preVerifiedFile) {
+    await verifyFinalMediaContent(verifiedFile.filePath, job.output_format)
+  }
 
   // 7. Prevent multiple file records for the same job
   const existingFile = await DownloadFile.findOne({
@@ -1109,23 +1173,82 @@ export async function executeDownloadJob(jobId) {
       )
     }
 
-    // 9. Save file record and complete job atomically
-    const { savedFile, completedJob } = await getDatabase().transaction(async (transaction) => {
-      // Save the downloaded file record
-      const savedFile = await saveDownloadedFile(jobId, result.finalFilePath, transaction)
+    // Verify final media file outside any transaction to avoid holding database locks during ffprobe
+    const verifiedFile = await verifyDownloadedFile(result.finalFilePath)
+    const fileFormat = extname(verifiedFile.filePath).slice(1).toLowerCase()
 
-      // Complete the job within the same transaction
-      const completedJob = await markDownloadJobCompleted(jobId, transaction)
+    if (fileFormat !== claimedJob.output_format) {
+      throw new DownloadError(
+        DOWNLOAD_ERROR_CODES.OUTPUT_VERIFICATION_FAILED,
+        'Downloaded file format does not match the job'
+      )
+    }
 
-      if (!completedJob) {
-        throw new Error('Could not mark Download Job as completed')
+    await verifyFinalMediaContent(verifiedFile.filePath, claimedJob.output_format)
+
+    // 9. Save file record and complete job atomically with serialized write and bounded retries
+    const MAX_COMPLETION_RETRIES = 5
+    let completionAttempt = 0
+    let savedFile = null
+    let completedJob = null
+
+    while (completionAttempt < MAX_COMPLETION_RETRIES) {
+      completionAttempt += 1
+
+      try {
+        const completionResult = await withCompletionWriteLock(async () => {
+          return await getDatabase().transaction(
+            { type: Transaction.TYPES.IMMEDIATE },
+            async (transaction) => {
+              // Save the downloaded file record (using preVerifiedFile to avoid re-running ffprobe)
+              const saved = await saveDownloadedFile(
+                jobId,
+                result.finalFilePath,
+                transaction,
+                verifiedFile
+              )
+
+              // Complete the job within the same transaction
+              const completed = await markDownloadJobCompleted(jobId, transaction)
+
+              if (!completed) {
+                throw new Error('Could not mark Download Job as completed')
+              }
+
+              return {
+                savedFile: saved,
+                completedJob: completed
+              }
+            }
+          )
+        })
+
+        savedFile = completionResult.savedFile
+        completedJob = completionResult.completedJob
+        break
+      } catch (completionError) {
+        // If it's a transient SQLite busy/lock error and we have retries left, wait with backoff and retry
+        if (isSqliteBusyError(completionError) && completionAttempt < MAX_COMPLETION_RETRIES) {
+          const delayMs = 150 * completionAttempt + Math.floor(Math.random() * 100)
+          console.warn(
+            `[download] SQLite busy during completion for job ${jobId} (attempt ${completionAttempt}/${MAX_COMPLETION_RETRIES}). Retrying in ${delayMs}ms...`
+          )
+          await new Promise((resolve) => setTimeout(resolve, delayMs))
+          continue
+        }
+
+        // If it's an SQLite lock error that exhausted all retries, classify clearly
+        if (isSqliteBusyError(completionError)) {
+          throw new DownloadError(
+            DOWNLOAD_ERROR_CODES.DATABASE_ERROR,
+            'The database was temporarily busy and could not record download completion. Please retry.',
+            { cause: completionError }
+          )
+        }
+
+        throw completionError
       }
-
-      return {
-        savedFile,
-        completedJob
-      }
-    })
+    }
 
     // Safely clean up job-owned temporary workspace after successful completion
     try {
@@ -1328,29 +1451,39 @@ export async function updateDownloadJobProgress(jobId, overallPercent) {
   // 4. Get the DownloadJob model
   const DownloadJob = getDatabase().models.DownloadJob
 
-  // 5. Update only an active job with lower progress
-  const [updatedCount] = await DownloadJob.update(
-    {
-      progress: safePercent
-    },
-    {
-      where: {
-        id: jobId,
-        status: 'downloading',
-        progress: {
-          [Op.lt]: safePercent
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      // 5. Update only an active job with lower progress
+      const [updatedCount] = await DownloadJob.update(
+        {
+          progress: safePercent
+        },
+        {
+          where: {
+            id: jobId,
+            status: 'downloading',
+            progress: {
+              [Op.lt]: safePercent
+            }
+          }
         }
+      )
+
+      // 6. Return null if nothing was updated
+      if (updatedCount !== 1) {
+        return null
       }
+
+      // 7. Return the updated Download Job
+      return await DownloadJob.findByPk(jobId)
+    } catch (updateError) {
+      if (isSqliteBusyError(updateError) && attempt < 3) {
+        await new Promise((resolve) => setTimeout(resolve, 50 * attempt))
+        continue
+      }
+      throw updateError
     }
-  )
-
-  // 6. Return null if nothing was updated
-  if (updatedCount !== 1) {
-    return null
   }
-
-  // 7. Return the updated Download Job
-  return await DownloadJob.findByPk(jobId)
 }
 
 export async function updateDownloadJobDownloadedBytes(jobId, downloadedBytes) {
@@ -1365,27 +1498,37 @@ export async function updateDownloadJobDownloadedBytes(jobId, downloadedBytes) {
 
   const DownloadJob = getDatabase().models.DownloadJob
 
-  // Update only an active job with higher byte count
-  const [updatedCount] = await DownloadJob.update(
-    {
-      downloaded_bytes: downloadedBytes
-    },
-    {
-      where: {
-        id: jobId,
-        status: 'downloading',
-        downloaded_bytes: {
-          [Op.lt]: downloadedBytes
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      // Update only an active job with higher byte count
+      const [updatedCount] = await DownloadJob.update(
+        {
+          downloaded_bytes: downloadedBytes
+        },
+        {
+          where: {
+            id: jobId,
+            status: 'downloading',
+            downloaded_bytes: {
+              [Op.lt]: downloadedBytes
+            }
+          }
         }
+      )
+
+      if (updatedCount !== 1) {
+        return null
       }
+
+      return await DownloadJob.findByPk(jobId)
+    } catch (updateError) {
+      if (isSqliteBusyError(updateError) && attempt < 3) {
+        await new Promise((resolve) => setTimeout(resolve, 50 * attempt))
+        continue
+      }
+      throw updateError
     }
-  )
-
-  if (updatedCount !== 1) {
-    return null
   }
-
-  return await DownloadJob.findByPk(jobId)
 }
 
 export function calculateOverallDownloadProgress(outputFormat, streamPercent) {
