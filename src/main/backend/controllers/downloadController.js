@@ -1,11 +1,12 @@
 
 import {
   createDownloadJob,
-  executeDownloadJob,
   getDownloadJobDetails,
   listDownloadJobs,
   SUPPORTED_MP3_BITRATES
 } from '../services/downloadService.js'
+
+import { enqueueDownloadJob } from '../services/downloadQueueService.js'
 
 import { getDatabase } from '../config/database.js'
 import { analyzeMedia } from '../services/mediaAnalyzerService.js'
@@ -94,14 +95,8 @@ export async function createDownloadJobController(req, res, next) {
       audioBitrateKbps
     })
 
-
-  void executeDownloadJob(job.id).catch((error) => {
-    console.error(
-      `Download Job ${job.id} execution failed:`,
-      error
-    )
-  })
-
+    // Add the new download job to the managed queue
+    enqueueDownloadJob(job.id)
 
     return res.status(201).json({
       success: true,

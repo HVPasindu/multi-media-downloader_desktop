@@ -18,6 +18,59 @@ export const SUPPORTED_MP3_BITRATES = Object.freeze([
   320
 ])
 
+// Track yt-dlp processes for actively running jobs
+const activeDownloadProcesses = new Map()
+
+// Custom error to distinguish intentional cancellation from unexpected errors
+export class DownloadCancelledError extends Error {
+  constructor(message = 'Download was cancelled') {
+    super(message)
+    this.name = 'DownloadCancelledError'
+  }
+}
+
+// Safely terminate process tree (including yt-dlp and ffmpeg subprocesses)
+async function terminateDownloadProcessTree(childProcess) {
+  if (
+    !childProcess ||
+    typeof childProcess.pid !== 'number' ||
+    childProcess.killed
+  ) {
+    return
+  }
+
+  const pid = childProcess.pid
+
+  if (process.platform === 'win32') {
+    try {
+      await execFileAsync('taskkill.exe', ['/PID', String(pid), '/T', '/F'], {
+        windowsHide: true
+      })
+    } catch (error) {
+      const message = String(error?.message || '')
+      if (
+        message.includes('not found') ||
+        message.includes('No process') ||
+        error?.code === 128
+      ) {
+        return
+      }
+
+      try {
+        childProcess.kill('SIGKILL')
+      } catch {
+        // Process might already be dead
+      }
+    }
+  } else {
+    try {
+      childProcess.kill('SIGTERM')
+    } catch {
+      // Process might already be dead
+    }
+  }
+}
+
 export async function createDownloadJob({
   mediaItemId,
   outputFormat,
@@ -162,7 +215,7 @@ const args = [
 
 
 
-export function runYtDlp(args, onProgress = null,onOutputLine = null) {
+export function runYtDlp(args, onProgress = null, onOutputLine = null, options = {}) {
   if (
     !Array.isArray(args) ||
     args.length === 0 ||
@@ -179,6 +232,39 @@ export function runYtDlp(args, onProgress = null,onOutputLine = null) {
         PYTHONIOENCODING: 'utf-8'
       }
     })
+
+    const processEntry = {
+      childProcess: child,
+      cancelRequested: false
+    }
+
+    if (options?.jobId) {
+      activeDownloadProcesses.set(options.jobId, processEntry)
+    }
+
+    let isSettled = false
+
+    const settleReject = (err) => {
+      if (isSettled) return
+      isSettled = true
+
+      if (options?.jobId) {
+        activeDownloadProcesses.delete(options.jobId)
+      }
+
+      reject(err)
+    }
+
+    const settleResolve = (val) => {
+      if (isSettled) return
+      isSettled = true
+
+      if (options?.jobId) {
+        activeDownloadProcesses.delete(options.jobId)
+      }
+
+      resolve(val)
+    }
 
     let errorOutput = ''
     let stdoutBuffer = ''
@@ -261,20 +347,30 @@ export function runYtDlp(args, onProgress = null,onOutputLine = null) {
 
     // Handle failure to start yt-dlp
     child.once('error', (error) => {
-      reject(
+      if (processEntry.cancelRequested) {
+        settleReject(new DownloadCancelledError('Download was cancelled'))
+        return
+      }
+
+      settleReject(
         new Error(`Could not start yt-dlp: ${error.message}`)
       )
     })
 
     // Handle process completion
     child.once('close', (exitCode, signal) => {
+      if (processEntry.cancelRequested) {
+        settleReject(new DownloadCancelledError('Download was cancelled'))
+        return
+      }
+
       // Process any remaining output
       if (stdoutBuffer.trim()) {
         handleOutputLine(stdoutBuffer)
       }
 
       if (exitCode === 0) {
-        resolve({
+        settleResolve({
           success: true,
           exitCode,
           finalFilePath
@@ -287,7 +383,7 @@ export function runYtDlp(args, onProgress = null,onOutputLine = null) {
         ? `signal ${signal}`
         : `exit code ${exitCode}`
 
-      reject(
+      settleReject(
         new Error(
           `yt-dlp failed (${reason}). ${errorOutput.trim()}`
         )
@@ -402,6 +498,73 @@ export async function markDownloadJobFailed(jobId, error, expectedStatus = 'down
   }
 
   return await DownloadJob.findByPk(jobId)
+}
+
+export async function markDownloadJobCancelled(jobId) {
+  if (!Number.isInteger(jobId) || jobId <= 0) {
+    throw new Error('A valid Download Job ID is required')
+  }
+
+  const DownloadJob = getDatabase().models.DownloadJob
+
+  const [updatedCount] = await DownloadJob.update(
+    {
+      status: 'cancelled',
+      error_message: null
+    },
+    {
+      where: {
+        id: jobId,
+        status: 'downloading'
+      }
+    }
+  )
+
+  if (updatedCount !== 1) {
+    return null
+  }
+
+  return await DownloadJob.findByPk(jobId)
+}
+
+export async function cancelRunningDownload(jobId) {
+  if (!Number.isSafeInteger(jobId) || jobId <= 0) {
+    throw new Error('A valid Download Job ID is required')
+  }
+
+  const processEntry = activeDownloadProcesses.get(jobId)
+
+  if (!processEntry || !processEntry.childProcess) {
+    return {
+      success: false,
+      reason: 'not_running'
+    }
+  }
+
+  // Prevent duplicate termination requests
+  if (processEntry.cancelRequested) {
+    return {
+      success: true,
+      alreadyCancelling: true
+    }
+  }
+
+  processEntry.cancelRequested = true
+
+  try {
+    await terminateDownloadProcessTree(processEntry.childProcess)
+  } catch (error) {
+    console.error(`[download] Error terminating process for job ${jobId}:`, error)
+    return {
+      success: false,
+      reason: 'termination_failed',
+      error: error.message
+    }
+  }
+
+  return {
+    success: true
+  }
 }
 
 
@@ -969,8 +1132,10 @@ const scheduleDownloadedBytes = (
 
     scheduleOverallProgress(overallPercent)
   }
-}
+},
 
+      // Options for process tracking & safe cancellation
+      { jobId }
     )
 
     // Flush any remaining downloaded bytes
@@ -1034,6 +1199,26 @@ await progressWriteChain
   } catch (error) {
     // Complete any pending progress database writes
     await progressWriteChain
+
+    if (error instanceof DownloadCancelledError) {
+      try {
+        const cancelledJob = await markDownloadJobCancelled(jobId)
+
+        if (!cancelledJob) {
+          console.error(
+            'Could not mark Download Job as cancelled:',
+            jobId
+          )
+        }
+      } catch (statusError) {
+        console.error(
+          'Could not save cancelled job status:',
+          statusError
+        )
+      }
+
+      throw error
+    }
 
     try {
       const failedJob = await markDownloadJobFailed(
