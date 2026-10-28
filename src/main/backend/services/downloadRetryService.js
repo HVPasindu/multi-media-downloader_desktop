@@ -5,6 +5,7 @@ import {
   markDownloadJobFailed
 } from './downloadService.js'
 import { enqueueDownloadJob } from './downloadQueueService.js'
+import { findActiveDuplicateDownload } from './downloadDuplicateService.js'
 
 // Track currently processing retry requests to prevent concurrent double-click requests
 const retryRequestsInProgress = new Set()
@@ -82,6 +83,23 @@ export async function retryDownloadJob(originalJobId) {
       return {
         outcome: 'media_missing',
         message: 'Related media item or source URL not found'
+      }
+    }
+
+    // Check if an equivalent download is already active (queued or downloading)
+    const activeDuplicate = await findActiveDuplicateDownload({
+      sourceUrl: media.source_url,
+      mediaItemId: originalJob.media_id,
+      outputFormat: originalJob.output_format,
+      quality: originalJob.quality,
+      audioBitrateKbps: originalJob.audio_bitrate_kbps
+    })
+
+    if (activeDuplicate) {
+      activeRetryJobs.set(originalJobId, activeDuplicate.id)
+      return {
+        outcome: 'retry_in_progress',
+        message: 'An equivalent download is already in progress'
       }
     }
 

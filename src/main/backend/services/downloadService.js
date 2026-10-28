@@ -123,13 +123,45 @@ export async function createDownloadJob({
 
 
 
+export function buildJobOutputTemplate({
+  jobId,
+  outputFormat,
+  quality = null,
+  audioBitrateKbps = null
+}) {
+  if (!Number.isSafeInteger(jobId) || jobId <= 0) {
+    throw new Error('A valid Download Job ID is required')
+  }
+
+  if (!['mp4', 'mp3'].includes(outputFormat)) {
+    throw new Error('Output format must be mp4 or mp3')
+  }
+
+  let variant = ''
+
+  if (outputFormat === 'mp3') {
+    if (!SUPPORTED_MP3_BITRATES.includes(audioBitrateKbps)) {
+      throw new Error('A valid audio bitrate is required')
+    }
+    variant = `${audioBitrateKbps}kbps`
+  } else if (outputFormat === 'mp4') {
+    if (typeof quality !== 'string' || !/^\d+p$/.test(quality)) {
+      throw new Error('A valid video quality is required')
+    }
+    variant = quality
+  }
+
+  return `%(title).150B [%(id)s] [${variant}] [job-${jobId}].%(ext)s`
+}
+
 export function buildYtDlpArgs({
   sourceUrl,
   outputFormat,
   quality = null,
   audioBitrateKbps = null,
   downloadPath,
-  mp4FormatSelector = null
+  mp4FormatSelector = null,
+  jobId = null
 }) {
   if (typeof sourceUrl !== 'string' || !sourceUrl.trim()) {
     throw new Error('A valid source URL is required')
@@ -139,28 +171,37 @@ export function buildYtDlpArgs({
     throw new Error('A valid download folder is required')
   }
 
+  // Use unique job output template if a valid Job ID is provided, otherwise fall back to legacy template
+  const outputTemplate =
+    Number.isSafeInteger(jobId) && jobId > 0
+      ? buildJobOutputTemplate({
+          jobId,
+          outputFormat,
+          quality,
+          audioBitrateKbps
+        })
+      : '%(title).180B [%(id)s].%(ext)s'
 
+  const args = [
+    '--js-runtimes', 'node',
+    '--encoding', 'utf-8',
+    '--no-playlist',
+    '--no-simulate',
+    '--progress',
+    '--newline',
 
-const args = [
-  '--js-runtimes', 'node',
-  '--encoding', 'utf-8',
-  '--no-playlist',
-  '--no-simulate',
-  '--progress',
-  '--newline',
+    // Structured download progress output
+    '--progress-template',
+    'download:[download] %(progress._percent_str)s APPLAN2_PROGRESS:%(progress.{status,downloaded_bytes,total_bytes,total_bytes_estimate,filename})j',
 
-  // Structured download progress output
-  '--progress-template',
-  'download:[download] %(progress._percent_str)s APPLAN2_PROGRESS:%(progress.{status,downloaded_bytes,total_bytes,total_bytes_estimate,filename})j',
+    // Structured post-processing events
+    '--progress-template',
+    'postprocess:APPLAN2_POSTPROCESS:%(progress.{status,postprocessor})j',
 
-  // Structured post-processing events
-  '--progress-template',
-  'postprocess:APPLAN2_POSTPROCESS:%(progress.{status,postprocessor})j',
-
-  // Keep the existing download folder and filename format
-  '-P', downloadPath,
-  '-o', '%(title).180B [%(id)s].%(ext)s'
-]
+    // Keep the existing download folder and filename format
+    '-P', downloadPath,
+    '-o', outputTemplate
+  ]
 
 
 
@@ -693,7 +734,8 @@ export async function prepareDownloadJobExecution(jobId) {
     quality: job.quality,
     audioBitrateKbps: job.audio_bitrate_kbps,
     downloadPath,
-    mp4FormatSelector
+    mp4FormatSelector,
+    jobId: job.id
   })
 
   return {

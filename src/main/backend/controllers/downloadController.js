@@ -3,6 +3,7 @@ import {
   createDownloadJob,
   getDownloadJobDetails,
   listDownloadJobs,
+  markDownloadJobFailed,
   SUPPORTED_MP3_BITRATES
 } from '../services/downloadService.js'
 
@@ -12,6 +13,12 @@ import {
 } from '../services/downloadQueueService.js'
 
 import { retryDownloadJob } from '../services/downloadRetryService.js'
+
+import {
+  buildDownloadRequestIdentity,
+  findActiveDuplicateDownload,
+  withDownloadCreationGuard
+} from '../services/downloadDuplicateService.js'
 
 import { getDatabase } from '../config/database.js'
 import { analyzeMedia } from '../services/mediaAnalyzerService.js'
@@ -52,30 +59,29 @@ export async function createDownloadJobController(req, res, next) {
       })
     }
 
+    const MediaItem = getDatabase().models.MediaItem
+
+    const media = await MediaItem.findByPk(mediaItemId)
+
+    if (!media) {
+      return res.status(404).json({
+        success: false,
+        message: 'Media Item not found'
+      })
+    }
+
+    if (
+      typeof media.source_url !== 'string' ||
+      !media.source_url.trim()
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: 'Media source URL is missing'
+      })
+    }
 
     // Validate the requested MP4 quality before creating a job
     if (outputFormat === 'mp4') {
-      const MediaItem = getDatabase().models.MediaItem
-
-      const media = await MediaItem.findByPk(mediaItemId)
-
-      if (!media) {
-        return res.status(404).json({
-          success: false,
-          message: 'Media Item not found'
-        })
-      }
-
-      if (
-        typeof media.source_url !== 'string' ||
-        !media.source_url.trim()
-      ) {
-        return res.status(400).json({
-          success: false,
-          message: 'Media source URL is missing'
-        })
-      }
-
       // Reuse the existing analyzer
       const analysis = await analyzeMedia(media.source_url)
 
@@ -91,18 +97,72 @@ export async function createDownloadJobController(req, res, next) {
       }
     }
 
-
-    // Create the download job in SQLite
-    const job = await createDownloadJob({
-      mediaItemId,
+    // Build unique request identity for duplicate synchronization
+    const requestIdentity = buildDownloadRequestIdentity({
+      sourceUrl: media.source_url,
       outputFormat,
       quality,
       audioBitrateKbps
     })
 
-    // Add the new download job to the managed queue
-    enqueueDownloadJob(job.id)
+    // Guard against simultaneous creation races and check for active duplicate jobs
+    const { job, duplicate } = await withDownloadCreationGuard(
+      requestIdentity,
+      async () => {
+        // Check if an equivalent download is already active (queued or downloading)
+        const activeDuplicate = await findActiveDuplicateDownload({
+          sourceUrl: media.source_url,
+          mediaItemId,
+          outputFormat,
+          quality,
+          audioBitrateKbps
+        })
 
+        if (activeDuplicate) {
+          return {
+            job: activeDuplicate,
+            duplicate: true
+          }
+        }
+
+        // Create the new download job in SQLite
+        const newJob = await createDownloadJob({
+          mediaItemId,
+          outputFormat,
+          quality,
+          audioBitrateKbps
+        })
+
+        // Add the new download job to the managed queue
+        try {
+          enqueueDownloadJob(newJob.id)
+        } catch (enqueueError) {
+          try {
+            await markDownloadJobFailed(newJob.id, enqueueError, 'queued')
+          } catch (markError) {
+            console.error(`Could not mark job ${newJob.id} as failed:`, markError)
+          }
+          throw enqueueError
+        }
+
+        return {
+          job: newJob,
+          duplicate: false
+        }
+      }
+    )
+
+    // Return existing active job details if request is an active duplicate
+    if (duplicate) {
+      return res.status(200).json({
+        success: true,
+        data: job.toJSON(),
+        duplicate: true,
+        message: 'An equivalent download is already queued or running'
+      })
+    }
+
+    // Return 201 Created for a genuinely new download job
     return res.status(201).json({
       success: true,
       data: job.toJSON()
