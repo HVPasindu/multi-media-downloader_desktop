@@ -1,0 +1,756 @@
+openapi: 3.1.0
+info:
+  title: Multi-Platform Media Downloader Local API
+  description: Desktop-local Express REST API powering the Electron + React desktop media downloader application.
+  version: 1.0.0
+servers:
+  - url: http://127.0.0.1:3001
+    description: Local loopback server
+paths:
+  /api/health:
+    get:
+      summary: Health check
+      description: Returns service availability status. Public on local loopback without authentication.
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+  /api/media/analyze:
+    post:
+      summary: Analyze media URL
+      description: Validates supported platform URL and extracts format metadata using yt-dlp.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AnalyzeMediaRequest'
+      responses:
+        '200':
+          description: Media metadata extracted successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnalyzeMediaResponse'
+        '400':
+          description: Invalid or unsupported media URL
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/downloads:
+    post:
+      summary: Create or reuse download job
+      description: Creates a new queued download job or returns active duplicate download.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateDownloadRequest'
+      responses:
+        '201':
+          description: New download job created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateDownloadResponse'
+        '200':
+          description: Active duplicate download reused
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateDownloadResponse'
+        '400':
+          description: Invalid parameters or unsafe stored source URL
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Media item not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    get:
+      summary: List download history
+      description: Returns filtered and paginated list of download history jobs.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [queued, downloading, completed, failed, cancelled]
+        - name: outputFormat
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [mp4, mp3]
+        - name: sourceType
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [link]
+        - name: from
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: to
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 20
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: List of download history items
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DownloadHistoryListResponse'
+        '400':
+          description: Invalid query filter parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/downloads/{id}:
+    get:
+      summary: Get download job details
+      description: Returns detailed execution status and file record for a specific job.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Download job details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobDetailsResponse'
+        '400':
+          description: Invalid job ID
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Download job not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    delete:
+      summary: Delete single history record
+      description: Deletes a terminal download history entry from SQLite (does not delete media file on disk).
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Record deleted successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessMessageResponse'
+        '404':
+          description: Download job not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Cannot delete an active (queued or downloading) job
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/downloads/{id}/cancel:
+    post:
+      summary: Cancel download job
+      description: Cancels a queued or currently executing download job.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Queued job cancelled immediately
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CancelResponse'
+        '202':
+          description: Cancellation requested for running job
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CancelResponse'
+        '404':
+          description: Download job not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Ineligible job status (already completed or failed)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/downloads/{id}/retry:
+    post:
+      summary: Retry failed or cancelled download job
+      description: Re-enqueues an identical download job referencing the original failed/cancelled job.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '201':
+          description: Retry job created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RetryResponse'
+        '400':
+          description: Stored URL failed security validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Original job not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Job is not failed/cancelled or retry already in progress
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/downloads/history:
+    delete:
+      summary: Clear terminal download history
+      description: Bulk deletes completed, failed, or cancelled download history entries from SQLite.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [confirm, statuses]
+              properties:
+                confirm:
+                  type: boolean
+                  example: true
+                statuses:
+                  type: array
+                  items:
+                    type: string
+                    enum: [completed, failed, cancelled]
+                  example: [completed, failed, cancelled]
+      responses:
+        '200':
+          description: History cleared successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClearHistoryResponse'
+        '400':
+          description: Missing confirm=true or invalid statuses
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/settings/downloads:
+    get:
+      summary: Get download preferences
+      description: Retrieves configured download directory, format, and quality settings.
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Current download preferences
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SettingsResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    patch:
+      summary: Update download preferences
+      description: Updates download directory, default format, or preferred quality.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateSettingsRequest'
+      responses:
+        '200':
+          description: Settings updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UpdateSettingsResponse'
+        '400':
+          description: Invalid path, non-existent folder, or invalid format/quality
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Cannot change download path while downloads are active
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: High-entropy 256-bit session token generated at application startup.
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid session token
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            message: Unauthorized API request
+    Forbidden:
+      description: Disallowed Host header or CORS origin
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            message: 'Forbidden: Invalid Host header'
+    InternalError:
+      description: Unexpected internal server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/InternalErrorResponse'
+          example:
+            status: error
+            message: Internal server error
+
+  schemas:
+    HealthResponse:
+      type: object
+      required: [status, message]
+      properties:
+        status:
+          type: string
+          example: ok
+        message:
+          type: string
+          example: Multi Media Downloader API is running
+
+    AnalyzeMediaRequest:
+      type: object
+      required: [url]
+      properties:
+        url:
+          type: string
+          maxLength: 2048
+          example: https://www.youtube.com/watch?v=dQw4w9WgXcQ
+
+    AnalyzeMediaResponse:
+      type: object
+      required: [success, data]
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: object
+          required:
+            [
+              id,
+              platform,
+              sourceUrl,
+              title,
+              videoQualities,
+              audioOptions,
+              availableFormats,
+              mediaItemId
+            ]
+          properties:
+            id:
+              type: string
+              example: dQw4w9WgXcQ
+            platform:
+              type: string
+              enum: [youtube, facebook, instagram, tiktok, twitter]
+            sourceUrl:
+              type: string
+            title:
+              type: string
+            thumbnailUrl:
+              type: [string, 'null']
+            durationSeconds:
+              type: [integer, 'null']
+            videoQualities:
+              type: array
+              items:
+                type: string
+            audioOptions:
+              type: array
+              items:
+                type: string
+            availableFormats:
+              type: object
+              required: [mp4Qualities, mp4Formats, audioFormats]
+              properties:
+                mp4Qualities:
+                  type: array
+                  items:
+                    type: string
+                mp4Formats:
+                  type: array
+                  items:
+                    type: object
+                audioFormats:
+                  type: array
+                  items:
+                    type: object
+            mediaItemId:
+              type: integer
+              example: 1
+
+    CreateDownloadRequest:
+      type: object
+      required: [mediaItemId, outputFormat]
+      properties:
+        mediaItemId:
+          type: integer
+          example: 1
+        outputFormat:
+          type: string
+          enum: [mp4, mp3]
+        quality:
+          type: string
+          pattern: '^\d+p$'
+          example: 1080p
+        audioBitrateKbps:
+          type: integer
+          enum: [128, 192, 320]
+          example: 320
+
+    CreateDownloadResponse:
+      type: object
+      required: [success, data]
+      properties:
+        success:
+          type: boolean
+          example: true
+        duplicate:
+          type: boolean
+          example: false
+        message:
+          type: string
+        data:
+          type: object
+          required: [id, status, output_format]
+          properties:
+            id:
+              type: integer
+              example: 12
+            media_id:
+              type: integer
+            status:
+              type: string
+              enum: [queued, downloading]
+            output_format:
+              type: string
+              enum: [mp4, mp3]
+            quality:
+              type: [string, 'null']
+            audio_bitrate_kbps:
+              type: [integer, 'null']
+
+    DownloadHistoryListResponse:
+      type: object
+      required: [success, data]
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/DownloadHistoryItem'
+
+    DownloadHistoryItem:
+      type: object
+      required: [id, status, output_format, progress, downloaded_bytes, created_at, updated_at]
+      properties:
+        id:
+          type: integer
+        status:
+          type: string
+          enum: [queued, downloading, completed, failed, cancelled]
+        output_format:
+          type: string
+          enum: [mp4, mp3]
+        quality:
+          type: [string, 'null']
+        audio_bitrate_kbps:
+          type: [integer, 'null']
+        progress:
+          type: number
+        downloaded_bytes:
+          type: number
+        total_bytes:
+          type: [number, 'null']
+        error_message:
+          type: [string, 'null']
+        created_at:
+          type: string
+        updated_at:
+          type: string
+        media:
+          type: object
+        file:
+          type: [object, 'null']
+
+    JobDetailsResponse:
+      type: object
+      required: [success, data]
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: object
+          required: [job, file]
+          properties:
+            job:
+              type: object
+            file:
+              type: [object, 'null']
+
+    CancelResponse:
+      type: object
+      required: [success, data]
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: object
+          required: [id, status]
+          properties:
+            id:
+              type: integer
+            status:
+              type: string
+              enum: [cancelled, cancellation_requested]
+            message:
+              type: string
+
+    RetryResponse:
+      type: object
+      required: [success, data]
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: object
+          required: [originalJobId, retryJobId, status, message]
+          properties:
+            originalJobId:
+              type: integer
+            retryJobId:
+              type: integer
+            status:
+              type: string
+              enum: [queued, downloading]
+            message:
+              type: string
+
+    SettingsResponse:
+      type: object
+      required: [success, data]
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          $ref: '#/components/schemas/SettingsData'
+
+    UpdateSettingsRequest:
+      type: object
+      properties:
+        downloadPath:
+          type: string
+        defaultFormat:
+          type: string
+          enum: [mp4, mp3]
+        preferredMp4Quality:
+          type: string
+        preferredMp3BitrateKbps:
+          type: integer
+          enum: [128, 192, 320]
+
+    UpdateSettingsResponse:
+      type: object
+      required: [success, data]
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          $ref: '#/components/schemas/SettingsData'
+
+    SettingsData:
+      type: object
+      required: [downloadPath, defaultFormat, preferredMp4Quality, preferredMp3BitrateKbps]
+      properties:
+        downloadPath:
+          type: string
+        defaultFormat:
+          type: string
+          enum: [mp4, mp3]
+        preferredMp4Quality:
+          type: string
+        preferredMp3BitrateKbps:
+          type: integer
+          enum: [128, 192, 320]
+
+    SuccessMessageResponse:
+      type: object
+      required: [success, message]
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+
+    ClearHistoryResponse:
+      type: object
+      required: [success, message, data]
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+        data:
+          type: object
+          required: [deletedJobs, physicalFilesDeleted]
+          properties:
+            deletedJobs:
+              type: integer
+            physicalFilesDeleted:
+              type: integer
+
+    ErrorResponse:
+      type: object
+      required: [success, message]
+      properties:
+        success:
+          type: boolean
+          example: false
+        message:
+          type: string
+
+    InternalErrorResponse:
+      type: object
+      required: [status, message]
+      properties:
+        status:
+          type: string
+          example: error
+        message:
+          type: string
+          example: Internal server error

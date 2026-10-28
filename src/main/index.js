@@ -13,6 +13,7 @@ import {
   validateDownloadFolder,
   verifyDownloadFolderWritable
 } from './backend/services/downloadFileSafetyService.js'
+import { getSessionToken } from './backend/services/localApiSecurityService.js'
 
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
@@ -130,6 +131,62 @@ app.whenReady().then(async () => {
       }
 
       return await getDefaultDownloadPath()
+    })
+
+    // Step 04.41 - Provide a secure, authenticated IPC bridge for renderer API requests
+    ipcMain.handle('api:request', async (event, requestOptions) => {
+      // 1. Validate IPC sender - must originate from the trusted application window
+      const ownerWindow = BrowserWindow.fromWebContents(event.sender)
+      if (!ownerWindow || ownerWindow.isDestroyed()) {
+        throw new Error('Unauthorized IPC sender')
+      }
+
+      // 2. Validate request options
+      if (!requestOptions || typeof requestOptions !== 'object') {
+        throw new Error('Invalid API request options')
+      }
+
+      const { path: apiPath, method = 'GET', body = null } = requestOptions
+
+      if (typeof apiPath !== 'string' || !apiPath.startsWith('/api/')) {
+        throw new Error('API path must start with /api/')
+      }
+
+      // Reject path traversal
+      if (apiPath.includes('..') || apiPath.includes('//')) {
+        throw new Error('Invalid API path structure')
+      }
+
+      const upperMethod = typeof method === 'string' ? method.toUpperCase() : 'GET'
+      const allowedMethods = ['GET', 'POST', 'PATCH', 'DELETE']
+      if (!allowedMethods.includes(upperMethod)) {
+        throw new Error(`Method ${upperMethod} is not permitted`)
+      }
+
+      // 3. Issue local HTTP request to 127.0.0.1:3001 with active session token
+      const token = getSessionToken()
+      const url = `http://127.0.0.1:3001${apiPath}`
+
+      const fetchOptions = {
+        method: upperMethod,
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        }
+      }
+
+      if (body && ['POST', 'PATCH'].includes(upperMethod)) {
+        fetchOptions.body = JSON.stringify(body)
+      }
+
+      const response = await fetch(url, fetchOptions)
+      const data = await response.json().catch(() => null)
+
+      return {
+        status: response.status,
+        ok: response.ok,
+        data
+      }
     })
   } catch (error) {
     console.error('Application startup failed:', error)
