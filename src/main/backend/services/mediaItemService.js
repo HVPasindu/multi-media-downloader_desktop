@@ -1,17 +1,16 @@
-
 import { getDatabase } from '../config/database.js'
+import { validateMediaUrlSyntax } from './mediaUrlSecurityService.js'
 
 export async function saveMediaItem(metadata) {
   // Validate the source URL
-  if (
-    !metadata ||
-    typeof metadata.sourceUrl !== 'string' ||
-    !metadata.sourceUrl.trim()
-  ) {
+  if (!metadata || typeof metadata.sourceUrl !== 'string' || !metadata.sourceUrl.trim()) {
     throw new Error('A valid media source URL is required')
   }
 
   const sourceUrl = metadata.sourceUrl.trim()
+
+  // Validate URL syntax, scheme, and supported platform safety before persistence
+  validateMediaUrlSyntax(sourceUrl)
 
   // Get the existing Sequelize model
   const MediaItem = getDatabase().models.MediaItem

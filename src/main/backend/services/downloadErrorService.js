@@ -103,6 +103,18 @@ export function classifyDownloadError(error, context = {}) {
     }
   }
 
+  // Step 04.40 - URL Security failure classification
+  if (error?.name === 'UrlSecurityError') {
+    const isDnsFailure = error.code === 'DNS_LOOKUP_FAILED'
+    return {
+      code: isDnsFailure
+        ? DOWNLOAD_ERROR_CODES.NETWORK_ERROR
+        : DOWNLOAD_ERROR_CODES.SOURCE_ACCESS_DENIED,
+      message: error.userMessage || DEFAULT_ERROR_MESSAGES.SOURCE_ACCESS_DENIED,
+      technicalDetails: error.message
+    }
+  }
+
   // 3. Already formatted message check: "[CODE] Message"
   const rawErrorMessage = typeof error === 'string' ? error : error?.message
   if (typeof rawErrorMessage === 'string' && /^\[[A-Z_]+\]\s/.test(rawErrorMessage)) {

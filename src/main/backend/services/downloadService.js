@@ -6,6 +6,7 @@ import { stat, lstat } from 'node:fs/promises'
 import { basename, extname } from 'node:path'
 import { Op, Transaction } from 'sequelize'
 import { analyzeMedia } from './mediaAnalyzerService.js'
+import { validateMediaUrl } from './mediaUrlSecurityService.js'
 import { promisify } from 'node:util'
 import {
   DownloadError,
@@ -666,6 +667,9 @@ export async function prepareDownloadJobExecution(jobId) {
   if (!media || !media.source_url) {
     throw new Error('Media Item or source URL not found')
   }
+
+  // Step 04.40 - Preflight URL security validation before network execution
+  await validateMediaUrl(media.source_url)
 
   // Get the selected or default download folder
   const savedPath = await getSavedDownloadPath(AppSetting)

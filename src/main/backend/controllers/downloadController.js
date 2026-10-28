@@ -24,6 +24,7 @@ import {
 
 import { getDatabase } from '../config/database.js'
 import { analyzeMedia } from '../services/mediaAnalyzerService.js'
+import { validateMediaUrl } from '../services/mediaUrlSecurityService.js'
 
 export async function createDownloadJobController(req, res, next) {
   try {
@@ -62,6 +63,16 @@ export async function createDownloadJobController(req, res, next) {
       return res.status(400).json({
         success: false,
         message: 'Media source URL is missing'
+      })
+    }
+
+    // Step 04.40 - Revalidate stored media source URL before scheduling download
+    try {
+      await validateMediaUrl(media.source_url)
+    } catch (urlError) {
+      return res.status(400).json({
+        success: false,
+        message: urlError.userMessage || 'Media source URL is invalid or unsafe'
       })
     }
 
@@ -333,6 +344,13 @@ export async function retryDownloadJobController(req, res, next) {
       return res.status(404).json({
         success: false,
         message: result.message || 'Related media item or source URL not found'
+      })
+    }
+
+    if (result.outcome === 'unsafe_url') {
+      return res.status(400).json({
+        success: false,
+        message: result.message || 'Media source URL failed security validation'
       })
     }
 
