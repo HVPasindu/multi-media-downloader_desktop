@@ -31,13 +31,55 @@ export async function analyzeMedia(sourceUrl) {
     }
   )
 
-  const metadata = JSON.parse(stdout)
+
+  // Parse yt-dlp metadata safely
+  let metadata
+
+  try {
+    metadata = JSON.parse(stdout)
+  } catch {
+    throw new Error(
+      'Media Analyzer returned invalid JSON metadata'
+    )
+  }
+
+  // Validate required metadata fields
+  if (
+    !metadata ||
+    typeof metadata !== 'object' ||
+    Array.isArray(metadata) ||
+    typeof metadata.id !== 'string' ||
+    !metadata.id.trim() ||
+    typeof metadata.title !== 'string' ||
+    !metadata.title.trim()
+  ) {
+    throw new Error(
+      'Media metadata is missing required details'
+    )
+  }
+
+  // Validate the formats collection
+  if (
+    metadata.formats != null &&
+    !Array.isArray(metadata.formats)
+  ) {
+    throw new Error(
+      'Media metadata contains an invalid formats list'
+    )
+  }
+
+  const formats = Array.isArray(metadata.formats)
+    ? metadata.formats
+    : []
+
 
 //quality_video
 const qualityHeights = new Set()
 
-for (const format of metadata.formats ?? []) {
+for (const format of formats) {
   if (
+    format &&
+    typeof format === 'object' &&
     typeof format.vcodec === 'string' &&
     format.vcodec !== 'none' &&
     Number.isInteger(format.height) &&
@@ -53,8 +95,12 @@ const videoQualities = [...qualityHeights]
 
 
 //MP3 option
-const hasAudioStream = (metadata.formats ?? []).some(
+
+ //MP3 option
+const hasAudioStream = formats.some(
   (format) =>
+    format &&
+    typeof format === 'object' &&
     format.vcodec === 'none' &&
     typeof format.acodec === 'string' &&
     format.acodec !== 'none'
@@ -63,14 +109,93 @@ const hasAudioStream = (metadata.formats ?? []).some(
 const audioOptions = hasAudioStream ? ['mp3'] : []
 
 
+  // Identify actual downloadable source formats
+  const validFormats = formats.filter(
+    (format) =>
+      format &&
+      typeof format === 'object' &&
+      !Array.isArray(format)
+  )
+
+  // Audio-only source formats
+  const audioFormats = validFormats
+    .filter(
+      (format) =>
+        format.vcodec === 'none' &&
+        typeof format.acodec === 'string' &&
+        format.acodec !== 'none'
+    )
+    .map((format) => ({
+      formatId: format.format_id ?? null,
+      extension: format.ext ?? null,
+      audioCodec: format.acodec
+    }))
+
+  // Our current MP4 download selector uses M4A audio
+  const hasM4aAudio = audioFormats.some(
+    (format) => format.extension === 'm4a'
+  )
+
+  // Find MP4 video sources compatible with our selector
+  const mp4Formats = validFormats
+    .filter((format) => {
+      const hasVideo =
+        typeof format.vcodec === 'string' &&
+        format.vcodec !== 'none'
+
+      const hasAudio =
+        typeof format.acodec === 'string' &&
+        format.acodec !== 'none'
+
+      return (
+        format.ext === 'mp4' &&
+        hasVideo &&
+        Number.isInteger(format.height) &&
+        format.height > 0 &&
+        (hasAudio || hasM4aAudio)
+      )
+    })
+    .map((format) => ({
+      formatId: format.format_id ?? null,
+      quality: `${format.height}p`,
+      height: format.height,
+      videoCodec: format.vcodec,
+      audioIncluded:
+        typeof format.acodec === 'string' &&
+        format.acodec !== 'none'
+    }))
+
+  // Build unique MP4 quality options
+  const mp4Qualities = [
+    ...new Set(
+      mp4Formats.map((format) => format.height)
+    )
+  ]
+    .sort((a, b) => b - a)
+    .map((height) => `${height}p`)
+
+  const availableFormats = {
+    mp4Qualities,
+    mp4Formats,
+    audioFormats
+  }
+
   return {
-    id: metadata.id ?? null,
+    id: metadata.id.trim(),
     platform,
     sourceUrl: cleanUrl,
-    title: metadata.title ?? null,
-    thumbnailUrl: metadata.thumbnail ?? null,
-    durationSeconds: metadata.duration ?? null,
+    title: metadata.title.trim(),
+    thumbnailUrl:
+      typeof metadata.thumbnail === 'string'
+        ? metadata.thumbnail
+        : null,
+    durationSeconds:
+      Number.isFinite(metadata.duration) &&
+      metadata.duration >= 0
+        ? Math.floor(metadata.duration)
+        : null,
     videoQualities,
-    audioOptions
+    audioOptions,
+    availableFormats
   }
 }
