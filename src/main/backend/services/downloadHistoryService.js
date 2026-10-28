@@ -115,6 +115,61 @@ export async function checkFileAvailability(filePath, jobStatus) {
 }
 
 /**
+ * Strictly parses and validates an input date string against real calendar dates,
+ * enforcing valid year, month, days-in-month, and leap years, while supporting
+ * both date-only (YYYY-MM-DD) and full ISO-8601 date-time formats.
+ *
+ * @param {string} input - Raw date string
+ * @param {boolean} [isEndOfDay=false] - If true and date-only, set time to 23:59:59.999Z
+ * @returns {Date|null} Parsed Date or null if invalid
+ */
+export function parseStrictHistoryDate(input, isEndOfDay = false) {
+  if (typeof input !== 'string') return null
+  const str = input.trim()
+  if (!str) return null
+
+  // 1. Strict date-only format: YYYY-MM-DD
+  const dateOnlyMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(str)
+  if (dateOnlyMatch) {
+    const year = Number(dateOnlyMatch[1])
+    const month = Number(dateOnlyMatch[2])
+    const day = Number(dateOnlyMatch[3])
+
+    if (month < 1 || month > 12) return null
+    const maxDays = new Date(Date.UTC(year, month, 0)).getUTCDate()
+    if (day < 1 || day > maxDays) return null
+
+    if (isEndOfDay) {
+      return new Date(Date.UTC(year, month - 1, day, 23, 59, 59, 999))
+    }
+    return new Date(Date.UTC(year, month - 1, day, 0, 0, 0, 0))
+  }
+
+  // 2. Strict full ISO-8601 timestamp: YYYY-MM-DDTHH:mm:ss(.sss)?(Z|[+-]HH:mm)?
+  const isoMatch =
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?$/i.exec(str)
+  if (isoMatch) {
+    const year = Number(isoMatch[1])
+    const month = Number(isoMatch[2])
+    const day = Number(isoMatch[3])
+    const hour = Number(isoMatch[4])
+    const minute = Number(isoMatch[5])
+    const second = Number(isoMatch[6])
+
+    if (month < 1 || month > 12) return null
+    const maxDays = new Date(Date.UTC(year, month, 0)).getUTCDate()
+    if (day < 1 || day > maxDays) return null
+    if (hour > 23 || minute > 59 || second > 59) return null
+
+    const parsed = new Date(str)
+    if (Number.isNaN(parsed.getTime())) return null
+    return parsed
+  }
+
+  return null
+}
+
+/**
  * Validates and normalizes history query parameters.
  *
  * @param {object} query - Express req.query
@@ -179,10 +234,9 @@ export function validateHistoryFilters(query = {}) {
     if (!rawFrom) {
       errors.from = 'The "from" date parameter cannot be empty'
     } else {
-      const isDateOnly = /^\d{4}-\d{2}-\d{2}$/.test(rawFrom)
-      const parsed = isDateOnly ? new Date(`${rawFrom}T00:00:00.000Z`) : new Date(rawFrom)
+      const parsed = parseStrictHistoryDate(rawFrom, false)
 
-      if (Number.isNaN(parsed.getTime())) {
+      if (!parsed || Number.isNaN(parsed.getTime())) {
         errors.from = 'Invalid "from" date format. Use ISO format (e.g. YYYY-MM-DD)'
       } else {
         fromDate = parsed
@@ -195,10 +249,9 @@ export function validateHistoryFilters(query = {}) {
     if (!rawTo) {
       errors.to = 'The "to" date parameter cannot be empty'
     } else {
-      const isDateOnly = /^\d{4}-\d{2}-\d{2}$/.test(rawTo)
-      const parsed = isDateOnly ? new Date(`${rawTo}T23:59:59.999Z`) : new Date(rawTo)
+      const parsed = parseStrictHistoryDate(rawTo, true)
 
-      if (Number.isNaN(parsed.getTime())) {
+      if (!parsed || Number.isNaN(parsed.getTime())) {
         errors.to = 'Invalid "to" date format. Use ISO format (e.g. YYYY-MM-DD)'
       } else {
         toDate = parsed

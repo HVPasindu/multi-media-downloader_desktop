@@ -20,7 +20,8 @@ import {
   verifyDownloadFolderWritable,
   checkDownloadDiskSpace,
   assertNoJobOutputFileConflict,
-  assertPathInsideDirectory
+  assertPathInsideDirectory,
+  assertRealPathInsideDirectory
 } from './downloadFileSafetyService.js'
 
 export {
@@ -33,7 +34,8 @@ export {
   verifyDownloadFolderWritable,
   checkDownloadDiskSpace,
   assertNoJobOutputFileConflict,
-  assertPathInsideDirectory
+  assertPathInsideDirectory,
+  assertRealPathInsideDirectory
 }
 
 const execFileAsync = promisify(execFile)
@@ -815,7 +817,7 @@ export async function verifyDownloadedFile(finalFilePath, options = {}) {
 
   // Step 04.37 - Guard against path traversal if expected download folder is provided
   if (options?.downloadPath) {
-    assertPathInsideDirectory(filePath, options.downloadPath)
+    await assertRealPathInsideDirectory(filePath, options.downloadPath)
   }
 
   // Step 04.37 - Ensure the downloaded output is not a symbolic link or junction

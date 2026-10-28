@@ -6,10 +6,8 @@ import { initializeDatabase } from './backend/config/database.js'
 import { recoverInterruptedDownloadJobs } from './backend/services/downloadRecoveryService.js'
 
 import { getDatabase } from './backend/config/database.js'
-import {
-  saveDownloadPath,
-  getSavedDownloadPath
-} from './backend/services/downloadSettingsService.js'
+import { getSavedDownloadPath } from './backend/services/downloadSettingsService.js'
+import { updateDownloadPreferences } from './backend/services/settingsService.js'
 import { getDefaultDownloadPath } from './backend/services/downloadPathService.js'
 import {
   validateDownloadFolder,
@@ -114,11 +112,12 @@ app.whenReady().then(async () => {
       const validPath = await validateDownloadFolder(selectedPath)
       await verifyDownloadFolderWritable(validPath)
 
-      const AppSetting = getDatabase().models.AppSetting
+      // Reuse Settings API service to enforce active-job safety guard and persistence
+      const updatedPreferences = await updateDownloadPreferences({
+        downloadPath: validPath
+      })
 
-      await saveDownloadPath(AppSetting, validPath)
-
-      return validPath
+      return updatedPreferences.downloadPath
     })
 
     ipcMain.handle('downloads:get-folder', async () => {

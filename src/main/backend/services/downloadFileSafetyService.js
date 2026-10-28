@@ -1,5 +1,5 @@
 import path from 'node:path'
-import { stat, lstat, realpath, access, open, unlink, readdir, constants } from 'node:fs/promises'
+import { stat, realpath, access, open, unlink, readdir, constants } from 'node:fs/promises'
 import { statfs } from 'node:fs/promises'
 import { DownloadError, DOWNLOAD_ERROR_CODES } from './downloadErrorService.js'
 
@@ -86,30 +86,29 @@ export async function validateDownloadFolder(folderPath) {
 
   // Symlink safety: check lstat to see if it's a symlink or junction
   try {
-    const lstatInfo = await lstat(cleanPath)
-    if (lstatInfo.isSymbolicLink()) {
-      // Resolve real path and verify that the target is also not a drive root and is a directory
-      const realDir = await realpath(cleanPath)
-      const realParsed = path.parse(realDir)
-      const realIsDriveRoot =
-        realDir.toLowerCase() === realParsed.root.toLowerCase() ||
-        realDir.replace(/[\\/]+$/, '').toLowerCase() ===
-          realParsed.root.replace(/[\\/]+$/, '').toLowerCase()
+    // Resolve real canonical filesystem path to ensure neither the folder nor any intermediate links target a drive root
+    const realDir = await realpath(cleanPath)
+    const realParsed = path.parse(realDir)
+    const realIsDriveRoot =
+      realDir.toLowerCase() === realParsed.root.toLowerCase() ||
+      realDir.replace(/[\\/]+$/, '').toLowerCase() ===
+        realParsed.root.replace(/[\\/]+$/, '').toLowerCase()
 
-      if (realIsDriveRoot) {
-        throw new Error(
-          'Symbolic link targets a root drive directory, which cannot be used as the download folder'
-        )
-      }
+    if (realIsDriveRoot) {
+      throw new Error(
+        'Symbolic link targets a root drive directory, which cannot be used as the download folder'
+      )
+    }
 
-      const realStat = await stat(realDir)
-      if (!realStat.isDirectory()) {
-        throw new Error('Symbolic link target is not a directory')
-      }
+    const realStat = await stat(realDir)
+    if (!realStat.isDirectory()) {
+      throw new Error('Symbolic link target is not a directory')
     }
   } catch (symlinkError) {
     if (symlinkError.code === 'ENOENT') {
       throw new Error('The specified download directory does not exist')
+    } else if (['EACCES', 'EPERM'].includes(symlinkError.code)) {
+      throw new Error('The application does not have permission to access or write to this folder')
     }
     throw symlinkError
   }
@@ -142,26 +141,48 @@ export async function verifyDownloadFolderWritable(folderPath) {
   }
 
   // 2. Perform safe, temporary write probe with exclusive creation flag ('wx')
-  const randomSuffix = Math.random().toString(36).slice(2, 10)
-  const probeName = `.applan2-probe-${Date.now()}-${randomSuffix}.tmp`
-  const probePath = path.join(cleanPath, probeName)
-
   let fileHandle = null
+  let probeCreated = false
+  let probePath = null
+  const MAX_PROBE_ATTEMPTS = 3
+
   try {
-    fileHandle = await open(probePath, 'wx')
-  } catch (probeError) {
-    if (['EACCES', 'EPERM', 'EROFS'].includes(probeError.code)) {
-      throw new DownloadError(
-        DOWNLOAD_ERROR_CODES.PERMISSION_DENIED,
-        'The application cannot write to the selected download folder.',
-        { cause: probeError }
-      )
+    for (let attempt = 1; attempt <= MAX_PROBE_ATTEMPTS; attempt++) {
+      const randomSuffix = Math.random().toString(36).slice(2, 10)
+      const probeName = `.applan2-probe-${Date.now()}-${randomSuffix}.tmp`
+      const candidatePath = path.join(cleanPath, probeName)
+
+      try {
+        fileHandle = await open(candidatePath, 'wx')
+        probePath = candidatePath
+        probeCreated = true
+        break
+      } catch (probeError) {
+        if (probeError.code === 'EEXIST') {
+          // Bounded retry if probe filename collided with an existing file
+          if (attempt < MAX_PROBE_ATTEMPTS) {
+            continue
+          }
+          throw new DownloadError(
+            DOWNLOAD_ERROR_CODES.PERMISSION_DENIED,
+            'Unable to acquire temporary write probe: filename collision after multiple attempts',
+            { cause: probeError }
+          )
+        }
+        if (['EACCES', 'EPERM', 'EROFS'].includes(probeError.code)) {
+          throw new DownloadError(
+            DOWNLOAD_ERROR_CODES.PERMISSION_DENIED,
+            'The application cannot write to the selected download folder.',
+            { cause: probeError }
+          )
+        }
+        throw new DownloadError(
+          DOWNLOAD_ERROR_CODES.PERMISSION_DENIED,
+          `Cannot write to folder: ${probeError.message}`,
+          { cause: probeError }
+        )
+      }
     }
-    throw new DownloadError(
-      DOWNLOAD_ERROR_CODES.PERMISSION_DENIED,
-      `Cannot write to folder: ${probeError.message}`,
-      { cause: probeError }
-    )
   } finally {
     if (fileHandle) {
       try {
@@ -170,10 +191,13 @@ export async function verifyDownloadFolderWritable(folderPath) {
         console.warn('[safety] Warning closing probe file handle:', closeErr.message)
       }
     }
-    try {
-      await unlink(probePath)
-    } catch {
-      // Ignore cleanup error if probe file was not created or already unlinked
+    // Delete the probe ONLY if THIS operation actually created it; never delete pre-existing files
+    if (probeCreated && probePath) {
+      try {
+        await unlink(probePath)
+      } catch (unlinkErr) {
+        console.warn('[safety] Warning unlinking probe file:', unlinkErr.message)
+      }
     }
   }
 
@@ -291,6 +315,75 @@ export function assertPathInsideDirectory(childPath, parentDir) {
       DOWNLOAD_ERROR_CODES.OUTPUT_VERIFICATION_FAILED,
       'Path traversal detected: output file is outside download directory'
     )
+  }
+}
+
+/**
+ * Asynchronously verifies that childPath is strictly contained inside parentDir,
+ * resolving real canonical filesystem paths to detect and reject intermediate
+ * symlink or junction escapes.
+ *
+ * @param {string} childPath
+ * @param {string} parentDir
+ * @throws {DownloadError} if traversal or symlink escape detected
+ */
+export async function assertRealPathInsideDirectory(childPath, parentDir) {
+  // 1. Perform lexical containment check first
+  assertPathInsideDirectory(childPath, parentDir)
+
+  const normalizedParent = path.resolve(parentDir.trim())
+  const normalizedChild = path.resolve(childPath.trim())
+
+  let realParent
+  try {
+    realParent = await realpath(normalizedParent)
+  } catch (parentErr) {
+    throw new DownloadError(
+      DOWNLOAD_ERROR_CODES.OUTPUT_VERIFICATION_FAILED,
+      `Cannot resolve download directory path: ${parentErr.message}`,
+      { cause: parentErr }
+    )
+  }
+
+  // 2. Resolve real path of the child or its closest existing parent directory
+  let targetToResolve = normalizedChild
+  let relativePart = ''
+
+  while (targetToResolve && targetToResolve !== path.dirname(targetToResolve)) {
+    try {
+      const realTarget = await realpath(targetToResolve)
+      const realChildResolved = relativePart ? path.join(realTarget, relativePart) : realTarget
+
+      const relative = path.relative(realParent, realChildResolved)
+      if (
+        !relative ||
+        relative === '..' ||
+        relative.startsWith(`..${path.sep}`) ||
+        path.isAbsolute(relative)
+      ) {
+        throw new DownloadError(
+          DOWNLOAD_ERROR_CODES.OUTPUT_VERIFICATION_FAILED,
+          'Path traversal detected: intermediate directory escapes trusted boundary via link'
+        )
+      }
+      return
+    } catch (resolveErr) {
+      if (resolveErr instanceof DownloadError) {
+        throw resolveErr
+      }
+      if (resolveErr.code === 'ENOENT') {
+        relativePart = relativePart
+          ? path.join(path.basename(targetToResolve), relativePart)
+          : path.basename(targetToResolve)
+        targetToResolve = path.dirname(targetToResolve)
+        continue
+      }
+      throw new DownloadError(
+        DOWNLOAD_ERROR_CODES.OUTPUT_VERIFICATION_FAILED,
+        `Cannot resolve file path: ${resolveErr.message}`,
+        { cause: resolveErr }
+      )
+    }
   }
 }
 
