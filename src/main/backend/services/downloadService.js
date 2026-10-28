@@ -2,7 +2,7 @@ import { getDatabase } from '../config/database.js'
 import { spawn, execFile } from 'node:child_process'
 import { getSavedDownloadPath } from './downloadSettingsService.js'
 import { getDefaultDownloadPath } from './downloadPathService.js'
-import { stat } from 'node:fs/promises'
+import { stat, lstat } from 'node:fs/promises'
 import { basename, extname } from 'node:path'
 import { Op, Transaction } from 'sequelize'
 import { analyzeMedia } from './mediaAnalyzerService.js'
@@ -15,13 +15,25 @@ import {
   formatDownloadErrorMessage
 } from './downloadErrorService.js'
 import { prepareJobTemporaryWorkspace, cleanupJobTemporaryFiles } from './downloadCleanupService.js'
+import {
+  validateDownloadFolder,
+  verifyDownloadFolderWritable,
+  checkDownloadDiskSpace,
+  assertNoJobOutputFileConflict,
+  assertPathInsideDirectory
+} from './downloadFileSafetyService.js'
 
 export {
   DownloadError,
   DOWNLOAD_ERROR_CODES,
   DEFAULT_ERROR_MESSAGES,
   classifyDownloadError,
-  formatDownloadErrorMessage
+  formatDownloadErrorMessage,
+  validateDownloadFolder,
+  verifyDownloadFolderWritable,
+  checkDownloadDiskSpace,
+  assertNoJobOutputFileConflict,
+  assertPathInsideDirectory
 }
 
 const execFileAsync = promisify(execFile)
@@ -658,8 +670,16 @@ export async function prepareDownloadJobExecution(jobId) {
 
   const downloadPath = savedPath || (await getDefaultDownloadPath())
 
+  // Step 04.37 - Validate folder safety and verify write permissions
+  await validateDownloadFolder(downloadPath)
+  await verifyDownloadFolderWritable(downloadPath)
+
+  // Step 04.37 - Output file conflict protection before starting download
+  await assertNoJobOutputFileConflict(downloadPath, job.id)
+
   // Select exact MP4 video and audio source formats
   let mp4FormatSelector = null
+  let estimatedRequiredBytes = null
 
   if (job.output_format === 'mp4') {
     const analysis = await analyzeMedia(media.source_url)
@@ -693,8 +713,18 @@ export async function prepareDownloadJobExecution(jobId) {
 
     if (videoOnly && m4aAudio) {
       mp4FormatSelector = `${videoOnly.formatId}+${m4aAudio.formatId}`
+      const vSize = Number(videoOnly.fileSize) || 0
+      const aSize = Number(m4aAudio.fileSize) || 0
+      if (vSize > 0 || aSize > 0) {
+        // Factor 2.5x to conservatively cover video fragment + audio fragment + merged mp4 file
+        estimatedRequiredBytes = Math.ceil((vSize + aSize) * 2.5)
+      }
     } else if (combinedVideo) {
       mp4FormatSelector = combinedVideo.formatId
+      const cSize = Number(combinedVideo.fileSize) || 0
+      if (cSize > 0) {
+        estimatedRequiredBytes = Math.ceil(cSize * 2.0)
+      }
     }
 
     // Step 04.26 - Unsupported MP4 quality handling
@@ -721,7 +751,32 @@ export async function prepareDownloadJobExecution(jobId) {
         `No compatible MP4 video/audio format found for quality "${job.quality}"`
       )
     }
+  } else if (job.output_format === 'mp3') {
+    if (Number.isFinite(media.duration_seconds) && media.duration_seconds > 0) {
+      // Audio stream size estimation: duration (seconds) * bitrate (kbps * 1000 / 8)
+      const approxAudioBytes = Math.ceil(
+        media.duration_seconds * ((job.audio_bitrate_kbps * 1000) / 8)
+      )
+      // 2.5x to account for downloaded source stream + converted mp3 output
+      estimatedRequiredBytes = Math.ceil(approxAudioBytes * 2.5)
+    }
   }
+
+  // Step 04.37 - Insufficient disk space preflight detection
+  const diskCheck = await checkDownloadDiskSpace({
+    downloadPath,
+    estimatedRequiredBytes
+  })
+
+  if (!diskCheck.sufficient) {
+    throw new DownloadError(
+      DOWNLOAD_ERROR_CODES.DISK_FULL,
+      'Not enough disk space to complete the download.'
+    )
+  }
+
+  // Record job execution start time for output file verification
+  const jobStartTime = Date.now()
 
   // Create a dedicated temporary workspace for this download job
   const tempPath = await prepareJobTemporaryWorkspace(job.id, downloadPath)
@@ -742,11 +797,12 @@ export async function prepareDownloadJobExecution(jobId) {
     jobId: job.id,
     downloadPath,
     tempPath,
-    args
+    args,
+    jobStartTime
   }
 }
 
-export async function verifyDownloadedFile(finalFilePath) {
+export async function verifyDownloadedFile(finalFilePath, options = {}) {
   // Validate the file path
   if (typeof finalFilePath !== 'string' || !finalFilePath.trim()) {
     throw new DownloadError(
@@ -756,6 +812,27 @@ export async function verifyDownloadedFile(finalFilePath) {
   }
 
   const filePath = finalFilePath.trim()
+
+  // Step 04.37 - Guard against path traversal if expected download folder is provided
+  if (options?.downloadPath) {
+    assertPathInsideDirectory(filePath, options.downloadPath)
+  }
+
+  // Step 04.37 - Ensure the downloaded output is not a symbolic link or junction
+  try {
+    const lstatInfo = await lstat(filePath)
+    if (lstatInfo.isSymbolicLink()) {
+      throw new DownloadError(
+        DOWNLOAD_ERROR_CODES.OUTPUT_VERIFICATION_FAILED,
+        'Downloaded file cannot be a symbolic link'
+      )
+    }
+  } catch (lstatErr) {
+    if (lstatErr instanceof DownloadError) {
+      throw lstatErr
+    }
+    // If lstat throws, subsequent stat check will handle ENOENT / permissions
+  }
 
   let fileStats
 
@@ -800,6 +877,17 @@ export async function verifyDownloadedFile(finalFilePath) {
       DOWNLOAD_ERROR_CODES.OUTPUT_VERIFICATION_FAILED,
       'Downloaded file is empty'
     )
+  }
+
+  // Step 04.37 - Verify output file was newly created during this job execution (not pre-existing)
+  if (options?.jobStartTime && typeof options.jobStartTime === 'number') {
+    // 2000ms margin for filesystem clock granularity
+    if (fileStats.mtimeMs < options.jobStartTime - 2000) {
+      throw new DownloadError(
+        DOWNLOAD_ERROR_CODES.OUTPUT_VERIFICATION_FAILED,
+        'Downloaded output file appears to be a pre-existing file'
+      )
+    }
   }
 
   return {
@@ -1174,7 +1262,10 @@ export async function executeDownloadJob(jobId) {
     }
 
     // Verify final media file outside any transaction to avoid holding database locks during ffprobe
-    const verifiedFile = await verifyDownloadedFile(result.finalFilePath)
+    const verifiedFile = await verifyDownloadedFile(result.finalFilePath, {
+      downloadPath: execution.downloadPath,
+      jobStartTime: execution.jobStartTime
+    })
     const fileFormat = extname(verifiedFile.filePath).slice(1).toLowerCase()
 
     if (fileFormat !== claimedJob.output_format) {

@@ -3,7 +3,10 @@ import { getDefaultDownloadPath } from './downloadPathService.js'
 import { SUPPORTED_MP3_BITRATES } from './downloadService.js'
 import { Transaction } from 'sequelize'
 import path from 'node:path'
-import { stat, access, constants } from 'node:fs/promises'
+import {
+  validateDownloadFolder,
+  verifyDownloadFolderWritable
+} from './downloadFileSafetyService.js'
 
 // Default download preferences when none have been saved in SQLite
 export const DEFAULT_DOWNLOAD_PREFERENCES = Object.freeze({
@@ -89,37 +92,11 @@ export async function validateDownloadPreferences(changes) {
     if (typeof val !== 'string' || !val.trim() || val.includes('\0')) {
       errors.downloadPath = 'A valid download folder path is required'
     } else {
-      const cleanPath = path.resolve(val.trim())
-
-      if (!path.isAbsolute(cleanPath)) {
-        errors.downloadPath = 'Download path must be an absolute filesystem path'
-      } else {
-        const parsed = path.parse(cleanPath)
-        const isDriveRoot =
-          cleanPath.toLowerCase() === parsed.root.toLowerCase() ||
-          cleanPath.replace(/[\\/]+$/, '') === parsed.root.replace(/[\\/]+$/, '')
-
-        if (isDriveRoot) {
-          errors.downloadPath = 'Root drive directories cannot be used as the download folder'
-        } else {
-          try {
-            const stats = await stat(cleanPath)
-            if (!stats.isDirectory()) {
-              errors.downloadPath = 'Download path must be an existing directory, not a file'
-            } else {
-              await access(cleanPath, constants.R_OK | constants.W_OK)
-            }
-          } catch (fsError) {
-            if (fsError.code === 'ENOENT') {
-              errors.downloadPath = 'The specified download directory does not exist'
-            } else if (['EACCES', 'EPERM'].includes(fsError.code)) {
-              errors.downloadPath =
-                'The application does not have permission to access or write to this folder'
-            } else {
-              errors.downloadPath = 'The specified download path is invalid or inaccessible'
-            }
-          }
-        }
+      try {
+        const cleanPath = await validateDownloadFolder(val)
+        await verifyDownloadFolderWritable(cleanPath)
+      } catch (folderError) {
+        errors.downloadPath = folderError.userMessage || folderError.message
       }
     }
   }
