@@ -8,6 +8,21 @@ import { basename, extname } from 'node:path'
 import { Op } from 'sequelize'
 import { analyzeMedia } from './mediaAnalyzerService.js'
 import { promisify } from 'node:util'
+import {
+  DownloadError,
+  DOWNLOAD_ERROR_CODES,
+  DEFAULT_ERROR_MESSAGES,
+  classifyDownloadError,
+  formatDownloadErrorMessage
+} from './downloadErrorService.js'
+
+export {
+  DownloadError,
+  DOWNLOAD_ERROR_CODES,
+  DEFAULT_ERROR_MESSAGES,
+  classifyDownloadError,
+  formatDownloadErrorMessage
+}
 
 const execFileAsync = promisify(execFile)
 
@@ -393,8 +408,13 @@ export function runYtDlp(args, onProgress = null, onOutputLine = null, options =
         return
       }
 
+      const classified = classifyDownloadError(error, { target: 'yt-dlp' })
       settleReject(
-        new Error(`Could not start yt-dlp: ${error.message}`)
+        new DownloadError(
+          classified.code,
+          classified.message,
+          { cause: error }
+        )
       )
     })
 
@@ -424,9 +444,22 @@ export function runYtDlp(args, onProgress = null, onOutputLine = null, options =
         ? `signal ${signal}`
         : `exit code ${exitCode}`
 
+      const classified = classifyDownloadError(
+        new Error(`yt-dlp failed (${reason})`),
+        { target: 'yt-dlp', stderr: errorOutput }
+      )
+
       settleReject(
-        new Error(
-          `yt-dlp failed (${reason}). ${errorOutput.trim()}`
+        new DownloadError(
+          classified.code,
+          classified.message,
+          {
+            cause: {
+              exitCode,
+              signal,
+              stderr: errorOutput.trim()
+            }
+          }
         )
       )
     })
@@ -510,16 +543,11 @@ export async function markDownloadJobFailed(jobId, error, expectedStatus = 'down
 
   const DownloadJob = getDatabase().models.DownloadJob
 
-  const rawMessage =
-    error instanceof Error
-      ? error.message
-      : typeof error === 'string'
-        ? error
-        : ''
+  const formattedMessage = formatDownloadErrorMessage(error)
 
   const errorMessage =
-    rawMessage.trim().slice(0, 2000) ||
-    'An unknown download error occurred'
+    formattedMessage.trim().slice(0, 2000) ||
+    `[${DOWNLOAD_ERROR_CODES.UNKNOWN_ERROR}] ${DEFAULT_ERROR_MESSAGES.UNKNOWN_ERROR}`
 
   const [updatedCount] = await DownloadJob.update(
     {
@@ -712,15 +740,15 @@ export async function prepareDownloadJobExecution(jobId) {
           ? availableQualities.join(', ')
           : 'None available'
 
-        throw new Error(
-          `Unsupported MP4 quality "${job.quality}". ` +
-          `Available MP4 qualities: ${qualityList}`
+        throw new DownloadError(
+          DOWNLOAD_ERROR_CODES.FORMAT_UNAVAILABLE,
+          `Unsupported MP4 quality "${job.quality}". Available MP4 qualities: ${qualityList}`
         )
       }
 
-      throw new Error(
-        `No compatible MP4 video/audio format found ` +
-        `for quality "${job.quality}"`
+      throw new DownloadError(
+        DOWNLOAD_ERROR_CODES.FORMAT_UNAVAILABLE,
+        `No compatible MP4 video/audio format found for quality "${job.quality}"`
       )
     }
 
@@ -752,7 +780,10 @@ export async function verifyDownloadedFile(finalFilePath) {
     typeof finalFilePath !== 'string' ||
     !finalFilePath.trim()
   ) {
-    throw new Error('A valid final file path is required')
+    throw new DownloadError(
+      DOWNLOAD_ERROR_CODES.OUTPUT_VERIFICATION_FAILED,
+      'A valid final file path is required'
+    )
   }
 
   const filePath = finalFilePath.trim()
@@ -767,20 +798,42 @@ export async function verifyDownloadedFile(finalFilePath) {
       error.code === 'ENOENT' ||
       error.code === 'ENOTDIR'
     ) {
-      throw new Error('Downloaded file does not exist')
+      throw new DownloadError(
+        DOWNLOAD_ERROR_CODES.OUTPUT_VERIFICATION_FAILED,
+        'Downloaded file does not exist',
+        { cause: error }
+      )
     }
 
-    throw error
+    if (['EACCES', 'EPERM'].includes(error.code)) {
+      throw new DownloadError(
+        DOWNLOAD_ERROR_CODES.PERMISSION_DENIED,
+        'The application does not have permission to access the downloaded file',
+        { cause: error }
+      )
+    }
+
+    throw new DownloadError(
+      DOWNLOAD_ERROR_CODES.OUTPUT_VERIFICATION_FAILED,
+      `Could not verify downloaded file: ${error.message}`,
+      { cause: error }
+    )
   }
 
   // Ensure the path points to a regular file
   if (!fileStats.isFile()) {
-    throw new Error('Downloaded path is not a file')
+    throw new DownloadError(
+      DOWNLOAD_ERROR_CODES.OUTPUT_VERIFICATION_FAILED,
+      'Downloaded path is not a file'
+    )
   }
 
   // Reject empty files
   if (fileStats.size <= 0) {
-    throw new Error('Downloaded file is empty')
+    throw new DownloadError(
+      DOWNLOAD_ERROR_CODES.OUTPUT_VERIFICATION_FAILED,
+      'Downloaded file is empty'
+    )
   }
 
   return {
@@ -818,13 +871,17 @@ export async function verifyFinalMediaContent(
     probeData = JSON.parse(stdout)
   } catch (error) {
     if (error?.code === 'ENOENT') {
-      throw new Error(
-        'FFprobe was not found. FFmpeg tools must be available in PATH'
+      throw new DownloadError(
+        DOWNLOAD_ERROR_CODES.FFPROBE_NOT_FOUND,
+        'FFprobe executable was not found. FFmpeg tools must be available in PATH',
+        { cause: error }
       )
     }
 
-    throw new Error(
-      `Final media verification failed: ${error.message}`
+    throw new DownloadError(
+      DOWNLOAD_ERROR_CODES.OUTPUT_VERIFICATION_FAILED,
+      `Final media verification failed: ${error.message}`,
+      { cause: error }
     )
   }
 
@@ -858,7 +915,8 @@ export async function verifyFinalMediaContent(
       )
 
     if (!validMp3) {
-      throw new Error(
+      throw new DownloadError(
+        DOWNLOAD_ERROR_CODES.OUTPUT_VERIFICATION_FAILED,
         'Final MP3 verification failed: invalid MP3 audio'
       )
     }
@@ -869,12 +927,16 @@ export async function verifyFinalMediaContent(
       audioStreams.length > 0
 
     if (!validMp4) {
-      throw new Error(
+      throw new DownloadError(
+        DOWNLOAD_ERROR_CODES.OUTPUT_VERIFICATION_FAILED,
         'Final MP4 verification failed: video or audio stream is missing'
       )
     }
   } else {
-    throw new Error('Unsupported final media format')
+    throw new DownloadError(
+      DOWNLOAD_ERROR_CODES.FORMAT_UNAVAILABLE,
+      'Unsupported final media format'
+    )
   }
 
   return true
@@ -915,7 +977,10 @@ export async function saveDownloadedFile(jobId, finalFilePath, transaction = nul
     .toLowerCase()
 
   if (fileFormat !== job.output_format) {
-    throw new Error('Downloaded file format does not match the job')
+    throw new DownloadError(
+      DOWNLOAD_ERROR_CODES.OUTPUT_VERIFICATION_FAILED,
+      'Downloaded file format does not match the job'
+    )
   }
 
   // Verify actual media container and streams before saving
@@ -1195,7 +1260,8 @@ await progressWriteChain
 
     // 8. Verify final path
     if (!result.finalFilePath) {
-      throw new Error(
+      throw new DownloadError(
+        DOWNLOAD_ERROR_CODES.OUTPUT_VERIFICATION_FAILED,
         'yt-dlp did not return a final file path'
       )
     }
