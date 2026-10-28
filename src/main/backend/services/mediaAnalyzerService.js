@@ -71,13 +71,10 @@ export async function analyzeMedia(sourceUrl) {
   const videoQualities = [...qualityHeights].sort((a, b) => b - a).map((height) => `${height}p`)
 
   //MP3 option
-
-  //MP3 option
   const hasAudioStream = formats.some(
     (format) =>
       format &&
       typeof format === 'object' &&
-      format.vcodec === 'none' &&
       typeof format.acodec === 'string' &&
       format.acodec !== 'none'
   )

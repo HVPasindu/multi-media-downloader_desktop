@@ -216,6 +216,13 @@ export function classifyDownloadError(error, context = {}) {
     lowerText.includes('this video has been removed') ||
     lowerText.includes('video not found') ||
     lowerText.includes('content is not available') ||
+    lowerText.includes('tweet has been deleted') ||
+    lowerText.includes('this tweet has been deleted') ||
+    lowerText.includes('tweet unavailable') ||
+    lowerText.includes('this tweet is unavailable') ||
+    lowerText.includes('post has been removed') ||
+    lowerText.includes('this post has been deleted') ||
+    lowerText.includes('post unavailable') ||
     lowerText.includes('http error 404') ||
     lowerText.includes('404 not found') ||
     lowerText.includes('media item or source url not found') ||
