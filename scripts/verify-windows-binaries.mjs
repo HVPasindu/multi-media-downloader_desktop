@@ -36,7 +36,7 @@ const EXPECTED_BINARIES = [
   {
     name: 'node.exe',
     versionFlag: ['--version'],
-    expectedVersionPrefix: 'v22.',
+    expectedVersionPrefix: 'v24.',
     licenseFile: 'LICENSE.node.txt'
   }
 ]

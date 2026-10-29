@@ -126,10 +126,10 @@ npm run verify:binaries
 # 2. Build renderer and main process code via electron-vite
 npm run build
 
-# 3. Create unpacked Windows distribution in dist/win-unpacked/
+# 3. Create unpacked Windows distribution in dist/win-unpacked/ (automatically runs verify:binaries first)
 npm run build:unpack
 
-# 4. Create Windows NSIS installer setup in dist/
+# 4. Create Windows NSIS installer setup in dist/ (automatically runs verify:binaries first)
 npm run build:win
 
 # 5. Run automated Windows packaging tests (TESTS A - Z)

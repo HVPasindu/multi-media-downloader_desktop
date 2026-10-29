@@ -175,7 +175,7 @@ app.whenReady().then(async () => {
         }
       }
 
-      if (body && ['POST', 'PATCH'].includes(upperMethod)) {
+      if (body && ['POST', 'PATCH', 'DELETE'].includes(upperMethod)) {
         fetchOptions.body = JSON.stringify(body)
       }
 

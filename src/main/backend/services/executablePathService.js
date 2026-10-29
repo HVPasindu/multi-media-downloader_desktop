@@ -255,5 +255,13 @@ export async function resolveJavaScriptRuntimeOption() {
     return `node:${runtimePath}`
   }
 
+  if (isPackagedApp()) {
+    throw new DownloadError(
+      DOWNLOAD_ERROR_CODES.UNKNOWN_ERROR,
+      'Packaged JavaScript runtime (node.exe) was not found. Please reinstall the application.',
+      { details: { expectedPath: path.join(getPackagedBinaryDirectory(), 'node.exe') } }
+    )
+  }
+
   return 'node'
 }

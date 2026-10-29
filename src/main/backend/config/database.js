@@ -8,17 +8,35 @@ import { initializeModels } from '../models/index.js'
 
 let sequelize = null
 
-export async function initializeDatabase() {
-  // Electron user data folder
-  const dataDirectory = path.join(app.getPath('userData'), 'data')
+export async function initializeDatabase(options = {}) {
+  // Close any existing active connection to prevent connection leaks across test suites
+  if (sequelize) {
+    await sequelize.close()
+    sequelize = null
+  }
 
-  // Create folder if it does not exist
-  fs.mkdirSync(dataDirectory, {
-    recursive: true
-  })
+  let databasePath
 
-  // SQLite database file path
-  const databasePath = path.join(dataDirectory, 'downloader.db')
+  // Test Mode: use explicitly provided isolated database storage path
+  if (options && typeof options.storage === 'string' && options.storage.trim()) {
+    databasePath = path.resolve(options.storage.trim())
+
+    // Ensure the isolated test storage directory exists
+    fs.mkdirSync(path.dirname(databasePath), {
+      recursive: true
+    })
+  } else {
+    // Normal Production Mode: Electron user data folder
+    const dataDirectory = path.join(app.getPath('userData'), 'data')
+
+    // Create folder if it does not exist
+    fs.mkdirSync(dataDirectory, {
+      recursive: true
+    })
+
+    // SQLite database file path
+    databasePath = path.join(dataDirectory, 'downloader.db')
+  }
 
   // Create Sequelize connection
   sequelize = new Sequelize({
@@ -71,4 +89,11 @@ export function getDatabase() {
   }
 
   return sequelize
+}
+
+export async function closeDatabase() {
+  if (sequelize) {
+    await sequelize.close()
+    sequelize = null
+  }
 }

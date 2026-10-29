@@ -14,7 +14,7 @@ import {
   LOCAL_API_PORT,
   LOCAL_API_HOST
 } from '../src/main/backend/services/localApiSecurityService.js'
-import { initializeDatabase } from '../src/main/backend/config/database.js'
+import { initializeDatabase, closeDatabase } from '../src/main/backend/config/database.js'
 
 /**
  * Helper to perform raw HTTP requests with full control over Host, Origin, and Authorization headers.
@@ -638,8 +638,11 @@ async function runAllLocalApiSecurityTests() {
     if (testServer) {
       await new Promise((resolve) => testServer.close(resolve))
     }
+    await closeDatabase().catch(() => {})
     try {
-      await fs.rm(testTempDir, { recursive: true, force: true })
+      if (testTempDir && testTempDir.startsWith(os.tmpdir())) {
+        await fs.rm(testTempDir, { recursive: true, force: true })
+      }
     } catch {
       // Ignore directory cleanup failure
     }

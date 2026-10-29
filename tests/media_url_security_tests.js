@@ -23,7 +23,11 @@ import {
 } from '../src/main/backend/services/downloadErrorService.js'
 import { saveMediaItem } from '../src/main/backend/services/mediaItemService.js'
 import { retryDownloadJob } from '../src/main/backend/services/downloadRetryService.js'
-import { initializeDatabase, getDatabase } from '../src/main/backend/config/database.js'
+import {
+  initializeDatabase,
+  getDatabase,
+  closeDatabase
+} from '../src/main/backend/config/database.js'
 
 /**
  * ============================================================================
@@ -573,9 +577,12 @@ async function runAllUrlSecurityTests() {
     console.log(' ALL STEP 04.40 URL SECURITY TESTS (A-AG) PASSED SUCCESSFULLY! ')
     console.log('================================================================\n')
   } finally {
-    // Clean up temporary directory
+    // Clean up temporary database connection and directory
+    await closeDatabase().catch(() => {})
     try {
-      await fs.rm(testTempDir, { recursive: true, force: true })
+      if (testTempDir && testTempDir.startsWith(os.tmpdir())) {
+        await fs.rm(testTempDir, { recursive: true, force: true })
+      }
     } catch {
       // Ignore directory cleanup failure
     }

@@ -10,7 +10,7 @@ import {
   LOCAL_API_PORT,
   LOCAL_API_HOST
 } from '../src/main/backend/services/localApiSecurityService.js'
-import { initializeDatabase } from '../src/main/backend/config/database.js'
+import { initializeDatabase, closeDatabase } from '../src/main/backend/config/database.js'
 import {
   assertHealthResponse,
   assertMediaAnalyzeResponse,
@@ -653,15 +653,14 @@ async function runAllApiContractTests() {
       await new Promise((resolve) => testServer.close(resolve))
       console.log('[cleanup] Contract test server stopped')
     }
+    await closeDatabase().catch(() => {})
     if (sequelizeInstance) {
       await sequelizeInstance.close().catch(() => {})
     }
     resetSessionTokenForTest()
-    await fs.rm(testTempDir, { recursive: true, force: true }).catch(() => {})
-    try {
-      await fs.rm(path.resolve(process.cwd(), 'data'), { recursive: true, force: true })
-    } catch {
-      // Ignore cleanup error if directory does not exist
+    // Safely remove only the uniquely created test temporary directory
+    if (testTempDir && testTempDir.startsWith(os.tmpdir())) {
+      await fs.rm(testTempDir, { recursive: true, force: true }).catch(() => {})
     }
     console.log('[cleanup] Temporary test workspace cleaned\n')
   }

@@ -28,7 +28,7 @@ import {
   DOWNLOAD_ERROR_CODES
 } from '../src/main/backend/services/downloadErrorService.js'
 
-import { initializeDatabase } from '../src/main/backend/config/database.js'
+import { initializeDatabase, closeDatabase } from '../src/main/backend/config/database.js'
 
 /**
  * ============================================================================
@@ -328,13 +328,14 @@ async function runAllWindowsPackagingTests() {
     console.log('✓ TEST Q passed: Process tracking and PID management verified.\n')
 
     // ------------------------------------------------------------------------
-    // TEST R: SQLite initializes in correct writable userData directory
+    // TEST R: SQLite initializes in correct isolated database directory
     // ------------------------------------------------------------------------
-    console.log('--- TEST R: SQLite Initialization in UserData ---')
-    const { sequelize, databasePath } = await initializeDatabase()
+    console.log('--- TEST R: SQLite Initialization in Isolated Directory ---')
+    const testDbPath = path.join(testTempDir, 'pkg_test_downloader.db')
+    const { sequelize, databasePath } = await initializeDatabase({ storage: testDbPath })
     testDbConnection = sequelize
     assert.ok(typeof databasePath === 'string')
-    assert.ok(databasePath.endsWith('downloader.db'))
+    assert.ok(databasePath.endsWith('pkg_test_downloader.db'))
     console.log(`✓ TEST R passed: SQLite database initialized at -> ${databasePath}\n`)
 
     // ------------------------------------------------------------------------
@@ -437,13 +438,11 @@ async function runAllWindowsPackagingTests() {
     if (testDbConnection) {
       await testDbConnection.close().catch(() => {})
     }
+    await closeDatabase().catch(() => {})
     setPackagedModeForTest(null)
     setCustomBinDirectoryForTest(null)
-    await fs.rm(testTempDir, { recursive: true, force: true }).catch(() => {})
-    try {
-      await fs.rm(path.resolve(process.cwd(), 'data'), { recursive: true, force: true })
-    } catch {
-      // Ignore if data directory does not exist
+    if (testTempDir && testTempDir.startsWith(os.tmpdir())) {
+      await fs.rm(testTempDir, { recursive: true, force: true }).catch(() => {})
     }
   }
 }
