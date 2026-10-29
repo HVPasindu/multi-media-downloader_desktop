@@ -2,10 +2,11 @@ import { getDatabase } from '../config/database.js'
 import { spawn, execFile } from 'node:child_process'
 import { getSavedDownloadPath } from './downloadSettingsService.js'
 import { getDefaultDownloadPath } from './downloadPathService.js'
-import { stat } from 'node:fs/promises'
+import { stat, lstat } from 'node:fs/promises'
 import { basename, extname } from 'node:path'
-import { Op } from 'sequelize'
+import { Op, Transaction } from 'sequelize'
 import { analyzeMedia } from './mediaAnalyzerService.js'
+import { validateMediaUrl } from './mediaUrlSecurityService.js'
 import { promisify } from 'node:util'
 import {
   DownloadError,
@@ -15,13 +16,33 @@ import {
   formatDownloadErrorMessage
 } from './downloadErrorService.js'
 import { prepareJobTemporaryWorkspace, cleanupJobTemporaryFiles } from './downloadCleanupService.js'
+import {
+  validateDownloadFolder,
+  verifyDownloadFolderWritable,
+  checkDownloadDiskSpace,
+  assertNoJobOutputFileConflict,
+  assertPathInsideDirectory,
+  assertRealPathInsideDirectory
+} from './downloadFileSafetyService.js'
+import {
+  resolveYtDlpPath,
+  resolveFFprobePath,
+  resolveFFmpegLocationDirectory,
+  resolveJavaScriptRuntimeOption
+} from './executablePathService.js'
 
 export {
   DownloadError,
   DOWNLOAD_ERROR_CODES,
   DEFAULT_ERROR_MESSAGES,
   classifyDownloadError,
-  formatDownloadErrorMessage
+  formatDownloadErrorMessage,
+  validateDownloadFolder,
+  verifyDownloadFolderWritable,
+  checkDownloadDiskSpace,
+  assertNoJobOutputFileConflict,
+  assertPathInsideDirectory,
+  assertRealPathInsideDirectory
 }
 
 const execFileAsync = promisify(execFile)
@@ -31,6 +52,43 @@ export const SUPPORTED_MP3_BITRATES = Object.freeze([128, 192, 320])
 
 // Track yt-dlp processes for actively running jobs
 const activeDownloadProcesses = new Map()
+
+// Helper to detect transient SQLite lock/busy errors across Sequelize and sqlite3 driver
+export function isSqliteBusyError(error) {
+  if (!error) return false
+  const message = String(error?.message || '').toLowerCase()
+  const name = String(error?.name || '').toLowerCase()
+  const originalMessage = String(
+    error?.original?.message || error?.parent?.message || ''
+  ).toLowerCase()
+  const code = String(
+    error?.original?.code || error?.parent?.code || error?.code || ''
+  ).toUpperCase()
+
+  return (
+    name.includes('timeout') ||
+    code === 'SQLITE_BUSY' ||
+    code === 'SQLITE_LOCKED' ||
+    message.includes('sqlite_busy') ||
+    message.includes('database is locked') ||
+    message.includes('database locked') ||
+    originalMessage.includes('sqlite_busy') ||
+    originalMessage.includes('database is locked') ||
+    originalMessage.includes('database locked')
+  )
+}
+
+// In-memory queue to serialize download completion write transactions
+let completionWriteQueue = Promise.resolve()
+
+export function withCompletionWriteLock(task) {
+  const next = completionWriteQueue.then(
+    () => task(),
+    () => task()
+  )
+  completionWriteQueue = next.catch(() => {})
+  return next
+}
 
 // Custom error to distinguish intentional cancellation from unexpected errors
 export class DownloadCancelledError extends Error {
@@ -157,7 +215,9 @@ export function buildYtDlpArgs({
   downloadPath,
   mp4FormatSelector = null,
   jobId = null,
-  tempPath = null
+  tempPath = null,
+  jsRuntimeOption = 'node',
+  ffmpegLocation = null
 }) {
   if (typeof sourceUrl !== 'string' || !sourceUrl.trim()) {
     throw new Error('A valid source URL is required')
@@ -180,7 +240,7 @@ export function buildYtDlpArgs({
 
   const args = [
     '--js-runtimes',
-    'node',
+    jsRuntimeOption || 'node',
     '--encoding',
     'utf-8',
     '--no-playlist',
@@ -200,6 +260,11 @@ export function buildYtDlpArgs({
     '-P',
     downloadPath
   ]
+
+  // Step 04.43 - Configure packaged or custom FFmpeg binary location for yt-dlp post-processing
+  if (typeof ffmpegLocation === 'string' && ffmpegLocation.trim()) {
+    args.push('--ffmpeg-location', ffmpegLocation.trim())
+  }
 
   // Route temporary fragments and intermediate files to the job-owned temporary workspace
   if (typeof tempPath === 'string' && tempPath.trim()) {
@@ -245,165 +310,172 @@ export function runYtDlp(args, onProgress = null, onOutputLine = null, options =
   }
 
   return new Promise((resolve, reject) => {
-    const child = spawn('yt-dlp', args, {
-      windowsHide: true,
-      env: {
-        ...process.env,
-        PYTHONIOENCODING: 'utf-8'
-      }
-    })
-
-    const processEntry = {
-      childProcess: child,
-      cancelRequested: false
-    }
-
-    if (options?.jobId) {
-      activeDownloadProcesses.set(options.jobId, processEntry)
-    }
-
-    let isSettled = false
-
-    const settleReject = (err) => {
-      if (isSettled) return
-      isSettled = true
-
-      if (options?.jobId) {
-        activeDownloadProcesses.delete(options.jobId)
-      }
-
-      reject(err)
-    }
-
-    const settleResolve = (val) => {
-      if (isSettled) return
-      isSettled = true
-
-      if (options?.jobId) {
-        activeDownloadProcesses.delete(options.jobId)
-      }
-
-      resolve(val)
-    }
-
-    let errorOutput = ''
-    let stdoutBuffer = ''
-    let finalFilePath = null
-
-    const fileMarker = 'APPLAN2_FINAL_FILE:'
-
-    // Process one complete output line
-    const handleOutputLine = (line) => {
-      const cleanLine = line.trim()
-
-      if (!cleanLine) {
-        return
-      }
-
-      if (cleanLine.startsWith(fileMarker)) {
-        finalFilePath = cleanLine.slice(fileMarker.length).trim()
-
-        console.log('[yt-dlp] Final file:', finalFilePath)
-      } else {
-        // Print the yt-dlp output
-        console.log('[yt-dlp]', cleanLine)
-
-        // Forward structured output lines to the caller
-        if (typeof onOutputLine === 'function') {
-          try {
-            onOutputLine(cleanLine)
-          } catch (error) {
-            console.error('[yt-dlp] Output line callback error:', error)
+    // Step 04.43 - Dynamically resolve packaged or dev yt-dlp executable path
+    Promise.resolve(options?.executablePath || resolveYtDlpPath())
+      .then((ytDlpExecutable) => {
+        const child = spawn(ytDlpExecutable, args, {
+          windowsHide: true,
+          env: {
+            ...process.env,
+            PYTHONIOENCODING: 'utf-8'
           }
-        }
-
-        // Extract download percentage from the line
-        const percent = parseYtDlpProgressLine(cleanLine)
-
-        // Send progress to the caller if a callback exists
-        if (percent !== null && typeof onProgress === 'function') {
-          try {
-            onProgress(percent)
-          } catch (callbackError) {
-            console.error('[yt-dlp] Progress callback error:', callbackError)
-          }
-        }
-      }
-    }
-
-    child.stdout.setEncoding('utf8')
-    child.stderr.setEncoding('utf8')
-
-    // Read stdout safely, line by line
-    child.stdout.on('data', (chunk) => {
-      stdoutBuffer += chunk
-
-      const lines = stdoutBuffer.split(/\r?\n/)
-
-      stdoutBuffer = lines.pop() ?? ''
-
-      for (const line of lines) {
-        handleOutputLine(line)
-      }
-    })
-
-    // Read errors and warnings
-    child.stderr.on('data', (text) => {
-      errorOutput = (errorOutput + text).slice(-2000)
-
-      console.error('[yt-dlp]', text.trimEnd())
-    })
-
-    // Handle failure to start yt-dlp
-    child.once('error', (error) => {
-      if (processEntry.cancelRequested) {
-        settleReject(new DownloadCancelledError('Download was cancelled'))
-        return
-      }
-
-      const classified = classifyDownloadError(error, { target: 'yt-dlp' })
-      settleReject(new DownloadError(classified.code, classified.message, { cause: error }))
-    })
-
-    // Handle process completion
-    child.once('close', (exitCode, signal) => {
-      if (processEntry.cancelRequested) {
-        settleReject(new DownloadCancelledError('Download was cancelled'))
-        return
-      }
-
-      // Process any remaining output
-      if (stdoutBuffer.trim()) {
-        handleOutputLine(stdoutBuffer)
-      }
-
-      if (exitCode === 0) {
-        settleResolve({
-          success: true,
-          exitCode,
-          finalFilePath
         })
 
-        return
-      }
+        const processEntry = {
+          childProcess: child,
+          cancelRequested: false
+        }
 
-      const reason = signal ? `signal ${signal}` : `exit code ${exitCode}`
+        if (options?.jobId) {
+          activeDownloadProcesses.set(options.jobId, processEntry)
+        }
 
-      const classified = classifyDownloadError(new Error(`yt-dlp failed (${reason})`), {
-        target: 'yt-dlp',
-        stderr: errorOutput
+        let isSettled = false
+
+        const settleReject = (err) => {
+          if (isSettled) return
+          isSettled = true
+
+          if (options?.jobId) {
+            activeDownloadProcesses.delete(options.jobId)
+          }
+
+          reject(err)
+        }
+
+        const settleResolve = (val) => {
+          if (isSettled) return
+          isSettled = true
+
+          if (options?.jobId) {
+            activeDownloadProcesses.delete(options.jobId)
+          }
+
+          resolve(val)
+        }
+
+        let errorOutput = ''
+        let stdoutBuffer = ''
+        let finalFilePath = null
+
+        const fileMarker = 'APPLAN2_FINAL_FILE:'
+
+        // Process one complete output line
+        const handleOutputLine = (line) => {
+          const cleanLine = line.trim()
+
+          if (!cleanLine) {
+            return
+          }
+
+          if (cleanLine.startsWith(fileMarker)) {
+            finalFilePath = cleanLine.slice(fileMarker.length).trim()
+
+            console.log('[yt-dlp] Final file:', finalFilePath)
+          } else {
+            // Print the yt-dlp output
+            console.log('[yt-dlp]', cleanLine)
+
+            // Forward structured output lines to the caller
+            if (typeof onOutputLine === 'function') {
+              try {
+                onOutputLine(cleanLine)
+              } catch (error) {
+                console.error('[yt-dlp] Output line callback error:', error)
+              }
+            }
+
+            // Extract download percentage from the line
+            const percent = parseYtDlpProgressLine(cleanLine)
+
+            // Send progress to the caller if a callback exists
+            if (percent !== null && typeof onProgress === 'function') {
+              try {
+                onProgress(percent)
+              } catch (callbackError) {
+                console.error('[yt-dlp] Progress callback error:', callbackError)
+              }
+            }
+          }
+        }
+
+        child.stdout.setEncoding('utf8')
+        child.stderr.setEncoding('utf8')
+
+        // Read stdout safely, line by line
+        child.stdout.on('data', (chunk) => {
+          stdoutBuffer += chunk
+
+          const lines = stdoutBuffer.split(/\r?\n/)
+
+          stdoutBuffer = lines.pop() ?? ''
+
+          for (const line of lines) {
+            handleOutputLine(line)
+          }
+        })
+
+        // Read errors and warnings
+        child.stderr.on('data', (text) => {
+          errorOutput = (errorOutput + text).slice(-2000)
+
+          console.error('[yt-dlp]', text.trimEnd())
+        })
+
+        // Handle failure to start yt-dlp
+        child.once('error', (error) => {
+          if (processEntry.cancelRequested) {
+            settleReject(new DownloadCancelledError('Download was cancelled'))
+            return
+          }
+
+          const classified = classifyDownloadError(error, { target: 'yt-dlp' })
+          settleReject(new DownloadError(classified.code, classified.message, { cause: error }))
+        })
+
+        // Handle process completion
+        child.once('close', (exitCode, signal) => {
+          if (processEntry.cancelRequested) {
+            settleReject(new DownloadCancelledError('Download was cancelled'))
+            return
+          }
+
+          // Process any remaining output
+          if (stdoutBuffer.trim()) {
+            handleOutputLine(stdoutBuffer)
+          }
+
+          if (exitCode === 0) {
+            settleResolve({
+              success: true,
+              exitCode,
+              finalFilePath
+            })
+
+            return
+          }
+
+          const reason = signal ? `signal ${signal}` : `exit code ${exitCode}`
+
+          const classified = classifyDownloadError(new Error(`yt-dlp failed (${reason})`), {
+            target: 'yt-dlp',
+            stderr: errorOutput
+          })
+
+          settleReject(
+            new DownloadError(classified.code, classified.message, {
+              cause: {
+                exitCode,
+                signal,
+                stderr: errorOutput.trim()
+              }
+            })
+          )
+        })
       })
-
-      settleReject(
-        new DownloadError(classified.code, classified.message, {
-          cause: {
-            exitCode,
-            signal,
-            stderr: errorOutput.trim()
-          }
-        })
-      )
-    })
+      .catch((pathError) => {
+        reject(pathError)
+      })
   })
 }
 
@@ -484,24 +556,34 @@ export async function markDownloadJobFailed(jobId, error, expectedStatus = 'down
     formattedMessage.trim().slice(0, 2000) ||
     `[${DOWNLOAD_ERROR_CODES.UNKNOWN_ERROR}] ${DEFAULT_ERROR_MESSAGES.UNKNOWN_ERROR}`
 
-  const [updatedCount] = await DownloadJob.update(
-    {
-      status: 'failed',
-      error_message: errorMessage
-    },
-    {
-      where: {
-        id: jobId,
-        status: expectedStatus
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const [updatedCount] = await DownloadJob.update(
+        {
+          status: 'failed',
+          error_message: errorMessage
+        },
+        {
+          where: {
+            id: jobId,
+            status: expectedStatus
+          }
+        }
+      )
+
+      if (updatedCount !== 1) {
+        return null
       }
+
+      return await DownloadJob.findByPk(jobId)
+    } catch (updateError) {
+      if (isSqliteBusyError(updateError) && attempt < 3) {
+        await new Promise((resolve) => setTimeout(resolve, 100 * attempt))
+        continue
+      }
+      throw updateError
     }
-  )
-
-  if (updatedCount !== 1) {
-    return null
   }
-
-  return await DownloadJob.findByPk(jobId)
 }
 
 export async function markDownloadJobCancelled(jobId) {
@@ -511,24 +593,34 @@ export async function markDownloadJobCancelled(jobId) {
 
   const DownloadJob = getDatabase().models.DownloadJob
 
-  const [updatedCount] = await DownloadJob.update(
-    {
-      status: 'cancelled',
-      error_message: null
-    },
-    {
-      where: {
-        id: jobId,
-        status: 'downloading'
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const [updatedCount] = await DownloadJob.update(
+        {
+          status: 'cancelled',
+          error_message: null
+        },
+        {
+          where: {
+            id: jobId,
+            status: 'downloading'
+          }
+        }
+      )
+
+      if (updatedCount !== 1) {
+        return null
       }
+
+      return await DownloadJob.findByPk(jobId)
+    } catch (updateError) {
+      if (isSqliteBusyError(updateError) && attempt < 3) {
+        await new Promise((resolve) => setTimeout(resolve, 100 * attempt))
+        continue
+      }
+      throw updateError
     }
-  )
-
-  if (updatedCount !== 1) {
-    return null
   }
-
-  return await DownloadJob.findByPk(jobId)
 }
 
 export async function cancelRunningDownload(jobId) {
@@ -596,13 +688,24 @@ export async function prepareDownloadJobExecution(jobId) {
     throw new Error('Media Item or source URL not found')
   }
 
+  // Step 04.40 - Preflight URL security validation before network execution
+  await validateMediaUrl(media.source_url)
+
   // Get the selected or default download folder
   const savedPath = await getSavedDownloadPath(AppSetting)
 
   const downloadPath = savedPath || (await getDefaultDownloadPath())
 
+  // Step 04.37 - Validate folder safety and verify write permissions
+  await validateDownloadFolder(downloadPath)
+  await verifyDownloadFolderWritable(downloadPath)
+
+  // Step 04.37 - Output file conflict protection before starting download
+  await assertNoJobOutputFileConflict(downloadPath, job.id)
+
   // Select exact MP4 video and audio source formats
   let mp4FormatSelector = null
+  let estimatedRequiredBytes = null
 
   if (job.output_format === 'mp4') {
     const analysis = await analyzeMedia(media.source_url)
@@ -636,8 +739,18 @@ export async function prepareDownloadJobExecution(jobId) {
 
     if (videoOnly && m4aAudio) {
       mp4FormatSelector = `${videoOnly.formatId}+${m4aAudio.formatId}`
+      const vSize = Number(videoOnly.fileSize) || 0
+      const aSize = Number(m4aAudio.fileSize) || 0
+      if (vSize > 0 || aSize > 0) {
+        // Factor 2.5x to conservatively cover video fragment + audio fragment + merged mp4 file
+        estimatedRequiredBytes = Math.ceil((vSize + aSize) * 2.5)
+      }
     } else if (combinedVideo) {
       mp4FormatSelector = combinedVideo.formatId
+      const cSize = Number(combinedVideo.fileSize) || 0
+      if (cSize > 0) {
+        estimatedRequiredBytes = Math.ceil(cSize * 2.0)
+      }
     }
 
     // Step 04.26 - Unsupported MP4 quality handling
@@ -664,10 +777,39 @@ export async function prepareDownloadJobExecution(jobId) {
         `No compatible MP4 video/audio format found for quality "${job.quality}"`
       )
     }
+  } else if (job.output_format === 'mp3') {
+    if (Number.isFinite(media.duration_seconds) && media.duration_seconds > 0) {
+      // Audio stream size estimation: duration (seconds) * bitrate (kbps * 1000 / 8)
+      const approxAudioBytes = Math.ceil(
+        media.duration_seconds * ((job.audio_bitrate_kbps * 1000) / 8)
+      )
+      // 2.5x to account for downloaded source stream + converted mp3 output
+      estimatedRequiredBytes = Math.ceil(approxAudioBytes * 2.5)
+    }
   }
+
+  // Step 04.37 - Insufficient disk space preflight detection
+  const diskCheck = await checkDownloadDiskSpace({
+    downloadPath,
+    estimatedRequiredBytes
+  })
+
+  if (!diskCheck.sufficient) {
+    throw new DownloadError(
+      DOWNLOAD_ERROR_CODES.DISK_FULL,
+      'Not enough disk space to complete the download.'
+    )
+  }
+
+  // Record job execution start time for output file verification
+  const jobStartTime = Date.now()
 
   // Create a dedicated temporary workspace for this download job
   const tempPath = await prepareJobTemporaryWorkspace(job.id, downloadPath)
+
+  // Step 04.43 - Resolve packaged/dev FFmpeg location and JS runtime options
+  const jsRuntimeOption = await resolveJavaScriptRuntimeOption()
+  const ffmpegLocation = await resolveFFmpegLocationDirectory()
 
   // Prepare yt-dlp arguments
   const args = buildYtDlpArgs({
@@ -678,18 +820,21 @@ export async function prepareDownloadJobExecution(jobId) {
     downloadPath,
     mp4FormatSelector,
     jobId: job.id,
-    tempPath
+    tempPath,
+    jsRuntimeOption,
+    ffmpegLocation
   })
 
   return {
     jobId: job.id,
     downloadPath,
     tempPath,
-    args
+    args,
+    jobStartTime
   }
 }
 
-export async function verifyDownloadedFile(finalFilePath) {
+export async function verifyDownloadedFile(finalFilePath, options = {}) {
   // Validate the file path
   if (typeof finalFilePath !== 'string' || !finalFilePath.trim()) {
     throw new DownloadError(
@@ -699,6 +844,27 @@ export async function verifyDownloadedFile(finalFilePath) {
   }
 
   const filePath = finalFilePath.trim()
+
+  // Step 04.37 - Guard against path traversal if expected download folder is provided
+  if (options?.downloadPath) {
+    await assertRealPathInsideDirectory(filePath, options.downloadPath)
+  }
+
+  // Step 04.37 - Ensure the downloaded output is not a symbolic link or junction
+  try {
+    const lstatInfo = await lstat(filePath)
+    if (lstatInfo.isSymbolicLink()) {
+      throw new DownloadError(
+        DOWNLOAD_ERROR_CODES.OUTPUT_VERIFICATION_FAILED,
+        'Downloaded file cannot be a symbolic link'
+      )
+    }
+  } catch (lstatErr) {
+    if (lstatErr instanceof DownloadError) {
+      throw lstatErr
+    }
+    // If lstat throws, subsequent stat check will handle ENOENT / permissions
+  }
 
   let fileStats
 
@@ -745,6 +911,17 @@ export async function verifyDownloadedFile(finalFilePath) {
     )
   }
 
+  // Step 04.37 - Verify output file was newly created during this job execution (not pre-existing)
+  if (options?.jobStartTime && typeof options.jobStartTime === 'number') {
+    // 2000ms margin for filesystem clock granularity
+    if (fileStats.mtimeMs < options.jobStartTime - 2000) {
+      throw new DownloadError(
+        DOWNLOAD_ERROR_CODES.OUTPUT_VERIFICATION_FAILED,
+        'Downloaded output file appears to be a pre-existing file'
+      )
+    }
+  }
+
   return {
     exists: true,
     filePath,
@@ -756,9 +933,12 @@ export async function verifyFinalMediaContent(filePath, expectedFormat) {
   // Inspect the actual output container and media streams.
   let probeData
 
+  // Step 04.43 - Dynamically resolve packaged or dev ffprobe executable path
+  const ffprobeExecutable = await resolveFFprobePath()
+
   try {
     const { stdout } = await execFileAsync(
-      'ffprobe',
+      ffprobeExecutable,
       [
         '-v',
         'error',
@@ -841,7 +1021,12 @@ export async function verifyFinalMediaContent(filePath, expectedFormat) {
 }
 
 //save download file in downloadfile table
-export async function saveDownloadedFile(jobId, finalFilePath, transaction = null) {
+export async function saveDownloadedFile(
+  jobId,
+  finalFilePath,
+  transaction = null,
+  preVerifiedFile = null
+) {
   // 1. Validate Download Job ID
   if (!Number.isInteger(jobId) || jobId <= 0) {
     throw new Error('A valid Download Job ID is required')
@@ -864,8 +1049,8 @@ export async function saveDownloadedFile(jobId, finalFilePath, transaction = nul
     throw new Error('Download Job must be downloading')
   }
 
-  // 5. Verify the actual downloaded file
-  const verifiedFile = await verifyDownloadedFile(finalFilePath)
+  // 5. Verify the actual downloaded file if not already pre-verified outside transaction
+  const verifiedFile = preVerifiedFile || (await verifyDownloadedFile(finalFilePath))
 
   // 6. Check whether the file format matches the job
   const fileFormat = extname(verifiedFile.filePath).slice(1).toLowerCase()
@@ -877,8 +1062,10 @@ export async function saveDownloadedFile(jobId, finalFilePath, transaction = nul
     )
   }
 
-  // Verify actual media container and streams before saving
-  await verifyFinalMediaContent(verifiedFile.filePath, job.output_format)
+  // Verify actual media container and streams before saving if not already pre-verified
+  if (!preVerifiedFile) {
+    await verifyFinalMediaContent(verifiedFile.filePath, job.output_format)
+  }
 
   // 7. Prevent multiple file records for the same job
   const existingFile = await DownloadFile.findOne({
@@ -1109,23 +1296,85 @@ export async function executeDownloadJob(jobId) {
       )
     }
 
-    // 9. Save file record and complete job atomically
-    const { savedFile, completedJob } = await getDatabase().transaction(async (transaction) => {
-      // Save the downloaded file record
-      const savedFile = await saveDownloadedFile(jobId, result.finalFilePath, transaction)
-
-      // Complete the job within the same transaction
-      const completedJob = await markDownloadJobCompleted(jobId, transaction)
-
-      if (!completedJob) {
-        throw new Error('Could not mark Download Job as completed')
-      }
-
-      return {
-        savedFile,
-        completedJob
-      }
+    // Verify final media file outside any transaction to avoid holding database locks during ffprobe
+    const verifiedFile = await verifyDownloadedFile(result.finalFilePath, {
+      downloadPath: execution.downloadPath,
+      jobStartTime: execution.jobStartTime
     })
+    const fileFormat = extname(verifiedFile.filePath).slice(1).toLowerCase()
+
+    if (fileFormat !== claimedJob.output_format) {
+      throw new DownloadError(
+        DOWNLOAD_ERROR_CODES.OUTPUT_VERIFICATION_FAILED,
+        'Downloaded file format does not match the job'
+      )
+    }
+
+    await verifyFinalMediaContent(verifiedFile.filePath, claimedJob.output_format)
+
+    // 9. Save file record and complete job atomically with serialized write and bounded retries
+    const MAX_COMPLETION_RETRIES = 5
+    let completionAttempt = 0
+    let savedFile = null
+    let completedJob = null
+
+    while (completionAttempt < MAX_COMPLETION_RETRIES) {
+      completionAttempt += 1
+
+      try {
+        const completionResult = await withCompletionWriteLock(async () => {
+          return await getDatabase().transaction(
+            { type: Transaction.TYPES.IMMEDIATE },
+            async (transaction) => {
+              // Save the downloaded file record (using preVerifiedFile to avoid re-running ffprobe)
+              const saved = await saveDownloadedFile(
+                jobId,
+                result.finalFilePath,
+                transaction,
+                verifiedFile
+              )
+
+              // Complete the job within the same transaction
+              const completed = await markDownloadJobCompleted(jobId, transaction)
+
+              if (!completed) {
+                throw new Error('Could not mark Download Job as completed')
+              }
+
+              return {
+                savedFile: saved,
+                completedJob: completed
+              }
+            }
+          )
+        })
+
+        savedFile = completionResult.savedFile
+        completedJob = completionResult.completedJob
+        break
+      } catch (completionError) {
+        // If it's a transient SQLite busy/lock error and we have retries left, wait with backoff and retry
+        if (isSqliteBusyError(completionError) && completionAttempt < MAX_COMPLETION_RETRIES) {
+          const delayMs = 150 * completionAttempt + Math.floor(Math.random() * 100)
+          console.warn(
+            `[download] SQLite busy during completion for job ${jobId} (attempt ${completionAttempt}/${MAX_COMPLETION_RETRIES}). Retrying in ${delayMs}ms...`
+          )
+          await new Promise((resolve) => setTimeout(resolve, delayMs))
+          continue
+        }
+
+        // If it's an SQLite lock error that exhausted all retries, classify clearly
+        if (isSqliteBusyError(completionError)) {
+          throw new DownloadError(
+            DOWNLOAD_ERROR_CODES.DATABASE_ERROR,
+            'The database was temporarily busy and could not record download completion. Please retry.',
+            { cause: completionError }
+          )
+        }
+
+        throw completionError
+      }
+    }
 
     // Safely clean up job-owned temporary workspace after successful completion
     try {
@@ -1328,29 +1577,39 @@ export async function updateDownloadJobProgress(jobId, overallPercent) {
   // 4. Get the DownloadJob model
   const DownloadJob = getDatabase().models.DownloadJob
 
-  // 5. Update only an active job with lower progress
-  const [updatedCount] = await DownloadJob.update(
-    {
-      progress: safePercent
-    },
-    {
-      where: {
-        id: jobId,
-        status: 'downloading',
-        progress: {
-          [Op.lt]: safePercent
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      // 5. Update only an active job with lower progress
+      const [updatedCount] = await DownloadJob.update(
+        {
+          progress: safePercent
+        },
+        {
+          where: {
+            id: jobId,
+            status: 'downloading',
+            progress: {
+              [Op.lt]: safePercent
+            }
+          }
         }
+      )
+
+      // 6. Return null if nothing was updated
+      if (updatedCount !== 1) {
+        return null
       }
+
+      // 7. Return the updated Download Job
+      return await DownloadJob.findByPk(jobId)
+    } catch (updateError) {
+      if (isSqliteBusyError(updateError) && attempt < 3) {
+        await new Promise((resolve) => setTimeout(resolve, 50 * attempt))
+        continue
+      }
+      throw updateError
     }
-  )
-
-  // 6. Return null if nothing was updated
-  if (updatedCount !== 1) {
-    return null
   }
-
-  // 7. Return the updated Download Job
-  return await DownloadJob.findByPk(jobId)
 }
 
 export async function updateDownloadJobDownloadedBytes(jobId, downloadedBytes) {
@@ -1365,27 +1624,37 @@ export async function updateDownloadJobDownloadedBytes(jobId, downloadedBytes) {
 
   const DownloadJob = getDatabase().models.DownloadJob
 
-  // Update only an active job with higher byte count
-  const [updatedCount] = await DownloadJob.update(
-    {
-      downloaded_bytes: downloadedBytes
-    },
-    {
-      where: {
-        id: jobId,
-        status: 'downloading',
-        downloaded_bytes: {
-          [Op.lt]: downloadedBytes
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      // Update only an active job with higher byte count
+      const [updatedCount] = await DownloadJob.update(
+        {
+          downloaded_bytes: downloadedBytes
+        },
+        {
+          where: {
+            id: jobId,
+            status: 'downloading',
+            downloaded_bytes: {
+              [Op.lt]: downloadedBytes
+            }
+          }
         }
+      )
+
+      if (updatedCount !== 1) {
+        return null
       }
+
+      return await DownloadJob.findByPk(jobId)
+    } catch (updateError) {
+      if (isSqliteBusyError(updateError) && attempt < 3) {
+        await new Promise((resolve) => setTimeout(resolve, 50 * attempt))
+        continue
+      }
+      throw updateError
     }
-  )
-
-  if (updatedCount !== 1) {
-    return null
   }
-
-  return await DownloadJob.findByPk(jobId)
 }
 
 export function calculateOverallDownloadProgress(outputFormat, streamPercent) {

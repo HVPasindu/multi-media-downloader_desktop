@@ -1,4 +1,3 @@
-
 import { Router } from 'express'
 
 import {
@@ -6,7 +5,9 @@ import {
   getDownloadJobController,
   listDownloadJobsController,
   cancelDownloadJobController,
-  retryDownloadJobController
+  retryDownloadJobController,
+  deleteDownloadHistoryController,
+  clearDownloadHistoryController
 } from '../controllers/downloadController.js'
 
 const router = Router()
@@ -17,6 +18,9 @@ router.post('/', createDownloadJobController)
 // Get recent download history
 router.get('/', listDownloadJobsController)
 
+// Clear explicitly selected terminal download history
+router.delete('/history', clearDownloadHistoryController)
+
 // Cancel a queued or running download job
 router.post('/:id/cancel', cancelDownloadJobController)
 
@@ -25,5 +29,8 @@ router.post('/:id/retry', retryDownloadJobController)
 
 // Get details of a specific download job
 router.get('/:id', getDownloadJobController)
+
+// Delete one terminal download history record
+router.delete('/:id', deleteDownloadHistoryController)
 
 export default router

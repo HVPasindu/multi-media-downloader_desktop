@@ -4,3 +4,6 @@ out
 .DS_Store
 .eslintcache
 *.log*
+
+# Staged binary executables (>100MB binaries staged locally for packaging)
+resources/bin/**/*.exe

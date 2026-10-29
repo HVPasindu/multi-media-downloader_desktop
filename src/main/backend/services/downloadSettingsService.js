@@ -1,4 +1,3 @@
-
 const DOWNLOAD_PATH_KEY = 'download_path'
 
 export async function getSavedDownloadPath(AppSetting) {
@@ -11,17 +10,22 @@ export async function getSavedDownloadPath(AppSetting) {
   return setting?.value ?? null
 }
 
-export async function saveDownloadPath(AppSetting, folderPath) {
+export async function saveDownloadPath(AppSetting, folderPath, transaction = null) {
   if (typeof folderPath !== 'string' || !folderPath.trim()) {
     throw new Error('A valid download folder path is required')
   }
 
   const cleanPath = folderPath.trim()
 
-  await AppSetting.upsert({
-    key: DOWNLOAD_PATH_KEY,
-    value: cleanPath
-  })
+  await AppSetting.upsert(
+    {
+      key: DOWNLOAD_PATH_KEY,
+      value: cleanPath
+    },
+    {
+      transaction
+    }
+  )
 
   return cleanPath
 }

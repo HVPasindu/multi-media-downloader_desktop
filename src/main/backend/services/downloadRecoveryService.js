@@ -78,33 +78,4 @@ export async function recoverInterruptedDownloadJobs() {
     interruptedDownloads: result.interruptedDownloads,
     interruptedQueuedJobs: result.interruptedQueuedJobs
   }
-
-  // 4. Safely clean up job-owned temporary artifacts left behind by stale interrupted downloads
-  if (result.staleDownloadingJobIds && result.staleDownloadingJobIds.length > 0) {
-    try {
-      const savedPath = await getSavedDownloadPath(AppSetting)
-      const downloadPath = savedPath || (await getDefaultDownloadPath())
-
-      for (const staleJobId of result.staleDownloadingJobIds) {
-        try {
-          await cleanupStaleJobTemporaryFiles(staleJobId, downloadPath)
-        } catch (cleanupError) {
-          console.warn(
-            `[recovery] Failed to clean temporary files for stale job ${staleJobId}:`,
-            cleanupError
-          )
-        }
-      }
-    } catch (pathError) {
-      console.warn(
-        '[recovery] Failed to resolve download path for stale cleanup:',
-        pathError
-      )
-    }
-  }
-
-  return {
-    interruptedDownloads: result.interruptedDownloads,
-    interruptedQueuedJobs: result.interruptedQueuedJobs
-  }
 }

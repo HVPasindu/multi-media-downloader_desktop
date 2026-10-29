@@ -1,16 +1,19 @@
-import { app, shell, BrowserWindow, ipcMain, dialog  } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, dialog } from 'electron'
 
 import { startServer, stopServer } from './backend/server.js'
 
 import { initializeDatabase } from './backend/config/database.js'
 import { recoverInterruptedDownloadJobs } from './backend/services/downloadRecoveryService.js'
 
-
 import { getDatabase } from './backend/config/database.js'
-import { saveDownloadPath,getSavedDownloadPath } from './backend/services/downloadSettingsService.js'
+import { getSavedDownloadPath } from './backend/services/downloadSettingsService.js'
+import { updateDownloadPreferences } from './backend/services/settingsService.js'
 import { getDefaultDownloadPath } from './backend/services/downloadPathService.js'
-
-
+import {
+  validateDownloadFolder,
+  verifyDownloadFolderWritable
+} from './backend/services/downloadFileSafetyService.js'
+import { getSessionToken } from './backend/services/localApiSecurityService.js'
 
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
@@ -68,90 +71,131 @@ app.whenReady().then(async () => {
   // IPC test
   ipcMain.on('ping', () => console.log('pong'))
 
-
-
   try {
     // 1. Initialize SQLite Database
-  const { sequelize, databasePath } =
-    await initializeDatabase()
-
-
-
-
-
-
+    const { sequelize, databasePath } = await initializeDatabase()
 
     // 2. Store Sequelize connection for shutdown
-  databaseConnection = sequelize
+    databaseConnection = sequelize
 
-  console.log('Database path:', databasePath)
+    console.log('Database path:', databasePath)
 
-  // 3. Recover incomplete jobs from the previous application session
-  const recoveryResult = await recoverInterruptedDownloadJobs()
+    // 3. Recover incomplete jobs from the previous application session
+    const recoveryResult = await recoverInterruptedDownloadJobs()
 
-  console.log(
-    'Download restart recovery completed:',
-    recoveryResult
-  )
+    console.log('Download restart recovery completed:', recoveryResult)
 
-  // 4. Start Express Backend
-  const { baseUrl } = await startServer()
+    // 4. Start Express Backend
+    const { baseUrl } = await startServer()
 
-  console.log('Backend URL:', baseUrl)
+    console.log('Backend URL:', baseUrl)
 
+    // Allow the frontend to choose a download folder
+    ipcMain.handle('downloads:choose-folder', async (event) => {
+      const ownerWindow = BrowserWindow.fromWebContents(event.sender)
 
-  // Allow the frontend to choose a download folder
-  ipcMain.handle('downloads:choose-folder', async (event) => {
-    const ownerWindow = BrowserWindow.fromWebContents(event.sender)
+      if (!ownerWindow) {
+        throw new Error('Application window not found')
+      }
 
-    if (!ownerWindow) {
-      throw new Error('Application window not found')
-    }
+      const result = await dialog.showOpenDialog(ownerWindow, {
+        title: 'Choose Download Folder',
+        properties: ['openDirectory']
+      })
 
-    const result = await dialog.showOpenDialog(ownerWindow, {
-      title: 'Choose Download Folder',
-      properties: ['openDirectory']
+      if (result.canceled || result.filePaths.length === 0) {
+        return null
+      }
+
+      const selectedPath = result.filePaths[0]
+
+      // Validate folder safety and write permissions before persisting
+      const validPath = await validateDownloadFolder(selectedPath)
+      await verifyDownloadFolderWritable(validPath)
+
+      // Reuse Settings API service to enforce active-job safety guard and persistence
+      const updatedPreferences = await updateDownloadPreferences({
+        downloadPath: validPath
+      })
+
+      return updatedPreferences.downloadPath
     })
 
-    if (result.canceled || result.filePaths.length === 0) {
-      return null
-    }
+    ipcMain.handle('downloads:get-folder', async () => {
+      const AppSetting = getDatabase().models.AppSetting
 
-    const selectedPath = result.filePaths[0]
+      const savedPath = await getSavedDownloadPath(AppSetting)
 
-    const AppSetting = getDatabase().models.AppSetting
+      if (savedPath) {
+        return savedPath
+      }
 
-    await saveDownloadPath(AppSetting, selectedPath)
+      return await getDefaultDownloadPath()
+    })
 
-    return selectedPath
-  })
+    // Step 04.41 - Provide a secure, authenticated IPC bridge for renderer API requests
+    ipcMain.handle('api:request', async (event, requestOptions) => {
+      // 1. Validate IPC sender - must originate from the trusted application window
+      const ownerWindow = BrowserWindow.fromWebContents(event.sender)
+      if (!ownerWindow || ownerWindow.isDestroyed()) {
+        throw new Error('Unauthorized IPC sender')
+      }
 
+      // 2. Validate request options
+      if (!requestOptions || typeof requestOptions !== 'object') {
+        throw new Error('Invalid API request options')
+      }
 
-ipcMain.handle('downloads:get-folder', async () => {
-  const AppSetting = getDatabase().models.AppSetting
+      const { path: apiPath, method = 'GET', body = null } = requestOptions
 
-  const savedPath = await getSavedDownloadPath(AppSetting)
+      if (typeof apiPath !== 'string' || !apiPath.startsWith('/api/')) {
+        throw new Error('API path must start with /api/')
+      }
 
-  if (savedPath) {
-    return savedPath
+      // Reject path traversal
+      if (apiPath.includes('..') || apiPath.includes('//')) {
+        throw new Error('Invalid API path structure')
+      }
+
+      const upperMethod = typeof method === 'string' ? method.toUpperCase() : 'GET'
+      const allowedMethods = ['GET', 'POST', 'PATCH', 'DELETE']
+      if (!allowedMethods.includes(upperMethod)) {
+        throw new Error(`Method ${upperMethod} is not permitted`)
+      }
+
+      // 3. Issue local HTTP request to 127.0.0.1:3001 with active session token
+      const token = getSessionToken()
+      const url = `http://127.0.0.1:3001${apiPath}`
+
+      const fetchOptions = {
+        method: upperMethod,
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        }
+      }
+
+      if (body && ['POST', 'PATCH', 'DELETE'].includes(upperMethod)) {
+        fetchOptions.body = JSON.stringify(body)
+      }
+
+      const response = await fetch(url, fetchOptions)
+      const data = await response.json().catch(() => null)
+
+      return {
+        status: response.status,
+        ok: response.ok,
+        data
+      }
+    })
+  } catch (error) {
+    console.error('Application startup failed:', error)
+
+    dialog.showErrorBox('Startup Error', error instanceof Error ? error.message : String(error))
+
+    app.quit()
+    return
   }
-
-  return await getDefaultDownloadPath()
-})
-
-
-
-} catch (error) {
-  console.error('Application startup failed:', error)
-
-  dialog.showErrorBox(
-    'Startup Error',
-    error instanceof Error ? error.message : String(error)
-  )
-
-  app.quit()
-  return
-}
 
   createWindow()
 
@@ -182,10 +226,8 @@ app.on('before-quit', (event) => {
       }
 
       console.log('Application resources closed')
-
     } catch (error) {
       console.error('Shutdown error:', error)
-
     } finally {
       app.quit()
     }

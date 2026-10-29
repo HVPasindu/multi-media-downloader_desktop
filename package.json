@@ -6,14 +6,16 @@
   "author": "example.com",
   "homepage": "https://electron-vite.org",
   "scripts": {
+    "test": "node --loader ./tests/loaders/electron_loader.mjs scripts/run-backend-tests.mjs",
     "format": "prettier --write .",
     "lint": "eslint --cache .",
     "start": "electron-vite preview",
     "dev": "electron-vite dev",
     "build": "electron-vite build",
+    "verify:binaries": "node scripts/verify-windows-binaries.mjs",
     "postinstall": "electron-builder install-app-deps",
-    "build:unpack": "npm run build && electron-builder --dir",
-    "build:win": "npm run build && electron-builder --win",
+    "build:unpack": "npm run build && npm run verify:binaries && electron-builder --dir",
+    "build:win": "npm run build && npm run verify:binaries && electron-builder --win",
     "build:mac": "npm run build && electron-builder --mac",
     "build:linux": "npm run build && electron-builder --linux"
   },

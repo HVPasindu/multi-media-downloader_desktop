@@ -1,5 +1,4 @@
-
-const PLATFORM_DOMAINS = {
+export const PLATFORM_DOMAINS = {
   youtube: ['youtube.com', 'youtu.be'],
   facebook: ['facebook.com', 'fb.watch'],
   instagram: ['instagram.com'],
@@ -30,11 +29,7 @@ export function detectPlatform(sourceUrl) {
 
   // Find matching platform
   for (const [platform, domains] of Object.entries(PLATFORM_DOMAINS)) {
-    const matched = domains.some(
-      (domain) =>
-        hostname === domain ||
-        hostname.endsWith(`.${domain}`)
-    )
+    const matched = domains.some((domain) => hostname === domain || hostname.endsWith(`.${domain}`))
 
     if (matched) {
       return platform

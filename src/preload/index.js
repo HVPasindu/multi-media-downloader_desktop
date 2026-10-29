@@ -10,9 +10,12 @@ const api = {
 
   getDownloadFolder: () => {
     return ipcRenderer.invoke('downloads:get-folder')
+  },
+
+  request: (options) => {
+    return ipcRenderer.invoke('api:request', options)
   }
 }
-
 
 // Use `contextBridge` APIs to expose Electron APIs to
 // renderer only if context isolation is enabled, otherwise

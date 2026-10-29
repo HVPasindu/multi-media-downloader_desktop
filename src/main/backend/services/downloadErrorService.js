@@ -1,4 +1,3 @@
-
 // Machine-readable download error codes
 export const DOWNLOAD_ERROR_CODES = Object.freeze({
   NETWORK_ERROR: 'NETWORK_ERROR',
@@ -15,6 +14,7 @@ export const DOWNLOAD_ERROR_CODES = Object.freeze({
   DISK_FULL: 'DISK_FULL',
   PERMISSION_DENIED: 'PERMISSION_DENIED',
   OUTPUT_VERIFICATION_FAILED: 'OUTPUT_VERIFICATION_FAILED',
+  DATABASE_ERROR: 'DATABASE_ERROR',
   UNKNOWN_ERROR: 'UNKNOWN_ERROR'
 })
 
@@ -22,12 +22,10 @@ export const DOWNLOAD_ERROR_CODES = Object.freeze({
 export const DEFAULT_ERROR_MESSAGES = Object.freeze({
   [DOWNLOAD_ERROR_CODES.NETWORK_ERROR]:
     'Network connection failed. Check your internet connection and try again.',
-  [DOWNLOAD_ERROR_CODES.NETWORK_TIMEOUT]:
-    'The download connection timed out. Please try again.',
+  [DOWNLOAD_ERROR_CODES.NETWORK_TIMEOUT]: 'The download connection timed out. Please try again.',
   [DOWNLOAD_ERROR_CODES.RATE_LIMITED]:
     'The media provider is temporarily limiting requests. Please try again later.',
-  [DOWNLOAD_ERROR_CODES.MEDIA_UNAVAILABLE]:
-    'This media is unavailable or cannot be accessed.',
+  [DOWNLOAD_ERROR_CODES.MEDIA_UNAVAILABLE]: 'This media is unavailable or cannot be accessed.',
   [DOWNLOAD_ERROR_CODES.SOURCE_ACCESS_DENIED]:
     'This media requires access that is not available to the downloader.',
   [DOWNLOAD_ERROR_CODES.FORMAT_UNAVAILABLE]:
@@ -40,16 +38,15 @@ export const DEFAULT_ERROR_MESSAGES = Object.freeze({
     'FFprobe executable was not found. FFmpeg tools must be available in PATH.',
   [DOWNLOAD_ERROR_CODES.YT_DLP_FAILED]:
     'Download engine encountered an error while processing the media.',
-  [DOWNLOAD_ERROR_CODES.FFMPEG_FAILED]:
-    'Audio or video processing failed.',
-  [DOWNLOAD_ERROR_CODES.DISK_FULL]:
-    'Not enough disk space to complete the download.',
+  [DOWNLOAD_ERROR_CODES.FFMPEG_FAILED]: 'Audio or video processing failed.',
+  [DOWNLOAD_ERROR_CODES.DISK_FULL]: 'Not enough disk space to complete the download.',
   [DOWNLOAD_ERROR_CODES.PERMISSION_DENIED]:
     'The application does not have permission to write to the selected location.',
   [DOWNLOAD_ERROR_CODES.OUTPUT_VERIFICATION_FAILED]:
     'Downloaded file could not be verified or is corrupted.',
-  [DOWNLOAD_ERROR_CODES.UNKNOWN_ERROR]:
-    'The download failed due to an unexpected error.'
+  [DOWNLOAD_ERROR_CODES.DATABASE_ERROR]:
+    'The database was temporarily busy and could not record the download. Please retry.',
+  [DOWNLOAD_ERROR_CODES.UNKNOWN_ERROR]: 'The download failed due to an unexpected error.'
 })
 
 /**
@@ -58,8 +55,7 @@ export const DEFAULT_ERROR_MESSAGES = Object.freeze({
  */
 export class DownloadError extends Error {
   constructor(code, message = null, options = {}) {
-    const defaultMsg =
-      DEFAULT_ERROR_MESSAGES[code] || DEFAULT_ERROR_MESSAGES.UNKNOWN_ERROR
+    const defaultMsg = DEFAULT_ERROR_MESSAGES[code] || DEFAULT_ERROR_MESSAGES.UNKNOWN_ERROR
     const finalMsg = message || defaultMsg
 
     super(finalMsg, { cause: options.cause })
@@ -107,12 +103,21 @@ export function classifyDownloadError(error, context = {}) {
     }
   }
 
+  // Step 04.40 - URL Security failure classification
+  if (error?.name === 'UrlSecurityError') {
+    const isDnsFailure = error.code === 'DNS_LOOKUP_FAILED'
+    return {
+      code: isDnsFailure
+        ? DOWNLOAD_ERROR_CODES.NETWORK_ERROR
+        : DOWNLOAD_ERROR_CODES.SOURCE_ACCESS_DENIED,
+      message: error.userMessage || DEFAULT_ERROR_MESSAGES.SOURCE_ACCESS_DENIED,
+      technicalDetails: error.message
+    }
+  }
+
   // 3. Already formatted message check: "[CODE] Message"
   const rawErrorMessage = typeof error === 'string' ? error : error?.message
-  if (
-    typeof rawErrorMessage === 'string' &&
-    /^\[[A-Z_]+\]\s/.test(rawErrorMessage)
-  ) {
+  if (typeof rawErrorMessage === 'string' && /^\[[A-Z_]+\]\s/.test(rawErrorMessage)) {
     const match = rawErrorMessage.match(/^\[([A-Z_]+)\]\s+(.*)$/)
     if (match && DOWNLOAD_ERROR_CODES[match[1]]) {
       return {
@@ -165,10 +170,7 @@ export function classifyDownloadError(error, context = {}) {
       }
     }
 
-    if (
-      context?.step === 'file_verification' ||
-      msg.includes('downloaded file does not exist')
-    ) {
+    if (context?.step === 'file_verification' || msg.includes('downloaded file does not exist')) {
       return {
         code: DOWNLOAD_ERROR_CODES.OUTPUT_VERIFICATION_FAILED,
         message: DEFAULT_ERROR_MESSAGES.OUTPUT_VERIFICATION_FAILED
@@ -201,16 +203,9 @@ export function classifyDownloadError(error, context = {}) {
   }
 
   // 5. Inspect combined text diagnostics (message + stderr)
-  const rawTexts = [
-    rawErrorMessage,
-    context?.stderr,
-    error?.cause?.message,
-    context?.errorOutput
-  ]
+  const rawTexts = [rawErrorMessage, context?.stderr, error?.cause?.message, context?.errorOutput]
 
-  const combinedText = rawTexts
-    .filter((t) => typeof t === 'string' && t.trim())
-    .join(' ')
+  const combinedText = rawTexts.filter((t) => typeof t === 'string' && t.trim()).join(' ')
   const lowerText = combinedText.toLowerCase()
 
   // Rate Limiting (HTTP 429)
@@ -233,6 +228,13 @@ export function classifyDownloadError(error, context = {}) {
     lowerText.includes('this video has been removed') ||
     lowerText.includes('video not found') ||
     lowerText.includes('content is not available') ||
+    lowerText.includes('tweet has been deleted') ||
+    lowerText.includes('this tweet has been deleted') ||
+    lowerText.includes('tweet unavailable') ||
+    lowerText.includes('this tweet is unavailable') ||
+    lowerText.includes('post has been removed') ||
+    lowerText.includes('this post has been deleted') ||
+    lowerText.includes('post unavailable') ||
     lowerText.includes('http error 404') ||
     lowerText.includes('404 not found') ||
     lowerText.includes('media item or source url not found') ||
@@ -263,10 +265,7 @@ export function classifyDownloadError(error, context = {}) {
   }
 
   // Missing tools reported in process diagnostics
-  if (
-    lowerText.includes('ffprobe was not found') ||
-    lowerText.includes('ffprobe: not found')
-  ) {
+  if (lowerText.includes('ffprobe was not found') || lowerText.includes('ffprobe: not found')) {
     return {
       code: DOWNLOAD_ERROR_CODES.FFPROBE_NOT_FOUND,
       message: DEFAULT_ERROR_MESSAGES.FFPROBE_NOT_FOUND
@@ -284,10 +283,7 @@ export function classifyDownloadError(error, context = {}) {
     }
   }
 
-  if (
-    lowerText.includes('yt-dlp: not found') ||
-    lowerText.includes('yt-dlp was not found')
-  ) {
+  if (lowerText.includes('yt-dlp: not found') || lowerText.includes('yt-dlp was not found')) {
     return {
       code: DOWNLOAD_ERROR_CODES.YT_DLP_NOT_FOUND,
       message: DEFAULT_ERROR_MESSAGES.YT_DLP_NOT_FOUND
@@ -308,9 +304,7 @@ export function classifyDownloadError(error, context = {}) {
         rawErrorMessage.includes('Unsupported MP4 quality'))
     return {
       code: DOWNLOAD_ERROR_CODES.FORMAT_UNAVAILABLE,
-      message: isSpecific
-        ? rawErrorMessage
-        : DEFAULT_ERROR_MESSAGES.FORMAT_UNAVAILABLE
+      message: isSpecific ? rawErrorMessage : DEFAULT_ERROR_MESSAGES.FORMAT_UNAVAILABLE
     }
   }
 
@@ -327,10 +321,7 @@ export function classifyDownloadError(error, context = {}) {
   }
 
   // Filesystem permission denied reported in stderr
-  if (
-    lowerText.includes('permission denied') ||
-    lowerText.includes('operation not permitted')
-  ) {
+  if (lowerText.includes('permission denied') || lowerText.includes('operation not permitted')) {
     return {
       code: DOWNLOAD_ERROR_CODES.PERMISSION_DENIED,
       message: DEFAULT_ERROR_MESSAGES.PERMISSION_DENIED
@@ -407,6 +398,20 @@ export function classifyDownloadError(error, context = {}) {
     }
   }
 
+  // Database locking or access error (SQLite busy/locked or SequelizeTimeoutError)
+  if (
+    error?.name === 'SequelizeTimeoutError' ||
+    error?.name === 'SequelizeDatabaseError' ||
+    lowerText.includes('sqlite_busy') ||
+    lowerText.includes('database is locked') ||
+    lowerText.includes('database locked')
+  ) {
+    return {
+      code: DOWNLOAD_ERROR_CODES.DATABASE_ERROR,
+      message: DEFAULT_ERROR_MESSAGES.DATABASE_ERROR
+    }
+  }
+
   // Safe fallback for unclassified errors
   return {
     code: DOWNLOAD_ERROR_CODES.UNKNOWN_ERROR,
@@ -429,4 +434,3 @@ export function formatDownloadErrorMessage(error, context = {}) {
   }
   return `[${classified.code}] ${classified.message}`
 }
-
