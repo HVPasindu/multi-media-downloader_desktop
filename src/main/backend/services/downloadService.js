@@ -725,22 +725,24 @@ export async function prepareDownloadJobExecution(jobId) {
       (format) => format?.quality === job.quality && hasFormatId(format)
     )
 
+    const isTwitter = media?.platform === 'twitter' || analysis?.platform === 'twitter'
+
     // Prefer video-only MP4 with separate M4A audio
     const videoOnly = [...matchingVideos].reverse().find((format) => format.audioIncluded === false)
 
-    const m4aAudio = [...audioFormats]
+    const compatibleAudio = [...audioFormats]
       .reverse()
-      .find((format) => format?.extension === 'm4a' && hasFormatId(format))
+      .find((format) => (isTwitter ? true : format?.extension === 'm4a') && hasFormatId(format))
 
     // Otherwise use an MP4 source containing audio
     const combinedVideo = [...matchingVideos]
       .reverse()
       .find((format) => format.audioIncluded === true)
 
-    if (videoOnly && m4aAudio) {
-      mp4FormatSelector = `${videoOnly.formatId}+${m4aAudio.formatId}`
+    if (videoOnly && compatibleAudio) {
+      mp4FormatSelector = `${videoOnly.formatId}+${compatibleAudio.formatId}`
       const vSize = Number(videoOnly.fileSize) || 0
-      const aSize = Number(m4aAudio.fileSize) || 0
+      const aSize = Number(compatibleAudio.fileSize) || 0
       if (vSize > 0 || aSize > 0) {
         // Factor 2.5x to conservatively cover video fragment + audio fragment + merged mp4 file
         estimatedRequiredBytes = Math.ceil((vSize + aSize) * 2.5)

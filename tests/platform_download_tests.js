@@ -169,6 +169,142 @@ const TWITTER_SYNTHETIC_FIXTURE = Object.freeze({
   ]
 })
 
+// 5b. X (Twitter) real-world fixture: HLS adaptive video/audio streams + progressive HTTP MP4s
+// (Reflects live yt-dlp metadata for https://x.com/aqdasthetic__/status/2115857465913045380)
+const TWITTER_REAL_WORLD_SYNTHETIC_FIXTURE = Object.freeze({
+  id: '2115857427824607233',
+  title: 'A Q D A S - World is changing.',
+  thumbnail: 'https://pbs.twimg.com/media/test_real.jpg',
+  duration: 15,
+  formats: [
+    {
+      format_id: 'hls-audio-32000-Audio',
+      format_note: 'Audio, low',
+      ext: 'mp4',
+      protocol: 'm3u8_native',
+      vcodec: 'none',
+      video_ext: 'none',
+      audio_ext: 'mp4',
+      abr: 32,
+      resolution: 'audio only'
+    },
+    {
+      format_id: 'hls-audio-64000-Audio',
+      format_note: 'Audio',
+      ext: 'mp4',
+      protocol: 'm3u8_native',
+      vcodec: 'none',
+      video_ext: 'none',
+      audio_ext: 'mp4',
+      abr: 64,
+      resolution: 'audio only'
+    },
+    {
+      format_id: 'hls-audio-128000-Audio',
+      format_note: 'Audio, high',
+      ext: 'mp4',
+      protocol: 'm3u8_native',
+      vcodec: 'none',
+      video_ext: 'none',
+      audio_ext: 'mp4',
+      abr: 128,
+      resolution: 'audio only'
+    },
+    {
+      format_id: 'http-632',
+      ext: 'mp4',
+      height: 568,
+      width: 320,
+      protocol: 'https',
+      video_ext: 'mp4',
+      audio_ext: 'none',
+      resolution: '320x568',
+      filesize_approx: 1186659
+    },
+    {
+      format_id: 'hls-1666',
+      ext: 'mp4',
+      height: 568,
+      width: 320,
+      protocol: 'm3u8_native',
+      vcodec: 'avc1.4d401e',
+      acodec: 'none',
+      video_ext: 'mp4',
+      audio_ext: 'none',
+      resolution: '320x568'
+    },
+    {
+      format_id: 'http-950',
+      ext: 'mp4',
+      height: 852,
+      width: 480,
+      protocol: 'https',
+      video_ext: 'mp4',
+      audio_ext: 'none',
+      resolution: '480x852',
+      filesize_approx: 1783000
+    },
+    {
+      format_id: 'hls-2962',
+      ext: 'mp4',
+      height: 852,
+      width: 480,
+      protocol: 'm3u8_native',
+      vcodec: 'avc1.4d401f',
+      acodec: 'none',
+      video_ext: 'mp4',
+      audio_ext: 'none',
+      resolution: '480x852'
+    },
+    {
+      format_id: 'http-2176',
+      ext: 'mp4',
+      height: 1280,
+      width: 720,
+      protocol: 'https',
+      video_ext: 'mp4',
+      audio_ext: 'none',
+      resolution: '720x1280',
+      filesize_approx: 4087000
+    },
+    {
+      format_id: 'hls-4858',
+      ext: 'mp4',
+      height: 1280,
+      width: 720,
+      protocol: 'm3u8_native',
+      vcodec: 'avc1.64001f',
+      acodec: 'none',
+      video_ext: 'mp4',
+      audio_ext: 'none',
+      resolution: '720x1280'
+    },
+    {
+      format_id: 'http-10368',
+      ext: 'mp4',
+      height: 1920,
+      width: 1080,
+      protocol: 'https',
+      video_ext: 'mp4',
+      audio_ext: 'none',
+      resolution: '1080x1920',
+      filesize_approx: 19470000
+    },
+    {
+      format_id: 'hls-11347',
+      ext: 'mp4',
+      height: 1920,
+      width: 1080,
+      protocol: 'm3u8_native',
+      vcodec: 'avc1.640032',
+      acodec: 'none',
+      video_ext: 'mp4',
+      audio_ext: 'none',
+      resolution: '1080x1920'
+    }
+  ]
+})
+
 // 6. Silent video fixture (acodec === 'none'): no audio stream available
 const SILENT_SYNTHETIC_FIXTURE = Object.freeze({
   id: 'silent12345',
@@ -196,7 +332,7 @@ const parseSyntheticMetadata = parseMediaMetadata
 /**
  * Stream selector simulation corresponding to prepareDownloadJobExecution in downloadService.js.
  */
-function resolveMp4FormatSelector(availableFormats, requestedQuality) {
+function resolveMp4FormatSelector(availableFormats, requestedQuality, platform = null) {
   const mp4Formats = Array.isArray(availableFormats?.mp4Formats) ? availableFormats.mp4Formats : []
   const audioFormats = Array.isArray(availableFormats?.audioFormats)
     ? availableFormats.audioFormats
@@ -209,19 +345,21 @@ function resolveMp4FormatSelector(availableFormats, requestedQuality) {
     (format) => format?.quality === requestedQuality && hasFormatId(format)
   )
 
-  // 1. Prefer video-only MP4 with separate M4A audio
+  const isTwitter = platform === 'twitter'
+
+  // 1. Prefer video-only MP4 with separate M4A audio (or Twitter audio stream)
   const videoOnly = [...matchingVideos].reverse().find((format) => format.audioIncluded === false)
-  const m4aAudio = [...audioFormats]
+  const audioStream = [...audioFormats]
     .reverse()
-    .find((format) => format?.extension === 'm4a' && hasFormatId(format))
+    .find((format) => (isTwitter ? true : format?.extension === 'm4a') && hasFormatId(format))
 
   // 2. Otherwise use a combined MP4 stream containing audio
   const combinedVideo = [...matchingVideos]
     .reverse()
     .find((format) => format.audioIncluded === true)
 
-  if (videoOnly && m4aAudio) {
-    return { selector: `${videoOnly.formatId}+${m4aAudio.formatId}`, type: 'separate_merge' }
+  if (videoOnly && audioStream) {
+    return { selector: `${videoOnly.formatId}+${audioStream.formatId}`, type: 'separate_merge' }
   } else if (combinedVideo) {
     return { selector: combinedVideo.formatId, type: 'combined_stream' }
   }
@@ -497,6 +635,39 @@ async function runPlatformDownloadTests() {
       '✓ X (Twitter) synthetic fixture: 720p/480p/270p qualities and MP3 option parsed correctly'
     )
 
+    // Platform 5b: X / Twitter Real-World Adaptive & Progressive Streams
+    // Verifies live yt-dlp format structure (hls-* avc1 video + hls-audio-* aac audio + http-* mp4)
+    const xRealAnalysis = parseSyntheticMetadata(
+      TWITTER_REAL_WORLD_SYNTHETIC_FIXTURE,
+      'twitter',
+      'https://x.com/aqdasthetic__/status/2115857465913045380'
+    )
+    assert.strictEqual(xRealAnalysis.id, '2115857427824607233')
+    assert.strictEqual(xRealAnalysis.platform, 'twitter')
+    assert.deepStrictEqual(
+      xRealAnalysis.videoQualities,
+      ['1920p', '1280p', '852p', '568p'],
+      'X/Twitter real-world fixture should parse all 4 video qualities'
+    )
+    assert.deepStrictEqual(
+      xRealAnalysis.audioOptions,
+      ['mp3'],
+      'X/Twitter real-world fixture with HLS audio should offer MP3'
+    )
+    assert.deepStrictEqual(
+      xRealAnalysis.availableFormats.mp4Qualities,
+      ['1920p', '1280p', '852p', '568p'],
+      'X/Twitter real-world fixture should make all 4 MP4 qualities downloadable'
+    )
+    assert.strictEqual(
+      xRealAnalysis.availableFormats.audioFormats.length,
+      3,
+      'X/Twitter real-world fixture should detect all 3 audio streams'
+    )
+    console.log(
+      '✓ X (Twitter) real-world fixture: 1920p/1280p/852p/568p qualities and HLS audio parsed correctly'
+    )
+
     // Edge Case: Silent Video Fixture (no audio track available)
     const silentAnalysis = parseSyntheticMetadata(
       SILENT_SYNTHETIC_FIXTURE,
@@ -577,6 +748,36 @@ async function runPlatformDownloadTests() {
     assert.strictEqual(xSelector480.selector, 'http-480')
     assert.strictEqual(xSelector480.type, 'combined_stream')
     console.log('✓ X (Twitter) MP4 selector: correctly selects distinct formats for 720p and 480p')
+
+    // 5b. X / Twitter real-world stream selector resolution
+    const xReal1920 = resolveMp4FormatSelector(xRealAnalysis.availableFormats, '1920p', 'twitter')
+    assert.strictEqual(xReal1920.selector, 'hls-11347+hls-audio-128000-Audio')
+    assert.strictEqual(xReal1920.type, 'separate_merge')
+
+    const xReal1280 = resolveMp4FormatSelector(xRealAnalysis.availableFormats, '1280p', 'twitter')
+    assert.strictEqual(xReal1280.selector, 'hls-4858+hls-audio-128000-Audio')
+    assert.strictEqual(xReal1280.type, 'separate_merge')
+
+    const xReal852 = resolveMp4FormatSelector(xRealAnalysis.availableFormats, '852p', 'twitter')
+    assert.strictEqual(xReal852.selector, 'hls-2962+hls-audio-128000-Audio')
+    assert.strictEqual(xReal852.type, 'separate_merge')
+
+    const xReal568 = resolveMp4FormatSelector(xRealAnalysis.availableFormats, '568p', 'twitter')
+    assert.strictEqual(xReal568.selector, 'hls-1666+hls-audio-128000-Audio')
+    assert.strictEqual(xReal568.type, 'separate_merge')
+
+    // Progressive combined fallback when separate audio streams are absent
+    const xCombinedOnlyFormats = {
+      ...xRealAnalysis.availableFormats,
+      audioFormats: [],
+      mp4Formats: xRealAnalysis.availableFormats.mp4Formats.filter((f) => f.audioIncluded)
+    }
+    const xFallback1920 = resolveMp4FormatSelector(xCombinedOnlyFormats, '1920p', 'twitter')
+    assert.strictEqual(xFallback1920.selector, 'http-10368')
+    assert.strictEqual(xFallback1920.type, 'combined_stream')
+    console.log(
+      '✓ X (Twitter) real-world MP4 selector: correctly selects merged HLS video+audio and progressive fallback'
+    )
 
     // Unsupported quality rejection (e.g. asking for 1080p on TikTok which only has 720p)
     let unsupportedQualityCaught = false

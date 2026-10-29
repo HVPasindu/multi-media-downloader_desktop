@@ -80,11 +80,17 @@ export function parseMediaMetadata(metadata, platform, sourceUrl) {
   const qualityHeights = new Set()
 
   for (const format of formats) {
+    const isTwitterHttp =
+      platform === 'twitter' &&
+      format &&
+      typeof format === 'object' &&
+      typeof format.format_id === 'string' &&
+      format.format_id.startsWith('http-')
+
     if (
       format &&
       typeof format === 'object' &&
-      typeof format.vcodec === 'string' &&
-      format.vcodec !== 'none' &&
+      ((typeof format.vcodec === 'string' && format.vcodec !== 'none') || isTwitterHttp) &&
       Number.isInteger(format.height) &&
       format.height > 0
     ) {
@@ -94,13 +100,23 @@ export function parseMediaMetadata(metadata, platform, sourceUrl) {
 
   const videoQualities = [...qualityHeights].sort((a, b) => b - a).map((height) => `${height}p`)
 
+  const isTwitterAudioFormat = (format) =>
+    platform === 'twitter' &&
+    format &&
+    typeof format === 'object' &&
+    format.vcodec === 'none' &&
+    (format.resolution === 'audio only' ||
+      (typeof format.format_id === 'string' && format.format_id.startsWith('hls-audio-')) ||
+      format.audio_ext === 'mp4' ||
+      (typeof format.format_note === 'string' && format.format_note.toLowerCase().includes('audio')) ||
+      (Number.isFinite(format.abr) && format.abr > 0))
+
   //MP3 option
   const hasAudioStream = formats.some(
     (format) =>
       format &&
       typeof format === 'object' &&
-      typeof format.acodec === 'string' &&
-      format.acodec !== 'none'
+      ((typeof format.acodec === 'string' && format.acodec !== 'none') || isTwitterAudioFormat(format))
   )
 
   const audioOptions = hasAudioStream ? ['mp3'] : []
@@ -114,41 +130,65 @@ export function parseMediaMetadata(metadata, platform, sourceUrl) {
   const audioFormats = validFormats
     .filter(
       (format) =>
-        format.vcodec === 'none' && typeof format.acodec === 'string' && format.acodec !== 'none'
+        (format.vcodec === 'none' && typeof format.acodec === 'string' && format.acodec !== 'none') ||
+        isTwitterAudioFormat(format)
     )
     .map((format) => ({
       formatId: format.format_id ?? null,
       extension: format.ext ?? null,
-      audioCodec: format.acodec,
+      audioCodec:
+        typeof format.acodec === 'string' && format.acodec !== 'none'
+          ? format.acodec
+          : platform === 'twitter'
+            ? 'aac'
+            : null,
       fileSize: format.filesize ?? format.filesize_approx ?? null
     }))
 
   // Our current MP4 download selector uses M4A audio
   const hasM4aAudio = audioFormats.some((format) => format.extension === 'm4a')
+  const hasTwitterAudio = platform === 'twitter' && audioFormats.length > 0
 
   // Find MP4 video sources compatible with our selector
   const mp4Formats = validFormats
     .filter((format) => {
-      const hasVideo = typeof format.vcodec === 'string' && format.vcodec !== 'none'
+      const isTwitterHttp =
+        platform === 'twitter' &&
+        typeof format.format_id === 'string' &&
+        format.format_id.startsWith('http-')
 
-      const hasAudio = typeof format.acodec === 'string' && format.acodec !== 'none'
+      const hasVideo =
+        (typeof format.vcodec === 'string' && format.vcodec !== 'none') || isTwitterHttp
+
+      const hasAudio =
+        (typeof format.acodec === 'string' && format.acodec !== 'none') ||
+        (isTwitterHttp && hasAudioStream)
 
       return (
         format.ext === 'mp4' &&
         hasVideo &&
         Number.isInteger(format.height) &&
         format.height > 0 &&
-        (hasAudio || hasM4aAudio)
+        (hasAudio || hasM4aAudio || hasTwitterAudio)
       )
     })
-    .map((format) => ({
-      formatId: format.format_id ?? null,
-      quality: `${format.height}p`,
-      height: format.height,
-      videoCodec: format.vcodec,
-      audioIncluded: typeof format.acodec === 'string' && format.acodec !== 'none',
-      fileSize: format.filesize ?? format.filesize_approx ?? null
-    }))
+    .map((format) => {
+      const isTwitterHttp =
+        platform === 'twitter' &&
+        typeof format.format_id === 'string' &&
+        format.format_id.startsWith('http-')
+
+      return {
+        formatId: format.format_id ?? null,
+        quality: `${format.height}p`,
+        height: format.height,
+        videoCodec: format.vcodec ?? (isTwitterHttp ? 'h264' : null),
+        audioIncluded:
+          (typeof format.acodec === 'string' && format.acodec !== 'none') ||
+          (isTwitterHttp && hasAudioStream),
+        fileSize: format.filesize ?? format.filesize_approx ?? null
+      }
+    })
 
   // Build unique MP4 quality options
   const mp4Qualities = [...new Set(mp4Formats.map((format) => format.height))]
