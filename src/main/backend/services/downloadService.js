@@ -24,6 +24,12 @@ import {
   assertPathInsideDirectory,
   assertRealPathInsideDirectory
 } from './downloadFileSafetyService.js'
+import {
+  resolveYtDlpPath,
+  resolveFFprobePath,
+  resolveFFmpegLocationDirectory,
+  resolveJavaScriptRuntimeOption
+} from './executablePathService.js'
 
 export {
   DownloadError,
@@ -209,7 +215,9 @@ export function buildYtDlpArgs({
   downloadPath,
   mp4FormatSelector = null,
   jobId = null,
-  tempPath = null
+  tempPath = null,
+  jsRuntimeOption = 'node',
+  ffmpegLocation = null
 }) {
   if (typeof sourceUrl !== 'string' || !sourceUrl.trim()) {
     throw new Error('A valid source URL is required')
@@ -232,7 +240,7 @@ export function buildYtDlpArgs({
 
   const args = [
     '--js-runtimes',
-    'node',
+    jsRuntimeOption || 'node',
     '--encoding',
     'utf-8',
     '--no-playlist',
@@ -252,6 +260,11 @@ export function buildYtDlpArgs({
     '-P',
     downloadPath
   ]
+
+  // Step 04.43 - Configure packaged or custom FFmpeg binary location for yt-dlp post-processing
+  if (typeof ffmpegLocation === 'string' && ffmpegLocation.trim()) {
+    args.push('--ffmpeg-location', ffmpegLocation.trim())
+  }
 
   // Route temporary fragments and intermediate files to the job-owned temporary workspace
   if (typeof tempPath === 'string' && tempPath.trim()) {
@@ -297,165 +310,172 @@ export function runYtDlp(args, onProgress = null, onOutputLine = null, options =
   }
 
   return new Promise((resolve, reject) => {
-    const child = spawn('yt-dlp', args, {
-      windowsHide: true,
-      env: {
-        ...process.env,
-        PYTHONIOENCODING: 'utf-8'
-      }
-    })
-
-    const processEntry = {
-      childProcess: child,
-      cancelRequested: false
-    }
-
-    if (options?.jobId) {
-      activeDownloadProcesses.set(options.jobId, processEntry)
-    }
-
-    let isSettled = false
-
-    const settleReject = (err) => {
-      if (isSettled) return
-      isSettled = true
-
-      if (options?.jobId) {
-        activeDownloadProcesses.delete(options.jobId)
-      }
-
-      reject(err)
-    }
-
-    const settleResolve = (val) => {
-      if (isSettled) return
-      isSettled = true
-
-      if (options?.jobId) {
-        activeDownloadProcesses.delete(options.jobId)
-      }
-
-      resolve(val)
-    }
-
-    let errorOutput = ''
-    let stdoutBuffer = ''
-    let finalFilePath = null
-
-    const fileMarker = 'APPLAN2_FINAL_FILE:'
-
-    // Process one complete output line
-    const handleOutputLine = (line) => {
-      const cleanLine = line.trim()
-
-      if (!cleanLine) {
-        return
-      }
-
-      if (cleanLine.startsWith(fileMarker)) {
-        finalFilePath = cleanLine.slice(fileMarker.length).trim()
-
-        console.log('[yt-dlp] Final file:', finalFilePath)
-      } else {
-        // Print the yt-dlp output
-        console.log('[yt-dlp]', cleanLine)
-
-        // Forward structured output lines to the caller
-        if (typeof onOutputLine === 'function') {
-          try {
-            onOutputLine(cleanLine)
-          } catch (error) {
-            console.error('[yt-dlp] Output line callback error:', error)
+    // Step 04.43 - Dynamically resolve packaged or dev yt-dlp executable path
+    Promise.resolve(options?.executablePath || resolveYtDlpPath())
+      .then((ytDlpExecutable) => {
+        const child = spawn(ytDlpExecutable, args, {
+          windowsHide: true,
+          env: {
+            ...process.env,
+            PYTHONIOENCODING: 'utf-8'
           }
-        }
-
-        // Extract download percentage from the line
-        const percent = parseYtDlpProgressLine(cleanLine)
-
-        // Send progress to the caller if a callback exists
-        if (percent !== null && typeof onProgress === 'function') {
-          try {
-            onProgress(percent)
-          } catch (callbackError) {
-            console.error('[yt-dlp] Progress callback error:', callbackError)
-          }
-        }
-      }
-    }
-
-    child.stdout.setEncoding('utf8')
-    child.stderr.setEncoding('utf8')
-
-    // Read stdout safely, line by line
-    child.stdout.on('data', (chunk) => {
-      stdoutBuffer += chunk
-
-      const lines = stdoutBuffer.split(/\r?\n/)
-
-      stdoutBuffer = lines.pop() ?? ''
-
-      for (const line of lines) {
-        handleOutputLine(line)
-      }
-    })
-
-    // Read errors and warnings
-    child.stderr.on('data', (text) => {
-      errorOutput = (errorOutput + text).slice(-2000)
-
-      console.error('[yt-dlp]', text.trimEnd())
-    })
-
-    // Handle failure to start yt-dlp
-    child.once('error', (error) => {
-      if (processEntry.cancelRequested) {
-        settleReject(new DownloadCancelledError('Download was cancelled'))
-        return
-      }
-
-      const classified = classifyDownloadError(error, { target: 'yt-dlp' })
-      settleReject(new DownloadError(classified.code, classified.message, { cause: error }))
-    })
-
-    // Handle process completion
-    child.once('close', (exitCode, signal) => {
-      if (processEntry.cancelRequested) {
-        settleReject(new DownloadCancelledError('Download was cancelled'))
-        return
-      }
-
-      // Process any remaining output
-      if (stdoutBuffer.trim()) {
-        handleOutputLine(stdoutBuffer)
-      }
-
-      if (exitCode === 0) {
-        settleResolve({
-          success: true,
-          exitCode,
-          finalFilePath
         })
 
-        return
-      }
+        const processEntry = {
+          childProcess: child,
+          cancelRequested: false
+        }
 
-      const reason = signal ? `signal ${signal}` : `exit code ${exitCode}`
+        if (options?.jobId) {
+          activeDownloadProcesses.set(options.jobId, processEntry)
+        }
 
-      const classified = classifyDownloadError(new Error(`yt-dlp failed (${reason})`), {
-        target: 'yt-dlp',
-        stderr: errorOutput
+        let isSettled = false
+
+        const settleReject = (err) => {
+          if (isSettled) return
+          isSettled = true
+
+          if (options?.jobId) {
+            activeDownloadProcesses.delete(options.jobId)
+          }
+
+          reject(err)
+        }
+
+        const settleResolve = (val) => {
+          if (isSettled) return
+          isSettled = true
+
+          if (options?.jobId) {
+            activeDownloadProcesses.delete(options.jobId)
+          }
+
+          resolve(val)
+        }
+
+        let errorOutput = ''
+        let stdoutBuffer = ''
+        let finalFilePath = null
+
+        const fileMarker = 'APPLAN2_FINAL_FILE:'
+
+        // Process one complete output line
+        const handleOutputLine = (line) => {
+          const cleanLine = line.trim()
+
+          if (!cleanLine) {
+            return
+          }
+
+          if (cleanLine.startsWith(fileMarker)) {
+            finalFilePath = cleanLine.slice(fileMarker.length).trim()
+
+            console.log('[yt-dlp] Final file:', finalFilePath)
+          } else {
+            // Print the yt-dlp output
+            console.log('[yt-dlp]', cleanLine)
+
+            // Forward structured output lines to the caller
+            if (typeof onOutputLine === 'function') {
+              try {
+                onOutputLine(cleanLine)
+              } catch (error) {
+                console.error('[yt-dlp] Output line callback error:', error)
+              }
+            }
+
+            // Extract download percentage from the line
+            const percent = parseYtDlpProgressLine(cleanLine)
+
+            // Send progress to the caller if a callback exists
+            if (percent !== null && typeof onProgress === 'function') {
+              try {
+                onProgress(percent)
+              } catch (callbackError) {
+                console.error('[yt-dlp] Progress callback error:', callbackError)
+              }
+            }
+          }
+        }
+
+        child.stdout.setEncoding('utf8')
+        child.stderr.setEncoding('utf8')
+
+        // Read stdout safely, line by line
+        child.stdout.on('data', (chunk) => {
+          stdoutBuffer += chunk
+
+          const lines = stdoutBuffer.split(/\r?\n/)
+
+          stdoutBuffer = lines.pop() ?? ''
+
+          for (const line of lines) {
+            handleOutputLine(line)
+          }
+        })
+
+        // Read errors and warnings
+        child.stderr.on('data', (text) => {
+          errorOutput = (errorOutput + text).slice(-2000)
+
+          console.error('[yt-dlp]', text.trimEnd())
+        })
+
+        // Handle failure to start yt-dlp
+        child.once('error', (error) => {
+          if (processEntry.cancelRequested) {
+            settleReject(new DownloadCancelledError('Download was cancelled'))
+            return
+          }
+
+          const classified = classifyDownloadError(error, { target: 'yt-dlp' })
+          settleReject(new DownloadError(classified.code, classified.message, { cause: error }))
+        })
+
+        // Handle process completion
+        child.once('close', (exitCode, signal) => {
+          if (processEntry.cancelRequested) {
+            settleReject(new DownloadCancelledError('Download was cancelled'))
+            return
+          }
+
+          // Process any remaining output
+          if (stdoutBuffer.trim()) {
+            handleOutputLine(stdoutBuffer)
+          }
+
+          if (exitCode === 0) {
+            settleResolve({
+              success: true,
+              exitCode,
+              finalFilePath
+            })
+
+            return
+          }
+
+          const reason = signal ? `signal ${signal}` : `exit code ${exitCode}`
+
+          const classified = classifyDownloadError(new Error(`yt-dlp failed (${reason})`), {
+            target: 'yt-dlp',
+            stderr: errorOutput
+          })
+
+          settleReject(
+            new DownloadError(classified.code, classified.message, {
+              cause: {
+                exitCode,
+                signal,
+                stderr: errorOutput.trim()
+              }
+            })
+          )
+        })
       })
-
-      settleReject(
-        new DownloadError(classified.code, classified.message, {
-          cause: {
-            exitCode,
-            signal,
-            stderr: errorOutput.trim()
-          }
-        })
-      )
-    })
+      .catch((pathError) => {
+        reject(pathError)
+      })
   })
 }
 
@@ -787,6 +807,10 @@ export async function prepareDownloadJobExecution(jobId) {
   // Create a dedicated temporary workspace for this download job
   const tempPath = await prepareJobTemporaryWorkspace(job.id, downloadPath)
 
+  // Step 04.43 - Resolve packaged/dev FFmpeg location and JS runtime options
+  const jsRuntimeOption = await resolveJavaScriptRuntimeOption()
+  const ffmpegLocation = await resolveFFmpegLocationDirectory()
+
   // Prepare yt-dlp arguments
   const args = buildYtDlpArgs({
     sourceUrl: media.source_url,
@@ -796,7 +820,9 @@ export async function prepareDownloadJobExecution(jobId) {
     downloadPath,
     mp4FormatSelector,
     jobId: job.id,
-    tempPath
+    tempPath,
+    jsRuntimeOption,
+    ffmpegLocation
   })
 
   return {
@@ -907,9 +933,12 @@ export async function verifyFinalMediaContent(filePath, expectedFormat) {
   // Inspect the actual output container and media streams.
   let probeData
 
+  // Step 04.43 - Dynamically resolve packaged or dev ffprobe executable path
+  const ffprobeExecutable = await resolveFFprobePath()
+
   try {
     const { stdout } = await execFileAsync(
-      'ffprobe',
+      ffprobeExecutable,
       [
         '-v',
         'error',

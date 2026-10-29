@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { detectPlatform } from '../providers/providerManager.js'
+import { resolveYtDlpPath, resolveJavaScriptRuntimeOption } from './executablePathService.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -13,9 +14,20 @@ export async function analyzeMedia(sourceUrl) {
 
   const cleanUrl = sourceUrl.trim()
 
+  // Step 04.43 - Resolve executable and runtime for packaged/dev environment
+  const ytDlpExecutable = await resolveYtDlpPath()
+  const jsRuntimeOption = await resolveJavaScriptRuntimeOption()
+
   const { stdout } = await execFileAsync(
-    'yt-dlp',
-    ['--js-runtimes', 'node', '--no-playlist', '--dump-single-json', '--skip-download', cleanUrl],
+    ytDlpExecutable,
+    [
+      '--js-runtimes',
+      jsRuntimeOption,
+      '--no-playlist',
+      '--dump-single-json',
+      '--skip-download',
+      cleanUrl
+    ],
     {
       windowsHide: true,
       timeout: 60000,
