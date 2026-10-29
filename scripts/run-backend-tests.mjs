@@ -53,6 +53,10 @@ const TEST_SUITES = [
   {
     name: 'Packaging: yt-dlp & FFmpeg Windows Packaging & Verification',
     file: 'tests/windows_packaging_tests.js'
+  },
+  {
+    name: 'Step 04.45: Link Downloader Full Backend E2E Suite (Mocked Media Tools)',
+    file: 'tests/link_downloader_e2e_tests.js'
   }
 ]
 
