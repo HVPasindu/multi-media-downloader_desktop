@@ -44,6 +44,18 @@ export async function analyzeMedia(sourceUrl) {
     throw new Error('Media Analyzer returned invalid JSON metadata')
   }
 
+  return parseMediaMetadata(metadata, platform, cleanUrl)
+}
+
+/**
+ * Parses and validates raw yt-dlp metadata JSON object into structured media metadata.
+ *
+ * @param {object} metadata - Raw yt-dlp metadata object
+ * @param {string} platform - Platform identifier (e.g. 'youtube', 'facebook')
+ * @param {string} sourceUrl - Cleaned source URL
+ * @returns {object} Structured media analysis result
+ */
+export function parseMediaMetadata(metadata, platform, sourceUrl) {
   // Validate required metadata fields
   if (
     !metadata ||
@@ -152,7 +164,7 @@ export async function analyzeMedia(sourceUrl) {
   return {
     id: metadata.id.trim(),
     platform,
-    sourceUrl: cleanUrl,
+    sourceUrl: typeof sourceUrl === 'string' ? sourceUrl.trim() : '',
     title: metadata.title.trim(),
     thumbnailUrl: typeof metadata.thumbnail === 'string' ? metadata.thumbnail : null,
     durationSeconds:

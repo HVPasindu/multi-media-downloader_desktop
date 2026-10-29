@@ -6,6 +6,7 @@
   "author": "example.com",
   "homepage": "https://electron-vite.org",
   "scripts": {
+    "test": "node --loader ./tests/loaders/electron_loader.mjs scripts/run-backend-tests.mjs",
     "format": "prettier --write .",
     "lint": "eslint --cache .",
     "start": "electron-vite preview",

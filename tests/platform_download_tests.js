@@ -14,6 +14,7 @@ import {
   buildYtDlpArgs,
   SUPPORTED_MP3_BITRATES
 } from '../src/main/backend/services/downloadService.js'
+import { parseMediaMetadata } from '../src/main/backend/services/mediaAnalyzerService.js'
 import defineMediaItem from '../src/main/backend/models/MediaItem.js'
 import defineDownloadJob from '../src/main/backend/models/DownloadJob.js'
 import defineDownloadFile from '../src/main/backend/models/DownloadFile.js'
@@ -187,117 +188,10 @@ const SILENT_SYNTHETIC_FIXTURE = Object.freeze({
 })
 
 /**
- * Pure parsing logic mirror of mediaAnalyzerService.js for deterministic fixture evaluation.
+ * Direct reference to production parseMediaMetadata in mediaAnalyzerService.js.
+ * Eliminates duplicate testing logic by testing the real production parser.
  */
-function parseSyntheticMetadata(metadata, platform, sourceUrl) {
-  if (
-    !metadata ||
-    typeof metadata !== 'object' ||
-    Array.isArray(metadata) ||
-    typeof metadata.id !== 'string' ||
-    !metadata.id.trim() ||
-    typeof metadata.title !== 'string' ||
-    !metadata.title.trim()
-  ) {
-    throw new Error('Media metadata is missing required details')
-  }
-
-  if (metadata.formats != null && !Array.isArray(metadata.formats)) {
-    throw new Error('Media metadata contains an invalid formats list')
-  }
-
-  const formats = Array.isArray(metadata.formats) ? metadata.formats : []
-
-  const qualityHeights = new Set()
-  for (const format of formats) {
-    if (
-      format &&
-      typeof format === 'object' &&
-      typeof format.vcodec === 'string' &&
-      format.vcodec !== 'none' &&
-      Number.isInteger(format.height) &&
-      format.height > 0
-    ) {
-      qualityHeights.add(format.height)
-    }
-  }
-
-  const videoQualities = [...qualityHeights].sort((a, b) => b - a).map((height) => `${height}p`)
-
-  // MP3 option: accessible audio stream exists (audio-only or combined with video)
-  const hasAudioStream = formats.some(
-    (format) =>
-      format &&
-      typeof format === 'object' &&
-      typeof format.acodec === 'string' &&
-      format.acodec !== 'none'
-  )
-
-  const audioOptions = hasAudioStream ? ['mp3'] : []
-
-  const validFormats = formats.filter(
-    (format) => format && typeof format === 'object' && !Array.isArray(format)
-  )
-
-  const audioFormats = validFormats
-    .filter(
-      (format) =>
-        format.vcodec === 'none' && typeof format.acodec === 'string' && format.acodec !== 'none'
-    )
-    .map((format) => ({
-      formatId: format.format_id ?? null,
-      extension: format.ext ?? null,
-      audioCodec: format.acodec,
-      fileSize: format.filesize ?? format.filesize_approx ?? null
-    }))
-
-  const hasM4aAudio = audioFormats.some((format) => format.extension === 'm4a')
-
-  const mp4Formats = validFormats
-    .filter((format) => {
-      const hasVideo = typeof format.vcodec === 'string' && format.vcodec !== 'none'
-      const hasAudio = typeof format.acodec === 'string' && format.acodec !== 'none'
-
-      return (
-        format.ext === 'mp4' &&
-        hasVideo &&
-        Number.isInteger(format.height) &&
-        format.height > 0 &&
-        (hasAudio || hasM4aAudio)
-      )
-    })
-    .map((format) => ({
-      formatId: format.format_id ?? null,
-      quality: `${format.height}p`,
-      height: format.height,
-      videoCodec: format.vcodec,
-      audioIncluded: typeof format.acodec === 'string' && format.acodec !== 'none',
-      fileSize: format.filesize ?? format.filesize_approx ?? null
-    }))
-
-  const mp4Qualities = [...new Set(mp4Formats.map((format) => format.height))]
-    .sort((a, b) => b - a)
-    .map((height) => `${height}p`)
-
-  return {
-    id: metadata.id.trim(),
-    platform,
-    sourceUrl,
-    title: metadata.title.trim(),
-    thumbnailUrl: typeof metadata.thumbnail === 'string' ? metadata.thumbnail : null,
-    durationSeconds:
-      Number.isFinite(metadata.duration) && metadata.duration >= 0
-        ? Math.floor(metadata.duration)
-        : null,
-    videoQualities,
-    audioOptions,
-    availableFormats: {
-      mp4Qualities,
-      mp4Formats,
-      audioFormats
-    }
-  }
-}
+const parseSyntheticMetadata = parseMediaMetadata
 
 /**
  * Stream selector simulation corresponding to prepareDownloadJobExecution in downloadService.js.
