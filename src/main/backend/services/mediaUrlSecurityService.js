@@ -377,10 +377,28 @@ export async function validateHostDns(hostname, dnsLookupFn = dns.promises.looku
         ? [records]
         : []
 
+  // Reject empty DNS results (Issue 03: prevent DNS empty result fail-open)
+  if (addressList.length === 0) {
+    throw new UrlSecurityError(
+      'DNS_LOOKUP_FAILED',
+      `DNS lookup for domain '${hostname}' returned no address records`
+    )
+  }
+
   for (const record of addressList) {
     const address = typeof record === 'string' ? record : record?.address
 
-    if (address && isPrivateOrLocalIp(address)) {
+    // Reject missing, non-string, or malformed non-IP DNS records
+    if (typeof address !== 'string' || !address.trim() || net.isIP(address.trim()) === 0) {
+      throw new UrlSecurityError(
+        'DNS_LOOKUP_FAILED',
+        `DNS lookup for domain '${hostname}' returned an invalid or malformed IP address`
+      )
+    }
+
+    const cleanAddress = address.trim()
+
+    if (isPrivateOrLocalIp(cleanAddress)) {
       throw new UrlSecurityError(
         'PRIVATE_DESTINATION',
         `Destination address for '${hostname}' resolves to a restricted or private network`

@@ -100,6 +100,58 @@ export function verifyStagedBinaries(binDir = null) {
         timeout: 10000
       })
       const firstLine = output.trim().split('\n')[0].trim()
+
+      // Enforce expected version or version prefix (Issue 04)
+      let versionMatches = true
+      let versionMismatchReason = ''
+
+      if (item.expectedVersion) {
+        if (firstLine !== item.expectedVersion) {
+          versionMatches = false
+          versionMismatchReason = `Exact version mismatch for ${item.name}!\n       Expected: ${item.expectedVersion}\n       Actual:   ${firstLine}`
+        }
+      } else if (item.expectedVersionPrefix) {
+        if (!firstLine.startsWith(item.expectedVersionPrefix)) {
+          versionMatches = false
+          versionMismatchReason = `Version prefix mismatch for ${item.name}!\n       Expected prefix: ${item.expectedVersionPrefix}\n       Actual:          ${firstLine}`
+        }
+      } else {
+        console.warn(
+          `[WARN] No expected version configured for ${item.name}; version verification is unpinned.`
+        )
+      }
+
+      if (!versionMatches) {
+        console.error(`[FAIL] ${versionMismatchReason}`)
+        allValid = false
+        continue
+      }
+
+
+      // Enforce expected version or version prefix (Issue 04)
+      let versionMatches = true
+      let versionMismatchReason = ''
+
+      if (item.expectedVersion) {
+        if (firstLine !== item.expectedVersion) {
+          versionMatches = false
+          versionMismatchReason = `Exact version mismatch for ${item.name}!\n       Expected: ${item.expectedVersion}\n       Actual:   ${firstLine}`
+        }
+      } else if (item.expectedVersionPrefix) {
+        if (!firstLine.startsWith(item.expectedVersionPrefix)) {
+          versionMatches = false
+          versionMismatchReason = `Version prefix mismatch for ${item.name}!\n       Expected prefix: ${item.expectedVersionPrefix}\n       Actual:          ${firstLine}`
+        }
+      } else {
+        console.warn(`[WARN] No expected version configured for ${item.name}; version verification is unpinned.`)
+      }
+
+      if (!versionMatches) {
+        console.error(`[FAIL] ${versionMismatchReason}`)
+        allValid = false
+        continue
+      }
+
       console.log(
         `[PASS] ${item.name} (${(stats.size / (1024 * 1024)).toFixed(2)} MB) -> ${firstLine}`
       )

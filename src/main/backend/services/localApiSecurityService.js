@@ -1,4 +1,5 @@
 import crypto from 'node:crypto'
+import { isPackagedApp } from './executablePathService.js'
 
 /**
  * Expected local API server port and host.
@@ -34,11 +35,13 @@ let sessionToken = null
 
 /**
  * Checks whether the application is running in an explicit development environment.
+ * Development mode is strictly enabled only when NODE_ENV === 'development' AND
+ * the application is not running in packaged Electron mode.
  *
  * @returns {boolean}
  */
 export function isDevEnvironment() {
-  return process.env.NODE_ENV !== 'production'
+  return process.env.NODE_ENV === 'development' && !isPackagedApp()
 }
 
 /**

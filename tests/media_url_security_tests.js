@@ -409,6 +409,43 @@ async function runAllUrlSecurityTests() {
     // Direct DNS preflight helper test
     await validateHostDns('www.youtube.com', mockPublicDns)
 
+    // Issue 03: Comprehensive DNS result validation tests (Examples 1-5)
+    // Example 1: dnsLookupFn returns [] -> DNS_LOOKUP_FAILED
+    await assert.rejects(
+      async () => validateHostDns('www.youtube.com', async () => []),
+      (err) => err instanceof UrlSecurityError && err.code === 'DNS_LOOKUP_FAILED',
+      'Issue 03 (Ex 1): Empty DNS records array must throw DNS_LOOKUP_FAILED'
+    )
+
+    // Example 2: dnsLookupFn returns null -> DNS_LOOKUP_FAILED
+    await assert.rejects(
+      async () => validateHostDns('www.youtube.com', async () => null),
+      (err) => err instanceof UrlSecurityError && err.code === 'DNS_LOOKUP_FAILED',
+      'Issue 03 (Ex 2): Null DNS records result must throw DNS_LOOKUP_FAILED'
+    )
+
+    // Example 3: dnsLookupFn returns [{ address: 'not-an-ip-address' }] -> DNS_LOOKUP_FAILED
+    await assert.rejects(
+      async () =>
+        validateHostDns('www.youtube.com', async () => [{ address: 'not-an-ip-address' }]),
+      (err) => err instanceof UrlSecurityError && err.code === 'DNS_LOOKUP_FAILED',
+      'Issue 03 (Ex 3): Malformed non-IP address string must throw DNS_LOOKUP_FAILED'
+    )
+
+    // Example 4: dnsLookupFn returns valid public IPv4 [{ address: '8.8.8.8', family: 4 }] -> Accepted
+    await validateHostDns('www.youtube.com', async () => [{ address: '8.8.8.8', family: 4 }])
+
+    // Example 5: dnsLookupFn returns mixed public and private records -> PRIVATE_DESTINATION
+    await assert.rejects(
+      async () =>
+        validateHostDns('www.youtube.com', async () => [
+          { address: '8.8.8.8', family: 4 },
+          { address: '127.0.0.1', family: 4 }
+        ]),
+      (err) => err instanceof UrlSecurityError && err.code === 'PRIVATE_DESTINATION',
+      'Issue 03 (Ex 5): Mixed public and private DNS records must be rejected with PRIVATE_DESTINATION'
+    )
+
     // IP classification utility verification
     assert.equal(isPrivateOrLocalIp('127.0.0.1'), true)
     assert.equal(isPrivateOrLocalIp('8.8.8.8'), false)

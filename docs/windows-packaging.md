@@ -26,7 +26,7 @@ In development mode, download operations can utilize globally installed develope
 | `yt-dlp.exe`  | [yt-dlp/yt-dlp Releases](https://github.com/yt-dlp/yt-dlp/releases/tag/2026.10.21) | 2026.10.21 | Windows x64  | `33121D192D706E62F684A06F80918E3F3A8BA52AC3A65213B6951C39C7D9F555` | The Unlicense (Public Domain) |
 | `ffmpeg.exe`  | [Gyan.dev FFmpeg Builds](https://www.gyan.dev/ffmpeg/builds/)                      | 9.0.2 full | Windows x64  | `589E50B766D251AFDF181DD664D40BD94407E200B019989FD7468C7D118A28D0` | GNU GPL v3                    |
 | `ffprobe.exe` | [Gyan.dev FFmpeg Builds](https://www.gyan.dev/ffmpeg/builds/)                      | 9.0.2 full | Windows x64  | `02264DFA4F56BAAA31E443ECE8AA16D397F6B008200E7FD184D22B9009E75FD3` | GNU GPL v3                    |
-| `node.exe`    | [Node.js Official](https://nodejs.org/)                                            | v24.14.1   | Windows x64  | Verified official binary                                           | MIT License                   |
+| `node.exe`    | [Node.js Official](https://nodejs.org/)                                            | v24.14.1   | Windows x64  | Unpinned SHA-256 (verified via binary existence & version prefix)   | MIT License                   |
 
 ---
 

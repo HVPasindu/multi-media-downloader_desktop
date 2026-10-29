@@ -392,27 +392,71 @@ export async function createE2eEnvironment(prefix = 'applan2-e2e-') {
     },
     getActiveMockProcess: (jobId) => activeMockProcesses.get(jobId),
     async cleanup() {
+      const cleanupErrors = []
+
       // 1. Reset mock
-      globalThis.__mockChildProcess = null
+      try {
+        globalThis.__mockChildProcess = null
+      } catch (mockErr) {
+        cleanupErrors.push(mockErr)
+      }
 
       // 2. Stop HTTP server
-      await new Promise((resolve) => {
-        server.close(() => resolve())
-      })
+      try {
+        await new Promise((resolve, reject) => {
+          server.close((err) => {
+            if (err) reject(err)
+            else resolve()
+          })
+        })
+      } catch (serverErr) {
+        cleanupErrors.push(
+          new Error(`Failed to stop test HTTP server: ${serverErr.message}`, { cause: serverErr })
+        )
+      }
 
       // 3. Reset session token
-      resetSessionTokenForTest()
+      try {
+        resetSessionTokenForTest()
+      } catch (tokenErr) {
+        cleanupErrors.push(tokenErr)
+      }
 
       // 4. Close and cleanup isolated SQLite database
-      await testDb.cleanup()
+      try {
+        await testDb.cleanup()
+      } catch (dbErr) {
+        cleanupErrors.push(dbErr)
+      }
 
       // 5. Clean up temporary directory
-      if (
-        tempWorkspace &&
-        tempWorkspace.startsWith(os.tmpdir()) &&
-        fsSync.existsSync(tempWorkspace)
-      ) {
-        await fs.rm(tempWorkspace, { recursive: true, force: true }).catch(() => {})
+      if (tempWorkspace) {
+        try {
+          const canonicalWorkspace = await fs.realpath(tempWorkspace).catch(() => tempWorkspace)
+          const canonicalOsTmp = await fs.realpath(os.tmpdir()).catch(() => os.tmpdir())
+          const rel = path.relative(canonicalOsTmp, canonicalWorkspace)
+          const isSafelyInsideOsTmp = rel && !rel.startsWith('..') && !path.isAbsolute(rel)
+          const hasExpectedPrefix = path.basename(canonicalWorkspace).startsWith(prefix)
+
+          if (isSafelyInsideOsTmp && hasExpectedPrefix && fsSync.existsSync(canonicalWorkspace)) {
+            await fs.rm(canonicalWorkspace, { recursive: true, force: true })
+          }
+        } catch (rmErr) {
+          cleanupErrors.push(
+            new Error(`Failed to remove test temporary workspace: ${rmErr.message}`, {
+              cause: rmErr
+            })
+          )
+        }
+      }
+
+      if (cleanupErrors.length === 1) {
+        throw cleanupErrors[0]
+      } else if (cleanupErrors.length > 1) {
+        throw new AggregateError(
+          cleanupErrors,
+          'Multiple E2E environment cleanup failures occurred'
+        )
       }
     }
   }

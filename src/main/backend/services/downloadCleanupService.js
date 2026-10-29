@@ -60,15 +60,24 @@ export async function prepareJobTemporaryWorkspace(jobId, downloadPath) {
   const jobTempPath = getJobTemporaryWorkspacePath(jobId, downloadPath)
   const normalizedDownloadPath = path.resolve(downloadPath.trim())
   const basePartialDir = path.resolve(normalizedDownloadPath, PARTIAL_DOWNLOADS_DIR_NAME)
+  const jobTempDirName = `job-${jobId}`
 
-  // Validate that basePartialDir (if already exists) is not an unsafe symlink or junction
+  // 1. Verify filesystem identity and reachability of download root
+  let realDownload
+  try {
+    realDownload = await realpath(normalizedDownloadPath)
+  } catch (downloadErr) {
+    throw new Error(`Download folder does not exist or cannot be accessed: ${downloadErr.message}`)
+  }
+
+  // 2. Validate that basePartialDir (if already exists) is not an unsafe symlink or junction
+  let realBase
   try {
     const baseStat = await lstat(basePartialDir)
     if (baseStat.isSymbolicLink()) {
       throw new Error('Unsafe temporary workspace parent: directory is a symbolic link or junction')
     }
-    const realDownload = await realpath(normalizedDownloadPath)
-    const realBase = await realpath(basePartialDir)
+    realBase = await realpath(basePartialDir)
     const relBase = path.relative(realDownload, realBase)
     if (
       !relBase ||
@@ -79,12 +88,87 @@ export async function prepareJobTemporaryWorkspace(jobId, downloadPath) {
       throw new Error('Unsafe temporary workspace parent: escapes download folder')
     }
   } catch (err) {
-    if (err.code !== 'ENOENT') {
+    if (err.code === 'ENOENT') {
+      // Base partial directory does not exist yet; create it safely
+      await mkdir(basePartialDir, { recursive: true })
+      const createdBaseStat = await lstat(basePartialDir)
+      if (createdBaseStat.isSymbolicLink()) {
+        throw new Error(
+          'Unsafe temporary workspace parent: directory is a symbolic link or junction'
+        )
+      }
+      realBase = await realpath(basePartialDir)
+    } else {
       throw err
     }
   }
 
-  await mkdir(jobTempPath, { recursive: true })
+  // 3. Pre-creation check: inspect if job directory already exists before reuse
+  let existingJobStat = null
+  try {
+    existingJobStat = await lstat(jobTempPath)
+  } catch (statErr) {
+    if (statErr.code !== 'ENOENT') {
+      throw statErr
+    }
+  }
+
+  if (existingJobStat) {
+    // Reject symbolic links and Windows directory junctions immediately
+    if (existingJobStat.isSymbolicLink()) {
+      throw new Error('Unsafe temporary workspace: directory is a symbolic link or junction')
+    }
+    // Reject non-directory regular files with the job folder name
+    if (!existingJobStat.isDirectory()) {
+      throw new Error('Invalid temporary workspace: existing path is not a directory')
+    }
+    // Verify real canonical path of existing directory
+    const realExistingJob = await realpath(jobTempPath)
+    if (path.basename(realExistingJob) !== jobTempDirName) {
+      throw new Error('Unsafe temporary workspace: directory name does not match job ID')
+    }
+    const relExisting = path.relative(realBase, realExistingJob)
+    if (
+      !relExisting ||
+      relExisting === '..' ||
+      relExisting.startsWith(`..${path.sep}`) ||
+      path.isAbsolute(relExisting)
+    ) {
+      throw new Error('Unsafe temporary workspace: workspace escapes partial-downloads directory')
+    }
+  } else {
+    // 4. Create directory non-recursively (or handle EEXIST race) to avoid following external symlinks
+    try {
+      await mkdir(jobTempPath)
+    } catch (mkdirErr) {
+      if (mkdirErr.code !== 'EEXIST') {
+        throw mkdirErr
+      }
+    }
+  }
+
+  // 5. Post-creation verification: re-validate the resulting directory before returning
+  const postStat = await lstat(jobTempPath)
+  if (postStat.isSymbolicLink()) {
+    throw new Error('Unsafe temporary workspace: directory is a symbolic link or junction')
+  }
+  if (!postStat.isDirectory()) {
+    throw new Error('Invalid temporary workspace: resulting path is not a directory')
+  }
+
+  const finalRealJob = await realpath(jobTempPath)
+  if (path.basename(finalRealJob) !== jobTempDirName) {
+    throw new Error('Unsafe temporary workspace: directory name does not match job ID')
+  }
+  const finalRel = path.relative(realBase, finalRealJob)
+  if (
+    !finalRel ||
+    finalRel === '..' ||
+    finalRel.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(finalRel)
+  ) {
+    throw new Error('Unsafe temporary workspace: workspace escapes partial-downloads directory')
+  }
 
   return jobTempPath
 }

@@ -29,6 +29,7 @@ import {
 } from '../src/main/backend/services/downloadErrorService.js'
 
 import { initializeDatabase, closeDatabase } from '../src/main/backend/config/database.js'
+import { verifyStagedBinaries } from '../scripts/verify-windows-binaries.mjs'
 
 /**
  * ============================================================================
@@ -430,6 +431,35 @@ async function runAllWindowsPackagingTests() {
     assert.notEqual(resolvedPackagedFf, 'ffmpeg', 'Cannot be simple command name')
     assert.notEqual(resolvedPackagedFp, 'ffprobe', 'Cannot be simple command name')
     console.log('✓ TEST Z passed: 100% independent from global PATH tools in packaged mode.\n')
+
+    // ------------------------------------------------------------------------
+    // TEST AA: Issue 04 Binary Version Verifier Enforcement
+    // ------------------------------------------------------------------------
+    console.log('--- TEST AA: Windows Binary Version Verifier Enforcement ---')
+    // 1. Staged binaries with genuine versions must pass 100%
+    const verifierResult = verifyStagedBinaries(stagedBinDir)
+    assert.equal(
+      verifierResult,
+      true,
+      'TEST AA.1: Real staged binaries must pass version verification'
+    )
+
+    // 2. Non-existent directory must return false
+    const nonExistentBinDir = path.join(testTempDir, 'non_existent_bin_dir')
+    const nonExistentResult = verifyStagedBinaries(nonExistentBinDir)
+    assert.equal(nonExistentResult, false, 'TEST AA.2: Missing staging directory must return false')
+
+    // 3. Incomplete directory with missing binaries must return false
+    const incompleteBinDir = path.join(testTempDir, 'incomplete_bin_dir')
+    await fs.mkdir(incompleteBinDir, { recursive: true })
+    const incompleteResult = verifyStagedBinaries(incompleteBinDir)
+    assert.equal(
+      incompleteResult,
+      false,
+      'TEST AA.3: Incomplete staging directory must return false'
+    )
+
+    console.log('✓ TEST AA passed: Binary verifier strictly enforces existence and versions.\n')
 
     console.log('================================================================')
     console.log(' ALL WINDOWS PACKAGING TESTS (TESTS A - Z) PASSED SUCCESSFULLY!')

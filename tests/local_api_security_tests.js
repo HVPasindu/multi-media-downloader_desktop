@@ -11,9 +11,11 @@ import {
   validateSessionToken,
   isAllowedHost,
   isAllowedOrigin,
+  isDevEnvironment,
   LOCAL_API_PORT,
   LOCAL_API_HOST
 } from '../src/main/backend/services/localApiSecurityService.js'
+import { setPackagedModeForTest } from '../src/main/backend/services/executablePathService.js'
 import { initializeDatabase, closeDatabase } from '../src/main/backend/config/database.js'
 
 /**
@@ -450,23 +452,96 @@ async function runAllLocalApiSecurityTests() {
     assert.equal(t25.body.token, undefined)
     assert.equal(t25.body.path, undefined)
 
-    // TEST 33: Packaged-mode token behavior does not use development bypass
+    // TEST 33: Packaged-mode and development environment classification (Issue 02)
     const origEnv = process.env.NODE_ENV
     const origDevToken = process.env.APPLAN2_DEV_API_TOKEN
-    try {
-      process.env.NODE_ENV = 'production'
-      process.env.APPLAN2_DEV_API_TOKEN = 'development_token_that_should_be_ignored_in_production'
-      resetSessionTokenForTest(null)
+    const validTestDevToken = 'custom_development_secret_token_123456789012'
 
-      const prodToken = getSessionToken()
-      assert.notEqual(
-        prodToken,
-        'development_token_that_should_be_ignored_in_production',
-        'TEST 33: Production/packaged mode must ignore APPLAN2_DEV_API_TOKEN'
+    try {
+      // CASE 1: NODE_ENV = 'development', app.isPackaged = false -> Dev token permitted
+      process.env.NODE_ENV = 'development'
+      setPackagedModeForTest(false)
+      assert.equal(isDevEnvironment(), true, 'Case 1: isDevEnvironment must be true')
+      process.env.APPLAN2_DEV_API_TOKEN = validTestDevToken
+      resetSessionTokenForTest(null)
+      assert.equal(getSessionToken(), validTestDevToken, 'Case 1: Dev token permitted')
+
+      // CASE 2: NODE_ENV = undefined, app.isPackaged = false -> Dev token must NOT be used
+      delete process.env.NODE_ENV
+      setPackagedModeForTest(false)
+      assert.equal(
+        isDevEnvironment(),
+        false,
+        'Case 2: isDevEnvironment must be false when NODE_ENV is unset'
       )
-      assert.equal(prodToken.length, 64)
+      resetSessionTokenForTest(null)
+      const tokenCase2 = getSessionToken()
+      assert.notEqual(
+        tokenCase2,
+        validTestDevToken,
+        'Case 2: Dev token must NOT be used when NODE_ENV is unset'
+      )
+      assert.equal(tokenCase2.length, 64, 'Case 2: Random token must be 64 hex chars')
+
+      // CASE 3: NODE_ENV = 'production', app.isPackaged = false -> Dev token must NOT be used
+      process.env.NODE_ENV = 'production'
+      setPackagedModeForTest(false)
+      assert.equal(
+        isDevEnvironment(),
+        false,
+        'Case 3: isDevEnvironment must be false in production'
+      )
+      resetSessionTokenForTest(null)
+      const tokenCase3 = getSessionToken()
+      assert.notEqual(
+        tokenCase3,
+        validTestDevToken,
+        'Case 3: Dev token must NOT be used in production'
+      )
+      assert.equal(tokenCase3.length, 64, 'Case 3: Random token must be 64 hex chars')
+
+      // CASE 4: NODE_ENV = 'development', app.isPackaged = true -> Dev token must NOT be used in packaged mode
+      process.env.NODE_ENV = 'development'
+      setPackagedModeForTest(true)
+      assert.equal(
+        isDevEnvironment(),
+        false,
+        'Case 4: isDevEnvironment must be false in packaged mode'
+      )
+      resetSessionTokenForTest(null)
+      const tokenCase4 = getSessionToken()
+      assert.notEqual(
+        tokenCase4,
+        validTestDevToken,
+        'Case 4: Dev token must NOT be used in packaged mode'
+      )
+      assert.equal(tokenCase4.length, 64, 'Case 4: Random token must be 64 hex chars')
+
+      // CASE 5: NODE_ENV = undefined, app.isPackaged = true -> Dev token must NOT be used
+      delete process.env.NODE_ENV
+      setPackagedModeForTest(true)
+      assert.equal(
+        isDevEnvironment(),
+        false,
+        'Case 5: isDevEnvironment must be false in packaged mode with unset env'
+      )
+      resetSessionTokenForTest(null)
+      const tokenCase5 = getSessionToken()
+      assert.notEqual(tokenCase5, validTestDevToken, 'Case 5: Dev token must NOT be used')
+      assert.equal(tokenCase5.length, 64, 'Case 5: Random token must be 64 hex chars')
+
+      // CASE 6: No permitted development token -> cryptographically secure random token generated
+      delete process.env.APPLAN2_DEV_API_TOKEN
+      resetSessionTokenForTest(null)
+      const tokenCase6 = getSessionToken()
+      assert.equal(tokenCase6.length, 64, 'Case 6: High-entropy crypto.randomBytes token generated')
     } finally {
-      process.env.NODE_ENV = origEnv
+      setPackagedModeForTest(null)
+      if (origEnv !== undefined) {
+        process.env.NODE_ENV = origEnv
+      } else {
+        delete process.env.NODE_ENV
+      }
       if (origDevToken !== undefined) {
         process.env.APPLAN2_DEV_API_TOKEN = origDevToken
       } else {

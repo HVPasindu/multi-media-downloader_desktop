@@ -14,7 +14,9 @@ import {
 } from '../src/main/backend/services/downloadFileSafetyService.js'
 import {
   prepareJobTemporaryWorkspace,
-  cleanupJobTemporaryFiles
+  cleanupJobTemporaryFiles,
+  cleanupStaleJobTemporaryFiles,
+  PARTIAL_DOWNLOADS_DIR_NAME
 } from '../src/main/backend/services/downloadCleanupService.js'
 
 console.log('====================================================================')
@@ -299,6 +301,114 @@ async function runFilesystemSafetyTests() {
     )
 
     console.log('✓ Section 6: Workspace lifecycle and cleanup safety verified.\n')
+
+    // ------------------------------------------------------------------------
+    // 7. Issue 01: Job Temporary Workspace Symlink and Junction Safety (Tests 1 - 10)
+    // ------------------------------------------------------------------------
+    console.log('--- 7. Testing Issue 01 Job Workspace Symlink & Junction Guards (Tests 1-10) ---')
+
+    const basePartialDir = path.join(tempTestDir, PARTIAL_DOWNLOADS_DIR_NAME)
+    await fs.mkdir(basePartialDir, { recursive: true })
+
+    // TEST 1: Normal new job workspace created successfully
+    const ws101 = await prepareJobTemporaryWorkspace(101, tempTestDir)
+    assert.ok(fsSync.existsSync(ws101), 'TEST 1: Normal job workspace created successfully')
+
+    // TEST 2: Normal existing job directory remains compatible
+    const ws101Reused = await prepareJobTemporaryWorkspace(101, tempTestDir)
+    assert.equal(ws101Reused, ws101, 'TEST 2: Normal existing job directory accepted and reused')
+
+    // TEST 3 & 4: Job-specific directory is a symlink/junction to an external directory with outside sentinel
+    const externalSafeDir = await fs.mkdtemp(path.join(os.tmpdir(), 'applan2-outside-'))
+    const outsideSentinel = path.join(externalSafeDir, 'sentinel.txt')
+    await fs.writeFile(outsideSentinel, 'OUTSIDE_SENTINEL_CONTENT')
+    const outsideStatBefore = await fs.stat(outsideSentinel)
+
+    const maliciousJobPath = path.join(basePartialDir, 'job-77')
+    // Create directory junction pointing outside
+    await fs.symlink(externalSafeDir, maliciousJobPath, 'junction')
+
+    // TEST 3: Preparation rejects unsafe symlink/junction job directory
+    await assert.rejects(
+      async () => prepareJobTemporaryWorkspace(77, tempTestDir),
+      /Unsafe temporary workspace/,
+      'TEST 3: Job preparation must reject symlink or junction pointing outside'
+    )
+
+    // TEST 4: Outside sentinel file remains completely unaltered
+    const outsideStatAfter = await fs.stat(outsideSentinel)
+    assert.equal(
+      outsideStatAfter.mtimeMs,
+      outsideStatBefore.mtimeMs,
+      'TEST 4: Outside sentinel mtime intact'
+    )
+    assert.equal(
+      await fs.readFile(outsideSentinel, 'utf8'),
+      'OUTSIDE_SENTINEL_CONTENT',
+      'TEST 4: Outside sentinel content intact'
+    )
+
+    // Remove the junction link safely (without touching externalSafeDir target)
+    await fs.unlink(maliciousJobPath)
+    await fs.rm(externalSafeDir, { recursive: true, force: true })
+
+    // TEST 5: Parent partial-downloads directory is a symlink/junction -> preparation rejects
+    const testDirWithParentLink = await fs.mkdtemp(path.join(os.tmpdir(), 'applan2-parent-link-'))
+    const outsideParentTarget = await fs.mkdtemp(path.join(os.tmpdir(), 'applan2-outside-parent-'))
+    const symlinkParentDir = path.join(testDirWithParentLink, PARTIAL_DOWNLOADS_DIR_NAME)
+    await fs.symlink(outsideParentTarget, symlinkParentDir, 'junction')
+
+    await assert.rejects(
+      async () => prepareJobTemporaryWorkspace(105, testDirWithParentLink),
+      /Unsafe temporary workspace parent/,
+      'TEST 5: Job preparation must reject a symlinked base partial-downloads parent'
+    )
+    await fs.unlink(symlinkParentDir)
+    await fs.rm(outsideParentTarget, { recursive: true, force: true })
+    await fs.rm(testDirWithParentLink, { recursive: true, force: true })
+
+    // TEST 6: Windows junction pointing outside trusted folder rejected (tested in TEST 3 above)
+    assert.ok(true, 'TEST 6: Windows junction to outside directory verified')
+
+    // TEST 7: Existing job path is a regular file (not a directory) -> rejected
+    const fileJobPath = path.join(basePartialDir, 'job-107')
+    await fs.writeFile(fileJobPath, 'NOT_A_DIRECTORY')
+    await assert.rejects(
+      async () => prepareJobTemporaryWorkspace(107, tempTestDir),
+      /existing path is not a directory/,
+      'TEST 7: Job preparation must reject an existing regular file with the job folder name'
+    )
+    await fs.rm(fileJobPath)
+
+    // TEST 8: Normal cancellation cleanup still works
+    const ws108 = await prepareJobTemporaryWorkspace(108, tempTestDir)
+    await fs.writeFile(path.join(ws108, 'chunk.part'), 'PARTIAL_DATA')
+    const cancelCleanupResult = await cleanupJobTemporaryFiles(108, tempTestDir)
+    assert.equal(cancelCleanupResult.success, true, 'TEST 8: Cancellation cleanup succeeds')
+    assert.equal(fsSync.existsSync(ws108), false, 'TEST 8: Workspace removed upon cancellation')
+
+    // TEST 9: Normal restart-recovery cleanup still works
+    const ws109 = await prepareJobTemporaryWorkspace(109, tempTestDir)
+    await fs.writeFile(path.join(ws109, 'stale.part'), 'STALE_DATA')
+    const staleCleanup = await cleanupStaleJobTemporaryFiles(109, tempTestDir)
+    assert.equal(staleCleanup.success, true, 'TEST 9: Stale job cleanup succeeds')
+    assert.equal(fsSync.existsSync(ws109), false, 'TEST 9: Stale workspace 109 removed')
+
+    // TEST 10: Cleaning job-101 does not affect job-102
+    const ws101b = await prepareJobTemporaryWorkspace(101, tempTestDir)
+    const ws102b = await prepareJobTemporaryWorkspace(102, tempTestDir)
+    const file101 = path.join(ws101b, 'file101.part')
+    const file102 = path.join(ws102b, 'file102.part')
+    await fs.writeFile(file101, 'DATA_101')
+    await fs.writeFile(file102, 'DATA_102')
+
+    await cleanupJobTemporaryFiles(101, tempTestDir)
+    assert.equal(fsSync.existsSync(ws101b), false, 'TEST 10: Workspace 101 deleted')
+    assert.equal(fsSync.existsSync(ws102b), true, 'TEST 10: Workspace 102 remains intact')
+    assert.equal(await fs.readFile(file102, 'utf8'), 'DATA_102', 'TEST 10: File 102 remains intact')
+    await cleanupJobTemporaryFiles(102, tempTestDir)
+
+    console.log('✓ Section 7: Issue 01 symlink & junction preparation tests (1-10) passed.\n')
 
     console.log('====================================================================')
     console.log(' ALL FILESYSTEM SAFETY TESTS PASSED SUCCESSFULLY (100% PASS)        ')

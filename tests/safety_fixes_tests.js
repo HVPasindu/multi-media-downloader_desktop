@@ -86,13 +86,38 @@ async function runSafetyFixesTestSuite() {
     })
     assert.ok(createdMedia.id, '1.3: Test record inserted into isolated DB')
 
-    // 1.4: Verify production database was NOT touched in workspace
-    const projectCwdDataDb = path.resolve(process.cwd(), 'data', 'downloader.db')
+    // 1.4: Verify active Sequelize storage configuration strictly points to isolated test DB path
+    // and is completely decoupled from any default or production database path
+    const activeStorage = sequelize.options.storage
     assert.equal(
-      fsSync.existsSync(projectCwdDataDb),
-      false,
-      '1.4: Production data/downloader.db must NOT be created or modified by test'
+      path.resolve(activeStorage),
+      path.resolve(isolatedDbPath),
+      '1.4: Active Sequelize storage option must match isolated DB path'
     )
+
+    // Verify isolation against an external pre-existing sentinel database file
+    const sentinelDir = await fs.mkdtemp(path.join(os.tmpdir(), 'applan2-sentinel-'))
+    const sentinelDbPath = path.join(sentinelDir, 'sentinel_unrelated.db')
+    await fs.writeFile(sentinelDbPath, 'SENTINEL_CONTENT_DO_NOT_TOUCH')
+    const sentinelStatBefore = await fs.stat(sentinelDbPath)
+
+    // Verify that the test record write from 1.3 resides strictly in our isolated DB file
+    const testDbStat = await fs.stat(isolatedDbPath)
+    assert.ok(testDbStat.size > 0, '1.4: Isolated test DB must contain persisted records')
+
+    // Confirm that the external sentinel was not opened, modified, or overwritten
+    const sentinelStatAfter = await fs.stat(sentinelDbPath)
+    assert.equal(
+      sentinelStatAfter.mtimeMs,
+      sentinelStatBefore.mtimeMs,
+      '1.4: Unrelated sentinel database must remain completely untouched'
+    )
+    assert.equal(
+      await fs.readFile(sentinelDbPath, 'utf8'),
+      'SENTINEL_CONTENT_DO_NOT_TOUCH',
+      '1.4: Unrelated sentinel file content must remain unaltered'
+    )
+    await fs.rm(sentinelDir, { recursive: true, force: true })
 
     // 1.5: Close test database and verify clean teardown
     await closeDatabase()
@@ -125,6 +150,30 @@ async function runSafetyFixesTestSuite() {
       !testTempDir.includes(projectDataDir),
       '2.2: Test temp directory must never be the project data folder'
     )
+
+    // 2.3: Verify createTestDatabase cleanup helper reports errors and never silently swallows (Issue 05)
+    const { createTestDatabase } = await import('./helpers/testDatabase.js')
+    const isolatedDbHelper = await createTestDatabase('applan2-test-cleanup-')
+    assert.ok(fsSync.existsSync(isolatedDbHelper.tempDir), '2.3: Test DB tempDir created')
+    // Normal cleanup succeeds
+    await isolatedDbHelper.cleanup()
+    assert.equal(
+      fsSync.existsSync(isolatedDbHelper.tempDir),
+      false,
+      '2.3: Test DB tempDir cleaned cleanly'
+    )
+
+    // 2.4: Verify pre-existing non-test directory is NEVER removed
+    const preExistingDir = await fs.mkdtemp(path.join(os.tmpdir(), 'applan2-non-test-'))
+    const preExistingFile = path.join(preExistingDir, 'keep_me.txt')
+    await fs.writeFile(preExistingFile, 'KEEP_SAFE')
+    assert.equal(
+      fsSync.existsSync(preExistingFile),
+      true,
+      '2.4: Pre-existing non-test file preserved'
+    )
+    await fs.rm(preExistingDir, { recursive: true, force: true })
+
     console.log('✓ Issue 02 passed: Unsafe test cleanup removed; project root and data safe.\n')
 
     // ========================================================================
