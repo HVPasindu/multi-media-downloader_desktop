@@ -1,11 +1,8 @@
-
 import { getDatabase } from '../config/database.js'
-import {
-  createDownloadJob,
-  markDownloadJobFailed
-} from './downloadService.js'
+import { createDownloadJob, markDownloadJobFailed } from './downloadService.js'
 import { enqueueDownloadJob } from './downloadQueueService.js'
 import { findActiveDuplicateDownload } from './downloadDuplicateService.js'
+import { validateMediaUrl } from './mediaUrlSecurityService.js'
 
 // Track currently processing retry requests to prevent concurrent double-click requests
 const retryRequestsInProgress = new Set()
@@ -37,10 +34,7 @@ export async function retryDownloadJob(originalJobId) {
       const existingRetryJobId = activeRetryJobs.get(originalJobId)
       const existingRetryJob = await DownloadJob.findByPk(existingRetryJobId)
 
-      if (
-        existingRetryJob &&
-        ['queued', 'downloading'].includes(existingRetryJob.status)
-      ) {
+      if (existingRetryJob && ['queued', 'downloading'].includes(existingRetryJob.status)) {
         return {
           outcome: 'retry_in_progress',
           message: 'A retry is already in progress for this job'
@@ -75,14 +69,20 @@ export async function retryDownloadJob(originalJobId) {
     // 5. Verify the related MediaItem exists
     const media = await MediaItem.findByPk(originalJob.media_id)
 
-    if (
-      !media ||
-      typeof media.source_url !== 'string' ||
-      !media.source_url.trim()
-    ) {
+    if (!media || typeof media.source_url !== 'string' || !media.source_url.trim()) {
       return {
         outcome: 'media_missing',
         message: 'Related media item or source URL not found'
+      }
+    }
+
+    // Step 04.40 - Revalidate stored media source URL before retrying
+    try {
+      await validateMediaUrl(media.source_url)
+    } catch (urlError) {
+      return {
+        outcome: 'unsafe_url',
+        message: urlError.userMessage || 'The media source URL failed security validation'
       }
     }
 
@@ -115,18 +115,12 @@ export async function retryDownloadJob(originalJobId) {
     try {
       enqueueDownloadJob(newJob.id)
     } catch (queueError) {
-      console.error(
-        `Failed to enqueue retry job ${newJob.id}:`,
-        queueError
-      )
+      console.error(`Failed to enqueue retry job ${newJob.id}:`, queueError)
 
       try {
         await markDownloadJobFailed(newJob.id, queueError, 'queued')
       } catch (markError) {
-        console.error(
-          `Could not mark retry job ${newJob.id} as failed:`,
-          markError
-        )
+        console.error(`Could not mark retry job ${newJob.id} as failed:`, markError)
       }
 
       throw queueError
@@ -142,10 +136,8 @@ export async function retryDownloadJob(originalJobId) {
       status: 'queued',
       message: 'Download retry job created successfully'
     }
-
   } finally {
     // Release the concurrency lock
     retryRequestsInProgress.delete(originalJobId)
   }
 }
-
