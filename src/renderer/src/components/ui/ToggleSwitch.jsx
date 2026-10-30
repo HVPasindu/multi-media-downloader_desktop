@@ -24,4 +24,3 @@ export default function ToggleSwitch({ checked = false, onChange = () => {}, id 
     </button>
   )
 }
-

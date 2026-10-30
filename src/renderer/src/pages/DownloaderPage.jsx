@@ -389,7 +389,7 @@ export default function DownloaderPage() {
                       </div>
 
                       <div className="text-[10px] text-text-muted mt-0.5">
-                        {item.format} • {item.quality} • {item.size}
+                        {item.format} • {item.quality} • {item.fileSize || item.size}
                       </div>
 
                       {/* Downloading state: active progress bar */}
@@ -397,7 +397,7 @@ export default function DownloaderPage() {
                         <div className="mt-1.5 flex flex-col gap-1">
                           <div className="flex items-center justify-between text-[10px]">
                             <span className="text-[#19D8FF] font-semibold">
-                              Downloading... {item.downloaded} / {item.total} • {item.eta}
+                              {item.statusText || `Downloading... ${item.progress}%`}
                             </span>
                             <span className="text-white font-bold">{item.progress}%</span>
                           </div>
@@ -414,7 +414,7 @@ export default function DownloaderPage() {
                       {item.status === 'completed' && (
                         <div className="mt-1 flex items-center gap-1.5 text-[10px] text-[#00DEA5] font-semibold">
                           <CheckCircle2 className="w-3 h-3" />
-                          <span>Completed • {item.timeAgo}</span>
+                          <span>{item.statusText || 'Completed'}</span>
                         </div>
                       )}
 
@@ -422,7 +422,7 @@ export default function DownloaderPage() {
                       {isPaused && (
                         <div className="mt-1 flex items-center gap-1.5 text-[10px] text-purple-400 font-semibold">
                           <Clock className="w-3 h-3" />
-                          <span>Paused • {item.timeAgo}</span>
+                          <span>{item.statusText || 'Paused'}</span>
                         </div>
                       )}
                     </div>

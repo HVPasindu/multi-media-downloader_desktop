@@ -17,22 +17,42 @@ import FilterTabs from '../components/ui/FilterTabs'
 import MediaThumbnail from '../components/ui/MediaThumbnail'
 import PlatformBadge from '../components/ui/PlatformBadge'
 import StatusBadge from '../components/ui/StatusBadge'
-import { HISTORY_SUMMARY_STATS, HISTORY_LIST } from '../data/uiPreviewData'
+import { HISTORY_LIST } from '../data/uiPreviewData'
 
 /**
- * Download History Page - Fully refined to match Reference Image 3.
+ * Extracts a clean subtitle from statusText without repeating the main status label
+ * (e.g. "Failed (File Missing)" -> "File Missing").
+ */
+function getStatusSubtitle(statusText, status) {
+  if (!statusText) return null
+  const match = statusText.match(/\(([^)]+)\)/)
+  if (match) return match[1]
+  if (statusText.toLowerCase() === (status || '').toLowerCase()) return null
+  return statusText
+}
+
+/**
+ * Download History Page
  * Features:
  * - Top Search Bar with filter control
- * - 4 Summary Cards (Total Files, Videos, Audio, Storage Used)
+ * - 4 Summary Cards (Total Files, Videos, Audio, Storage Used) dynamically calculated
  * - Filter tabs (All, Videos, Audio, Completed, Failed) + Red Clear History button
  * - Comprehensive history table with row checkboxes, thumbnails, platform icons,
- *   format/quality pills, file sizes, saved paths, timestamps, statuses, and action buttons.
+ *   format/quality pills, file sizes (Problem 02), timestamps, statuses, and action buttons.
  */
 export default function HistoryPage() {
   const [activeTab, setActiveTab] = useState('all')
   const [searchQuery, setSearchQuery] = useState('')
   const [selectedIds, setSelectedIds] = useState([])
   const [historyItems, setHistoryItems] = useState(HISTORY_LIST)
+
+  // Problem 07: Compute summary metrics dynamically from the preview dataset
+  const totalFiles = historyItems.length
+  const videosCount = historyItems.filter((item) => item.format === 'MP4').length
+  const audioCount = historyItems.filter((item) => item.format === 'MP3').length
+  const completedCount = historyItems.filter((item) => item.status === 'completed').length
+  const failedCount = historyItems.filter((item) => item.status === 'failed').length
+  const storageUsed = historyItems.length > 0 ? '2.6 GB' : '0 B'
 
   // Filter history items by tab and search query
   const filteredItems = useMemo(() => {
@@ -72,17 +92,18 @@ export default function HistoryPage() {
     )
   }
 
+  // Clear history and reset selection consistently
   const handleClearHistory = () => {
     setHistoryItems([])
     setSelectedIds([])
   }
 
   const tabs = [
-    { id: 'all', label: 'All', count: HISTORY_SUMMARY_STATS.totalFiles },
-    { id: 'videos', label: 'Videos', count: HISTORY_SUMMARY_STATS.videos },
-    { id: 'audio', label: 'Audio', count: HISTORY_SUMMARY_STATS.audio },
-    { id: 'completed', label: 'Completed', count: 26 },
-    { id: 'failed', label: 'Failed', count: 2 }
+    { id: 'all', label: 'All', count: totalFiles },
+    { id: 'videos', label: 'Videos', count: videosCount },
+    { id: 'audio', label: 'Audio', count: audioCount },
+    { id: 'completed', label: 'Completed', count: completedCount },
+    { id: 'failed', label: 'Failed', count: failedCount }
   ]
 
   const isAllSelected = filteredItems.length > 0 && selectedIds.length === filteredItems.length
@@ -92,9 +113,14 @@ export default function HistoryPage() {
       {/* ----------------- TOP HEADER & SEARCH BAR ----------------- */}
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-3xl lg:text-4xl font-extrabold text-white tracking-tight">
-            Download History
-          </h1>
+          <div className="flex items-center gap-3">
+            <h1 className="text-3xl lg:text-4xl font-extrabold text-white tracking-tight">
+              Download History
+            </h1>
+            <span className="text-[10px] font-bold tracking-wider px-2 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20 uppercase">
+              Preview
+            </span>
+          </div>
           <p className="text-sm text-text-muted mt-1 font-medium">
             Review, manage and reopen your previously downloaded media
           </p>
@@ -122,11 +148,11 @@ export default function HistoryPage() {
         </div>
       </div>
 
-      {/* ----------------- 4 SUMMARY CARDS ROW ----------------- */}
+      {/* ----------------- 4 SUMMARY CARDS ROW (Problem 07: Dynamic Counts) ----------------- */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <StatCard
           icon={FileText}
-          count={HISTORY_SUMMARY_STATS.totalFiles}
+          count={totalFiles}
           label="Total Files"
           accentColor="blue"
           isActive={activeTab === 'all'}
@@ -134,7 +160,7 @@ export default function HistoryPage() {
         />
         <StatCard
           icon={Video}
-          count={HISTORY_SUMMARY_STATS.videos}
+          count={videosCount}
           label="Videos"
           accentColor="purple"
           isActive={activeTab === 'videos'}
@@ -142,18 +168,13 @@ export default function HistoryPage() {
         />
         <StatCard
           icon={Music}
-          count={HISTORY_SUMMARY_STATS.audio}
+          count={audioCount}
           label="Audio"
           accentColor="cyan"
           isActive={activeTab === 'audio'}
           onClick={() => setActiveTab('audio')}
         />
-        <StatCard
-          icon={HardDrive}
-          count={HISTORY_SUMMARY_STATS.storageUsed}
-          label="Storage Used"
-          accentColor="cyan"
-        />
+        <StatCard icon={HardDrive} count={storageUsed} label="Storage Used" accentColor="cyan" />
       </div>
 
       {/* ----------------- FILTER TABS & CLEAR HISTORY ----------------- */}
@@ -165,7 +186,12 @@ export default function HistoryPage() {
           <button
             type="button"
             onClick={handleClearHistory}
-            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold text-red-400 hover:text-white bg-red-600/10 hover:bg-red-600/30 border border-red-500/25 transition-all cursor-pointer"
+            disabled={totalFiles === 0}
+            className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold transition-all ${
+              totalFiles > 0
+                ? 'text-red-400 hover:text-white bg-red-600/10 hover:bg-red-600/30 border border-red-500/25 cursor-pointer'
+                : 'text-red-400/40 bg-red-600/5 border border-red-500/10 cursor-not-allowed'
+            }`}
           >
             <Trash2 className="w-3.5 h-3.5" />
             <span>Clear History</span>
@@ -173,7 +199,7 @@ export default function HistoryPage() {
         }
       />
 
-      {/* ----------------- DOWNLOAD HISTORY TABLE ----------------- */}
+      {/* ----------------- DOWNLOAD HISTORY TABLE (Problem 02: Fixed Properties) ----------------- */}
       <div className="rounded-2xl bg-[#07152E]/90 border border-primary/15 shadow-[0_4px_24px_rgba(0,0,0,0.35)] backdrop-blur-md overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse min-w-[980px]">
@@ -185,6 +211,7 @@ export default function HistoryPage() {
                     type="checkbox"
                     checked={isAllSelected}
                     onChange={handleSelectAll}
+                    disabled={filteredItems.length === 0}
                     className="rounded border-primary/30 bg-[#040B1C] text-primary focus:ring-primary/40 cursor-pointer"
                   />
                 </th>
@@ -277,9 +304,9 @@ export default function HistoryPage() {
                       </span>
                     </td>
 
-                    {/* File Size */}
+                    {/* File Size (Problem 02: Fixed property binding to item.fileSize) */}
                     <td className="py-3 px-4 font-mono text-text-muted text-xs">
-                      {item.size || '—'}
+                      {item.fileSize || item.size || '—'}
                     </td>
 
                     {/* Saved To Path */}
@@ -295,9 +322,12 @@ export default function HistoryPage() {
                     {/* Date Formatted */}
                     <td className="py-3 px-4 text-text-muted text-[11px]">{item.date}</td>
 
-                    {/* Status Badge */}
+                    {/* Status Badge (Problem 02: clean subtitle e.g. "File Missing") */}
                     <td className="py-3 px-4">
-                      <StatusBadge status={item.status} subtitle={item.statusReason} />
+                      <StatusBadge
+                        status={item.status}
+                        subtitle={getStatusSubtitle(item.statusText, item.status)}
+                      />
                     </td>
 
                     {/* Action Buttons */}

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { Routes, Route, Navigate } from 'react-router-dom'
 import SplashScreen from './components/splash/SplashScreen'
 import MainLayout from './components/layout/MainLayout'
@@ -18,7 +18,7 @@ import {
  * Coordinates the startup lifecycle:
  *  1. Mounts the branded Splash Screen immediately.
  *  2. Synchronizes with real Electron startup events (database, recovery, backend).
- *  3. Verifies API health over secure IPC.
+ *  3. Verifies API health over secure IPC without duplicate in-flight requests.
  *  4. Transitions smoothly to the Downloader Page when ready.
  */
 export default function App() {
@@ -29,16 +29,27 @@ export default function App() {
   })
   const [isReady, setIsReady] = useState(false)
   const [isHealthError, setIsHealthError] = useState(false)
+
+  // Problem 06: Restrict Splash Screen development preview strictly to DEV mode
   const [isPreview, setIsPreview] = useState(() => {
-    if (typeof window === 'undefined') return false
+    if (!import.meta.env.DEV || typeof window === 'undefined') return false
     return (
       window.location.hash.includes('preview=splash') ||
       window.location.search.includes('preview=splash')
     )
   })
 
-  // Verify backend health check via IPC
+  // Problem 09: Guard refs to prevent duplicate concurrent health checks and clean up timeouts
+  const isCheckingHealthRef = useRef(false)
+  const transitionTimerRef = useRef(null)
+
+  // Verify backend health check via IPC with concurrency guard
   const checkHealth = useCallback(async () => {
+    if (isCheckingHealthRef.current) {
+      return
+    }
+    isCheckingHealthRef.current = true
+
     setIsHealthError(false)
     setStartupStatus((prev) => ({
       ...prev,
@@ -46,27 +57,44 @@ export default function App() {
       message: 'Verifying API health & IPC connection...'
     }))
 
-    const health = await verifyBackendHealth()
+    try {
+      const health = await verifyBackendHealth()
 
-    if (health.ok) {
-      setStartupStatus((prev) => ({
-        ...prev,
-        state: 'ready',
-        message: 'Backend verified. Launching Downloader...'
-      }))
+      if (health.ok) {
+        setStartupStatus((prev) => ({
+          ...prev,
+          state: 'ready',
+          message: 'Backend verified. Launching Downloader...'
+        }))
 
-      // Gentle transition delay for polished user experience
-      setTimeout(() => {
-        setIsReady(true)
-      }, 550)
-    } else {
+        // Clean up any pending transition timer
+        if (transitionTimerRef.current) {
+          clearTimeout(transitionTimerRef.current)
+        }
+
+        // Gentle transition delay for polished user experience
+        transitionTimerRef.current = setTimeout(() => {
+          setIsReady(true)
+        }, 550)
+      } else {
+        setIsHealthError(true)
+        setStartupStatus((prev) => ({
+          ...prev,
+          state: 'error',
+          message: `API Health Check Failed: ${health.message}`,
+          error: health.message
+        }))
+      }
+    } catch (err) {
       setIsHealthError(true)
       setStartupStatus((prev) => ({
         ...prev,
         state: 'error',
-        message: `API Health Check Failed: ${health.message}`,
-        error: health.message
+        message: `API Health Check Error: ${err.message || 'Unknown error'}`,
+        error: err.message
       }))
+    } finally {
+      isCheckingHealthRef.current = false
     }
   }, [])
 
@@ -99,6 +127,9 @@ export default function App() {
     return () => {
       isMounted = false
       unsubscribe()
+      if (transitionTimerRef.current) {
+        clearTimeout(transitionTimerRef.current)
+      }
     }
   }, [checkHealth])
 
@@ -110,7 +141,7 @@ export default function App() {
     checkHealth()
   }
 
-  // Display the branded Splash Screen during startup or when previewing
+  // Display the branded Splash Screen during startup or when previewing in DEV
   if (!isReady || isPreview) {
     return (
       <SplashScreen
@@ -126,7 +157,11 @@ export default function App() {
 
   return (
     <Routes>
-      <Route element={<MainLayout onOpenSplashPreview={() => setIsPreview(true)} />}>
+      <Route
+        element={
+          <MainLayout onOpenSplashPreview={import.meta.env.DEV ? () => setIsPreview(true) : null} />
+        }
+      >
         <Route path="/" element={<DownloaderPage />} />
         <Route path="/downloads" element={<DownloadsPage />} />
         <Route path="/history" element={<HistoryPage />} />
