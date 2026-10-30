@@ -16,26 +16,52 @@ import FilterTabs from '../components/ui/FilterTabs'
 import MediaThumbnail from '../components/ui/MediaThumbnail'
 import PlatformBadge from '../components/ui/PlatformBadge'
 import StatusBadge from '../components/ui/StatusBadge'
-import { DOWNLOADS_MANAGER_STATS, DOWNLOADS_MANAGER_LIST } from '../data/uiPreviewData'
+import { DOWNLOADS_MANAGER_LIST } from '../data/uiPreviewData'
 
 /**
- * Downloads Manager Page - Fully refined to match Reference Image 2.
+ * Cleanly extracts secondary contextual subtitle from statusText without duplicating
+ * the main status name (e.g. "Downloading (2m 45s left)" -> "2m 45s left").
+ */
+function getStatusSubtitle(statusText, status) {
+  if (!statusText) return null
+  const match = statusText.match(/\(([^)]+)\)/)
+  if (match) return match[1]
+  if (statusText.toLowerCase() === (status || '').toLowerCase()) return null
+  return statusText
+}
+
+/**
+ * Downloads Manager Page
  * Features:
  * - Search bar with filter icon
- * - 4 Metric Stat Cards (Downloading, Queued, Completed, Failed)
+ * - 4 Metric Stat Cards (Downloading, Queued, Completed, Failed) calculated dynamically
  * - Horizontal filter tabs with live item counts & Clear Completed action
- * - Downloads Queue table with live progress bars, platform badges, status indicators, and pause/cancel actions
+ * - Downloads Queue table with correct data bindings (progressText, formatted statusText)
  */
 export default function DownloadsPage() {
   const [activeTab, setActiveTab] = useState('all')
   const [searchQuery, setSearchQuery] = useState('')
   const [downloadsList, setDownloadsList] = useState(DOWNLOADS_MANAGER_LIST)
 
+  // Problem 07: Dynamically calculate counts directly from the in-memory preview list
+  const downloadingCount = downloadsList.filter(
+    (item) => item.status === 'downloading' || item.status === 'finalizing'
+  ).length
+  const queuedCount = downloadsList.filter((item) => item.status === 'queued').length
+  const completedCount = downloadsList.filter((item) => item.status === 'completed').length
+  const failedCount = downloadsList.filter((item) => item.status === 'failed').length
+  const totalCount = downloadsList.length
+
   // Filter items based on active tab and search query
   const filteredItems = useMemo(() => {
     return downloadsList.filter((item) => {
-      // Tab filter
-      if (activeTab === 'downloading' && item.status !== 'downloading') return false
+      // Tab filter (treat finalizing as part of active downloading group)
+      if (
+        activeTab === 'downloading' &&
+        item.status !== 'downloading' &&
+        item.status !== 'finalizing'
+      )
+        return false
       if (activeTab === 'queued' && item.status !== 'queued') return false
       if (activeTab === 'completed' && item.status !== 'completed') return false
       if (activeTab === 'failed' && item.status !== 'failed') return false
@@ -52,16 +78,17 @@ export default function DownloadsPage() {
     })
   }, [downloadsList, activeTab, searchQuery])
 
+  // Clear completed items and update counts consistently
   const handleClearCompleted = () => {
     setDownloadsList((prev) => prev.filter((item) => item.status !== 'completed'))
   }
 
   const tabs = [
-    { id: 'all', label: 'All', count: 18 },
-    { id: 'downloading', label: 'Downloading', count: DOWNLOADS_MANAGER_STATS.downloading },
-    { id: 'queued', label: 'Queued', count: DOWNLOADS_MANAGER_STATS.queued },
-    { id: 'completed', label: 'Completed', count: DOWNLOADS_MANAGER_STATS.completed },
-    { id: 'failed', label: 'Failed', count: DOWNLOADS_MANAGER_STATS.failed }
+    { id: 'all', label: 'All', count: totalCount },
+    { id: 'downloading', label: 'Downloading', count: downloadingCount },
+    { id: 'queued', label: 'Queued', count: queuedCount },
+    { id: 'completed', label: 'Completed', count: completedCount },
+    { id: 'failed', label: 'Failed', count: failedCount }
   ]
 
   return (
@@ -69,9 +96,14 @@ export default function DownloadsPage() {
       {/* ----------------- TOP HEADER & SEARCH BAR ----------------- */}
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-3xl lg:text-4xl font-extrabold text-white tracking-tight">
-            Downloads Manager
-          </h1>
+          <div className="flex items-center gap-3">
+            <h1 className="text-3xl lg:text-4xl font-extrabold text-white tracking-tight">
+              Downloads Manager
+            </h1>
+            <span className="text-[10px] font-bold tracking-wider px-2 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20 uppercase">
+              Preview
+            </span>
+          </div>
           <p className="text-sm text-text-muted mt-1 font-medium">
             Manage your active, queued and completed downloads
           </p>
@@ -99,11 +131,11 @@ export default function DownloadsPage() {
         </div>
       </div>
 
-      {/* ----------------- 4 STAT CARDS ROW ----------------- */}
+      {/* ----------------- 4 STAT CARDS ROW (Problem 07: Dynamic Counts) ----------------- */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <StatCard
           icon={Loader2}
-          count={DOWNLOADS_MANAGER_STATS.downloading}
+          count={downloadingCount}
           label="Downloading"
           accentColor="cyan"
           isActive={activeTab === 'downloading'}
@@ -111,7 +143,7 @@ export default function DownloadsPage() {
         />
         <StatCard
           icon={Hourglass}
-          count={DOWNLOADS_MANAGER_STATS.queued}
+          count={queuedCount}
           label="Queued"
           accentColor="blue"
           isActive={activeTab === 'queued'}
@@ -119,7 +151,7 @@ export default function DownloadsPage() {
         />
         <StatCard
           icon={CheckCircle2}
-          count={DOWNLOADS_MANAGER_STATS.completed}
+          count={completedCount}
           label="Completed"
           accentColor="green"
           isActive={activeTab === 'completed'}
@@ -127,7 +159,7 @@ export default function DownloadsPage() {
         />
         <StatCard
           icon={XCircle}
-          count={DOWNLOADS_MANAGER_STATS.failed}
+          count={failedCount}
           label="Failed"
           accentColor="red"
           isActive={activeTab === 'failed'}
@@ -144,7 +176,12 @@ export default function DownloadsPage() {
           <button
             type="button"
             onClick={handleClearCompleted}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold text-text-muted hover:text-white bg-[#07152E]/80 hover:bg-[#0B1C38] border border-primary/15 transition-all cursor-pointer"
+            disabled={completedCount === 0}
+            className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold transition-all ${
+              completedCount > 0
+                ? 'text-text-muted hover:text-white bg-[#07152E]/80 hover:bg-[#0B1C38] border border-primary/15 cursor-pointer'
+                : 'text-text-muted/40 bg-[#07152E]/40 border border-primary/10 cursor-not-allowed'
+            }`}
           >
             <Trash2 className="w-3.5 h-3.5" />
             <span>Clear Completed</span>
@@ -152,7 +189,7 @@ export default function DownloadsPage() {
         }
       />
 
-      {/* ----------------- DOWNLOADS QUEUE TABLE ----------------- */}
+      {/* ----------------- DOWNLOADS QUEUE TABLE (Problem 01: Fixed Data Bindings) ----------------- */}
       <div className="rounded-2xl bg-[#07152E]/90 border border-primary/15 shadow-[0_4px_24px_rgba(0,0,0,0.35)] backdrop-blur-md overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse min-w-[840px]">
@@ -225,13 +262,13 @@ export default function DownloadsPage() {
                       </span>
                     </td>
 
-                    {/* Progress Bar & Numerical Metrics */}
+                    {/* Progress Bar & Numerical Metrics (Problem 01: bound to item.progressText) */}
                     <td className="py-3.5 px-4">
                       <div className="flex flex-col gap-1.5">
                         <div className="flex items-center justify-between text-[11px]">
                           <span className="font-bold text-white">{item.progress}%</span>
                           <span className="text-text-muted text-[10px]">
-                            {item.downloaded} / {item.total} {item.speed ? `• ${item.speed}` : ''}
+                            {item.progressText || '0 B'}
                           </span>
                         </div>
 
@@ -249,9 +286,12 @@ export default function DownloadsPage() {
                       </div>
                     </td>
 
-                    {/* Status Column with animated spinner, gear, or hourglass */}
+                    {/* Status Column with animated spinner, gear, or hourglass (Problem 01: Clean subtitle) */}
                     <td className="py-3.5 px-4">
-                      <StatusBadge status={item.status} subtitle={item.eta} />
+                      <StatusBadge
+                        status={item.status}
+                        subtitle={getStatusSubtitle(item.statusText, item.status)}
+                      />
                     </td>
 
                     {/* Action Buttons (Pause / Resume / Cancel) */}

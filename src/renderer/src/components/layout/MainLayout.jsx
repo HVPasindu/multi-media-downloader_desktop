@@ -1,7 +1,8 @@
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
-import { Download, ListCollapse, History, Settings, Sparkles, Minus, Square, X } from 'lucide-react'
+import { Download, ListCollapse, History, Settings, Sparkles } from 'lucide-react'
 import officialLogo from '../../assets/branding/official-cloud-logo-transparent.png'
 import SidebarDecoration from './SidebarDecoration'
+import { DOWNLOADS_MANAGER_LIST } from '../../data/uiPreviewData'
 
 /**
  * Main application layout matching the attached dark navy & electric cyan UI design.
@@ -11,9 +12,20 @@ import SidebarDecoration from './SidebarDecoration'
 export default function MainLayout({ onOpenSplashPreview = null }) {
   const location = useLocation()
 
+  // Problem 04: Derive active downloads badge count dynamically from preview dataset
+  // Counts items currently in downloading or finalizing state
+  const activePreviewCount = DOWNLOADS_MANAGER_LIST.filter(
+    (item) => item.status === 'downloading' || item.status === 'finalizing'
+  ).length
+
   const navItems = [
     { to: '/', label: 'Downloader', icon: Download },
-    { to: '/downloads', label: 'Downloads', icon: ListCollapse, badge: '3' },
+    {
+      to: '/downloads',
+      label: 'Downloads',
+      icon: ListCollapse,
+      badge: activePreviewCount > 0 ? String(activePreviewCount) : null
+    },
     { to: '/history', label: 'History', icon: History },
     { to: '/settings', label: 'Settings', icon: Settings }
   ]
@@ -33,30 +45,19 @@ export default function MainLayout({ onOpenSplashPreview = null }) {
           </span>
         </div>
 
-        {/* Window controls decoration & preview */}
-        <div className="flex items-center gap-3">
-          {onOpenSplashPreview && (
+        {/* Development-only Splash Preview Button (Problem 06) */}
+        {/* Fake decorative window controls removed; native OS window controls are used (Problem 05) */}
+        <div className="flex items-center gap-2">
+          {import.meta.env.DEV && onOpenSplashPreview && (
             <button
               onClick={onOpenSplashPreview}
-              className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold text-primary/80 hover:text-primary bg-primary/10 hover:bg-primary/20 border border-primary/20 transition-all"
-              title="Preview Startup Splash Screen"
+              className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold text-primary/80 hover:text-primary bg-primary/10 hover:bg-primary/20 border border-primary/20 transition-all cursor-pointer"
+              title="Preview Startup Splash Screen (Development Only)"
             >
               <Sparkles className="w-3 h-3" />
               <span>Splash Preview</span>
             </button>
           )}
-
-          <div className="flex items-center gap-2 text-text-muted/60 pl-2">
-            <span className="p-1 hover:text-white transition-colors cursor-pointer">
-              <Minus className="w-3.5 h-3.5" />
-            </span>
-            <span className="p-1 hover:text-white transition-colors cursor-pointer">
-              <Square className="w-3 h-3" />
-            </span>
-            <span className="p-1 hover:text-red-400 transition-colors cursor-pointer">
-              <X className="w-3.5 h-3.5" />
-            </span>
-          </div>
         </div>
       </header>
 
@@ -106,7 +107,7 @@ export default function MainLayout({ onOpenSplashPreview = null }) {
                       <span>{item.label}</span>
                     </div>
 
-                    {/* Badge count (e.g. 3 on Downloads page) */}
+                    {/* Dynamic Badge count */}
                     {item.badge && (
                       <span
                         className={`text-xs px-2 py-0.5 rounded-full font-bold ${
