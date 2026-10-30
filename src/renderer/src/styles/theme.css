@@ -1,0 +1,110 @@
+@import 'tailwindcss';
+
+@theme {
+  --color-primary: #19d8ff;
+  --color-secondary: #07152e;
+  --color-accent: #514bff;
+
+  --color-background: #040b1c;
+  --color-surface: #0b1c38;
+  --color-surface-elevated: #102449;
+
+  --color-text: #f4f8ff;
+  --color-text-muted: #9db4d8;
+
+  --color-success: #00dea5;
+  --color-warning: #ffb547;
+  --color-danger: #ff4568;
+}
+
+:root {
+  --color-primary: #19d8ff;
+  --color-secondary: #07152e;
+  --color-accent: #514bff;
+
+  --color-background: #040b1c;
+  --color-surface: #0b1c38;
+  --color-surface-elevated: #102449;
+
+  --color-text: #f4f8ff;
+  --color-text-muted: #9db4d8;
+
+  --color-success: #00dea5;
+  --color-warning: #ffb547;
+  --color-danger: #ff4568;
+
+  --glow-cyan: 0 0 25px rgba(25, 216, 255, 0.45);
+  --glow-violet: 0 0 25px rgba(81, 75, 255, 0.45);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background-color: var(--color-background);
+  color: var(--color-text);
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  user-select: none;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Custom subtle scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #07152e;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #102449;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #19d8ff;
+}
+
+/* Glassmorphism utility classes */
+.glass-panel {
+  background: rgba(11, 28, 56, 0.75);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(25, 216, 255, 0.12);
+}
+
+.glass-panel-elevated {
+  background: rgba(16, 36, 73, 0.85);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(25, 216, 255, 0.22);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+}
+
+.neon-glow-primary {
+  filter: drop-shadow(0 0 16px rgba(25, 216, 255, 0.6));
+}
+
+.neon-glow-accent {
+  filter: drop-shadow(0 0 16px rgba(81, 75, 255, 0.6));
+}
+
+@keyframes indeterminate {
+  0% {
+    left: -35%;
+  }
+  50% {
+    left: 35%;
+    width: 45%;
+  }
+  100% {
+    left: 100%;
+  }
+}
