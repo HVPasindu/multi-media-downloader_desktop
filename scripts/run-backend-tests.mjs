@@ -55,6 +55,14 @@ const TEST_SUITES = [
     file: 'tests/windows_packaging_tests.js'
   },
   {
+    name: 'Step 01: Media Analysis In-Memory Cache & Deduplication',
+    file: 'tests/media_analysis_cache_tests.js'
+  },
+  {
+    name: 'Step 02: Error Classification, PO Token & Cooldown Enforcement',
+    file: 'tests/media_analysis_error_tests.js'
+  },
+  {
     name: 'Step 04.45: Link Downloader Full Backend E2E Suite (Mocked Media Tools)',
     file: 'tests/link_downloader_e2e_tests.js'
   }

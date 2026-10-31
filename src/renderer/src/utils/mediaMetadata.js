@@ -29,9 +29,56 @@ export function formatMediaDuration(seconds) {
 }
 
 /**
+ * Extracts verified MP4-compatible qualities from media metadata.
+ * Uses availableFormats.mp4Qualities as primary source, falling back to
+ * availableFormats.mp4Formats when present.
+ * Does not fall back to generic unverified videoQualities.
+ * Deduplicates and sorts resolutions descending (highest to lowest).
+ *
+ * @param {object|null|undefined} analyzedMedia
+ * @returns {string[]}
+ */
+export function extractMp4Qualities(analyzedMedia) {
+  if (!analyzedMedia || typeof analyzedMedia !== 'object') {
+    return []
+  }
+
+  let rawList = []
+  if (
+    Array.isArray(analyzedMedia.availableFormats?.mp4Qualities) &&
+    analyzedMedia.availableFormats.mp4Qualities.length > 0
+  ) {
+    rawList = analyzedMedia.availableFormats.mp4Qualities
+  } else if (
+    Array.isArray(analyzedMedia.availableFormats?.mp4Formats) &&
+    analyzedMedia.availableFormats.mp4Formats.length > 0
+  ) {
+    rawList = analyzedMedia.availableFormats.mp4Formats
+      .map((f) => {
+        if (typeof f?.quality === 'string' && f.quality.trim()) return f.quality.trim()
+        if (Number.isInteger(f?.height) && f.height > 0) return `${f.height}p`
+        return null
+      })
+      .filter(Boolean)
+  }
+
+  // Deduplicate and filter out any invalid string
+  const unique = [...new Set(rawList.filter((q) => typeof q === 'string' && q.trim()))]
+
+  // Sort resolutions from highest to lowest (e.g. 2160p -> 1440p -> 1080p -> 720p -> 480p)
+  unique.sort((a, b) => {
+    const numA = parseInt(a, 10) || 0
+    const numB = parseInt(b, 10) || 0
+    return numB - numA
+  })
+
+  return unique
+}
+
+/**
  * Extracts format availability from analyzed media metadata.
  *
- * MP4 is available if availableFormats.mp4Qualities has at least one quality option.
+ * MP4 is available if verified MP4 qualities exist.
  * MP3 is available if audioOptions includes 'mp3'.
  * When media has not been analyzed or is null, both formats are unavailable and defaultFormat is null.
  *
@@ -53,14 +100,10 @@ export function getMediaFormatAvailability(analyzedMedia) {
     }
   }
 
-  const mp4Qualities = Array.isArray(analyzedMedia.availableFormats?.mp4Qualities)
-    ? analyzedMedia.availableFormats.mp4Qualities
-    : []
-
+  const mp4Qualities = extractMp4Qualities(analyzedMedia)
   const mp4Available = mp4Qualities.length > 0
 
   const audioOptions = Array.isArray(analyzedMedia.audioOptions) ? analyzedMedia.audioOptions : []
-
   const mp3Available = audioOptions.includes('mp3')
 
   let defaultFormat = null

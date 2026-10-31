@@ -50,8 +50,27 @@ export function clearMediaAnalysisCache() {
 }
 
 /**
+ * Returns remaining cooldown seconds for a platform (0 if not in cooldown).
+ * Used for testing and monitoring.
+ *
+ * @param {string} platform
+ * @returns {number}
+ */
+export function getRateLimitCooldown(platform) {
+  const cooldownUntil = rateLimitCooldowns.get(platform) || 0
+  return Math.max(0, Math.ceil((cooldownUntil - Date.now()) / 1000))
+}
+
+/**
  * Classifies an error thrown by yt-dlp or the analyzer into a structured error.
  * Ensures internal paths or raw child_process stderr are never leaked directly to users.
+ *
+ * Priority order:
+ * 1. PO Token / Visitor Data required (must NOT be masked by generic rate limit or auth)
+ * 2. Bot verification / Authentication required
+ * 3. HTTP 429 Rate limiting (explicit rate-limit indicators, not arbitrary 429 substrings)
+ * 4. Network / Connectivity errors
+ * 5. General analysis failure
  *
  * @param {Error|any} error - The caught error
  * @param {string} [platform] - The target platform ('youtube', etc.)
@@ -62,41 +81,46 @@ export function classifyAnalysisError(error, platform) {
   const stderr = String(error?.stderr || '')
   const combined = `${message} ${stderr} ${platform || ''}`
 
-  // 1. YouTube / Generic Rate Limiting (429)
-  if (/429|Too Many Requests|rate[- ]limit/i.test(combined)) {
+  // 1. YouTube PO Token / Visitor Data Required (Priority 1)
+  if (/po[-_ ]token|proof[- ]of[- ]origin|visitor[-_ ]data|visitorData/i.test(combined)) {
     return {
-      code: 'YOUTUBE_RATE_LIMITED',
-      userMessage: 'YouTube rate limit encountered. Please wait a moment before trying again.',
-      retryAfterSeconds: 60
+      code: 'YOUTUBE_PO_TOKEN_REQUIRED',
+      userMessage:
+        'YouTube requires additional verification data (PO Token). This video cannot be analyzed directly.',
+      retryAfterSeconds: null
     }
   }
 
-  // 2. YouTube Bot Verification / Auth Required
+  // 2. YouTube Bot Verification / Authentication Required (Priority 2)
   if (
-    /Sign in to confirm you(?:'|’)?re not a bot|bot verification|Sign in to confirm your age|Private video|Sign in to confirm/i.test(
+    /sign in to confirm (?:you(?:'|’)?re not a bot|your age)|confirm you(?:'|’)?re not a bot|bot verification|this video is private|private video|sign in to view this video|requires authentication|login required|members-only/i.test(
       combined
     )
   ) {
     return {
       code: 'YOUTUBE_AUTH_REQUIRED',
       userMessage:
-        'YouTube requires authentication or bot verification. This media cannot be extracted directly.',
+        'YouTube requires authentication or bot verification. This video cannot be analyzed directly.',
       retryAfterSeconds: null
     }
   }
 
-  // 3. YouTube PO Token / Visitor Data
-  if (/visitor data|po[-_ ]token|Proof of Origin/i.test(combined)) {
-    return {
-      code: 'YOUTUBE_PO_TOKEN_REQUIRED',
-      userMessage: 'YouTube requires a Proof of Origin (PO) token for this video.',
-      retryAfterSeconds: null
-    }
-  }
-
-  // 4. Network / Connectivity Error
+  // 3. YouTube HTTP 429 Rate Limiting (Priority 3 - Must match explicit HTTP 429 / Rate limit, not arbitrary 429 numbers)
   if (
-    /ENOTFOUND|ECONNREFUSED|ECONNRESET|ETIMEDOUT|network is unreachable|timed out|Temporary failure in name resolution|getaddrinfo/i.test(
+    /(?:http\s*error\s*429|429\s*too\s*many\s*requests|too\s*many\s*requests|\brate[- ]limit(?:ed|ing)?\b|\b429\s+error\b)/i.test(
+      combined
+    )
+  ) {
+    return {
+      code: 'YOUTUBE_RATE_LIMITED',
+      userMessage: 'YouTube rate limit encountered (HTTP 429). Please wait before retrying.',
+      retryAfterSeconds: 60
+    }
+  }
+
+  // 4. Network / Connectivity Error (Priority 4)
+  if (
+    /\b(?:ENOTFOUND|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH)\b|network is unreachable|timed out|Temporary failure in name resolution|getaddrinfo\s+(?:ENOTFOUND|failed)|unable to connect/i.test(
       combined
     )
   ) {

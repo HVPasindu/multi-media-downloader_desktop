@@ -29,7 +29,11 @@ import { chooseDownloadFolder, getDownloadFolder } from '../services/api'
 import { createDownload, listDownloads } from '../services/downloadsApi'
 import { analyzeMedia } from '../services/mediaApi'
 import { normalizeDownloadJob } from '../utils/downloadPresentation'
-import { formatMediaDuration, getMediaFormatAvailability } from '../utils/mediaMetadata'
+import {
+  formatMediaDuration,
+  getMediaFormatAvailability,
+  extractMp4Qualities
+} from '../utils/mediaMetadata'
 import { extractUrlFromDataTransfer, validateMediaUrlInput } from '../utils/mediaUrlInput'
 
 /**
@@ -46,8 +50,8 @@ import { extractUrlFromDataTransfer, validateMediaUrlInput } from '../utils/medi
  *
  * PHASES 01 & 02 IMPLEMENTATION:
  * - Step 01: In-memory analysis caching & deduplication (backend) + MP4 quality validation fix
- * - Step 02: YouTube 429 Cooldown countdown & structured error classification with Retry button
- * - Step 03: Dynamic MP4 Quality buttons from available streams without hardcoding, wrapped cleanly
+ * - Step 02: YouTube 429 Cooldown countdown & structured error classification with selective Retry button
+ * - Step 03: Dynamic MP4 Quality buttons from verified streams without hardcoding or fake placeholders
  * - Step 04: Visual isolation between MP4 and MP3 format configurations
  * - Step 05: Invalid Drag & Drop request cancellation with activeRequestIdRef invalidation
  * - Step 06: Thumbnail URL validation & fallback protection
@@ -64,6 +68,7 @@ export default function DownloaderPage() {
   const [isAnalyzing, setIsAnalyzing] = useState(false)
   const [analyzedMedia, setAnalyzedMedia] = useState(null)
   const [apiError, setApiError] = useState(null)
+  const [apiErrorCode, setApiErrorCode] = useState(null)
 
   // Step 02: Rate limit cooldown countdown timer (in seconds)
   const [cooldownRemaining, setCooldownRemaining] = useState(0)
@@ -142,6 +147,7 @@ export default function DownloaderPage() {
       setUrlStatus(validation.message)
       setUrlError(null)
       setApiError(null)
+      setApiErrorCode(null)
     } else {
       setValidatedUrl(null)
       setDetectedPlatform(null)
@@ -149,6 +155,7 @@ export default function DownloaderPage() {
       setUrlError(validation.error)
       setAnalyzedMedia(null)
       setApiError(null)
+      setApiErrorCode(null)
     }
   }
 
@@ -165,6 +172,7 @@ export default function DownloaderPage() {
     setDetectedPlatform(null)
     setAnalyzedMedia(null)
     setApiError(null)
+    setApiErrorCode(null)
     setDownloadSubmitFeedback(null)
     setIsAnalyzing(false)
     if (inputRef.current) {
@@ -186,6 +194,7 @@ export default function DownloaderPage() {
     setUrlStatus(null)
     setAnalyzedMedia(null)
     setApiError(null)
+    setApiErrorCode(null)
     setDownloadSubmitFeedback(null)
     setIsAnalyzing(false)
   }
@@ -202,6 +211,7 @@ export default function DownloaderPage() {
       setUrlStatus(null)
       setAnalyzedMedia(null)
       setApiError(null)
+      setApiErrorCode(null)
       setDownloadSubmitFeedback(null)
       return
     }
@@ -223,6 +233,7 @@ export default function DownloaderPage() {
       setUrl(trimmed)
       setAnalyzedMedia(null)
       setApiError(null)
+      setApiErrorCode(null)
       setDownloadSubmitFeedback(null)
       setIsAnalyzing(false)
       const validation = validateMediaUrlInput(trimmed)
@@ -243,6 +254,7 @@ export default function DownloaderPage() {
         setValidatedUrl(null)
         setAnalyzedMedia(null)
         setApiError(null)
+        setApiErrorCode(null)
         setDownloadSubmitFeedback(null)
         return
       }
@@ -259,6 +271,7 @@ export default function DownloaderPage() {
         setValidatedUrl(null)
         setAnalyzedMedia(null)
         setApiError(null)
+        setApiErrorCode(null)
         setDownloadSubmitFeedback(null)
         return
       }
@@ -267,6 +280,7 @@ export default function DownloaderPage() {
       setUrl(trimmed)
       setAnalyzedMedia(null)
       setApiError(null)
+      setApiErrorCode(null)
       setDownloadSubmitFeedback(null)
       setIsAnalyzing(false)
       const validation = validateMediaUrlInput(trimmed)
@@ -282,6 +296,7 @@ export default function DownloaderPage() {
       setValidatedUrl(null)
       setAnalyzedMedia(null)
       setApiError(null)
+      setApiErrorCode(null)
       setDownloadSubmitFeedback(null)
     }
   }
@@ -312,6 +327,7 @@ export default function DownloaderPage() {
     setIsAnalyzing(false)
     setAnalyzedMedia(null)
     setApiError(null)
+    setApiErrorCode(null)
     setDownloadSubmitFeedback(null)
 
     const extraction = extractUrlFromDataTransfer(e.dataTransfer)
@@ -377,6 +393,7 @@ export default function DownloaderPage() {
       setValidatedUrl(null)
       setAnalyzedMedia(null)
       setApiError(null)
+      setApiErrorCode(null)
       if (inputRef.current) {
         inputRef.current.focus()
       }
@@ -392,6 +409,7 @@ export default function DownloaderPage() {
       setUrlError(validation.error)
       setAnalyzedMedia(null)
       setApiError(null)
+      setApiErrorCode(null)
       return
     }
 
@@ -401,6 +419,8 @@ export default function DownloaderPage() {
     setUrlStatus(validation.message)
     setUrlError(null)
     setApiError(null)
+    setApiErrorCode(null)
+
     // Step 2: Call backend media analyzer API with stale-request tracking
     const currentRequestId = ++activeRequestIdRef.current
     setIsAnalyzing(true)
@@ -417,14 +437,12 @@ export default function DownloaderPage() {
         const metadata = response.data.data
         setAnalyzedMedia(metadata)
         setApiError(null)
+        setApiErrorCode(null)
         setDownloadSubmitFeedback(null)
 
         // Step 03 & 04: Auto-select format & quality based on real stream availability
         const availability = getMediaFormatAvailability(metadata)
-        const availableMp4Qualities =
-          metadata.availableFormats?.mp4Qualities?.length > 0
-            ? metadata.availableFormats.mp4Qualities
-            : metadata.videoQualities || []
+        const availableMp4Qualities = availability.mp4Qualities
 
         if (availability.mp4Available && !availability.mp3Available) {
           setSelectedFormat('mp4')
@@ -456,14 +474,33 @@ export default function DownloaderPage() {
         const status = response.status
         const data = response.data || {}
         let errorMsg = 'Failed to analyze media link. Please verify the URL and try again.'
+        let errCode = data.code || 'ANALYSIS_FAILED'
 
         if (status === 429 || data.code === 'YOUTUBE_RATE_LIMITED') {
+          errCode = 'YOUTUBE_RATE_LIMITED'
           const waitSec = data.retryAfterSeconds || 60
           setCooldownRemaining(waitSec)
           errorMsg =
-            data.message || `YouTube rate limit reached. Please wait ${waitSec}s before retrying.`
+            data.message ||
+            `YouTube rate limit encountered. Please wait ${waitSec}s before retrying.`
+        } else if (data.code === 'YOUTUBE_PO_TOKEN_REQUIRED') {
+          errCode = 'YOUTUBE_PO_TOKEN_REQUIRED'
+          errorMsg =
+            data.message ||
+            'YouTube requires additional verification data (PO Token). This video cannot be analyzed directly.'
+        } else if (data.code === 'YOUTUBE_AUTH_REQUIRED') {
+          errCode = 'YOUTUBE_AUTH_REQUIRED'
+          errorMsg =
+            data.message ||
+            'YouTube requires authentication or bot verification. This video cannot be analyzed directly.'
+        } else if (data.code === 'NETWORK_ERROR') {
+          errCode = 'NETWORK_ERROR'
+          errorMsg =
+            data.message ||
+            'Unable to connect to the media server. Please check your internet connection.'
         } else if (data.code) {
-          errorMsg = data.message || 'Media analysis failed.'
+          errCode = data.code
+          errorMsg = data.message || 'Media analysis failed. Please verify the link and try again.'
         } else if (status === 400) {
           errorMsg = data.message || 'Invalid or unsupported media URL.'
         } else if (status === 401 || status === 403) {
@@ -477,6 +514,7 @@ export default function DownloaderPage() {
           errorMsg = data.message
         }
 
+        setApiErrorCode(errCode)
         setApiError(errorMsg)
         setAnalyzedMedia(null)
       }
@@ -484,6 +522,7 @@ export default function DownloaderPage() {
       if (currentRequestId !== activeRequestIdRef.current) {
         return
       }
+      setApiErrorCode('NETWORK_ERROR')
       const isIpcError = err?.message?.includes('IPC') || err?.message?.includes('bridge')
       const errorMsg = isIpcError
         ? 'Local analyzer service could not be reached via IPC. Please restart the application.'
@@ -726,20 +765,21 @@ export default function DownloaderPage() {
     !urlError &&
     !apiError
 
-  // Step 04: Format & Quality availability extraction
+  // Step 03 & 04: Format & Quality availability extraction (using verified MP4 qualities)
   const formatAvailability = getMediaFormatAvailability(analyzedMedia)
   const { mp4Available, mp3Available } = formatAvailability
-
-  const mp4Qualities =
-    analyzedMedia?.availableFormats?.mp4Qualities?.length > 0
-      ? analyzedMedia.availableFormats.mp4Qualities
-      : analyzedMedia?.videoQualities || []
-
+  const mp4Qualities = extractMp4Qualities(analyzedMedia)
   const highestAvailableQuality = mp4Qualities.length > 0 ? mp4Qualities[0] : null
 
   // Visual isolation states between MP4 and MP3 configurations
   const isMp4Active = selectedFormat === 'mp4' && Boolean(analyzedMedia) && mp4Available
   const isMp3Active = selectedFormat === 'mp3' && Boolean(analyzedMedia) && mp3Available
+
+  // Determine whether showing a Retry button is appropriate (Step 02)
+  const isRetryAppropriate =
+    apiErrorCode === 'NETWORK_ERROR' ||
+    apiErrorCode === 'ANALYSIS_FAILED' ||
+    (apiErrorCode === 'YOUTUBE_RATE_LIMITED' && cooldownRemaining === 0)
 
   return (
     <div className="p-6 lg:p-8 max-w-[1400px] w-full mx-auto flex flex-col gap-6 select-none animate-fadeIn">
@@ -877,7 +917,7 @@ export default function DownloaderPage() {
               </button>
             </div>
 
-            {/* Validation & API Error Feedback with Retry Action (Step 02) */}
+            {/* Validation & API Error Feedback with Appropriate Retry Action (Step 02) */}
             {urlError && (
               <div
                 id="media-url-error"
@@ -898,7 +938,8 @@ export default function DownloaderPage() {
                   <AlertCircle className="w-4 h-4 flex-shrink-0" />
                   <span className="truncate">{apiError}</span>
                 </div>
-                {cooldownRemaining === 0 && (
+                {/* Only show Retry when retrying is appropriate */}
+                {isRetryAppropriate && (
                   <button
                     type="button"
                     onClick={handleAnalyzeClick}
@@ -1118,9 +1159,9 @@ export default function DownloaderPage() {
             )}
           </div>
 
-          {/* Section 3 & 4: Dynamic Quality & Bitrate (Step 03 & Step 04) */}
+          {/* Section 3 & 4: Dynamic Quality & Bitrate (Step 03 & Step 04 - No Fake Buttons) */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            {/* 3. Video Quality (Dynamic Render - Step 03) */}
+            {/* 3. Video Quality (Step 03: Actual verified MP4 qualities without fake presets) */}
             <div className="flex flex-col gap-2">
               <div className="flex items-center justify-between">
                 <h2 className="text-xs font-bold uppercase tracking-wider text-text-muted">
@@ -1132,55 +1173,51 @@ export default function DownloaderPage() {
               </div>
 
               <div className="flex flex-wrap gap-2">
-                {analyzedMedia && mp4Qualities.length > 0
-                  ? [
-                      {
-                        id: 'best',
-                        title: 'Best',
-                        sub: highestAvailableQuality
-                          ? `${highestAvailableQuality} 👑`
-                          : 'Available 👑'
-                      },
-                      ...mp4Qualities.map((q) => ({
-                        id: q,
-                        title: q,
-                        sub: getQualitySubLabel(q)
-                      }))
-                    ].map((q) => {
-                      const isSelected = selectedVideoQuality === q.id
+                {!analyzedMedia ? (
+                  <div className="w-full py-3 px-3 rounded-xl border border-dashed border-primary/15 bg-[#040B1C]/50 text-center text-text-muted/50 text-xs">
+                    Paste and analyze a video link to view available MP4 qualities.
+                  </div>
+                ) : mp4Qualities.length === 0 ? (
+                  <div className="w-full py-3 px-3 rounded-xl border border-rose-500/20 bg-rose-500/10 text-center text-rose-400 text-xs">
+                    No compatible MP4 video stream is available for this media.
+                  </div>
+                ) : (
+                  [
+                    {
+                      id: 'best',
+                      title: 'Best',
+                      sub: highestAvailableQuality
+                        ? `${highestAvailableQuality} 👑`
+                        : 'Available 👑'
+                    },
+                    ...mp4Qualities.map((q) => ({
+                      id: q,
+                      title: q,
+                      sub: getQualitySubLabel(q)
+                    }))
+                  ].map((q) => {
+                    const isSelected = selectedVideoQuality === q.id
 
-                      return (
-                        <button
-                          key={q.id}
-                          type="button"
-                          disabled={!isMp4Active}
-                          onClick={() => isMp4Active && setSelectedVideoQuality(q.id)}
-                          className={`flex-1 min-w-[76px] py-2 px-2 rounded-xl text-center border transition-all ${
-                            !isMp4Active
-                              ? 'opacity-35 cursor-not-allowed bg-[#07152E]/30 border-primary/10 text-text-muted/40 pointer-events-none'
-                              : isSelected
-                                ? 'bg-[#0B1C38] border-cyan-400 text-white shadow-[0_0_14px_rgba(25,216,255,0.3)] cursor-pointer'
-                                : 'bg-[#07152E]/80 border-primary/15 text-text-muted hover:border-primary/30 hover:text-white cursor-pointer'
-                          }`}
-                        >
-                          <div className="text-xs font-extrabold">{q.title}</div>
-                          <div className="text-[10px] text-text-muted/80">{q.sub}</div>
-                        </button>
-                      )
-                    })
-                  : [
-                      { id: '720p', title: '720p', sub: 'HD' },
-                      { id: '1080p', title: '1080p', sub: 'Full HD' },
-                      { id: 'best', title: 'Best', sub: 'Available 👑' }
-                    ].map((q) => (
-                      <div
+                    return (
+                      <button
                         key={q.id}
-                        className="flex-1 min-w-[76px] py-2.5 px-2 rounded-xl text-center border opacity-40 bg-[#07152E]/40 border-primary/10 text-text-muted/40 select-none"
+                        type="button"
+                        disabled={!isMp4Active}
+                        onClick={() => isMp4Active && setSelectedVideoQuality(q.id)}
+                        className={`flex-1 min-w-[76px] py-2 px-2 rounded-xl text-center border transition-all ${
+                          !isMp4Active
+                            ? 'opacity-35 cursor-not-allowed bg-[#07152E]/30 border-primary/10 text-text-muted/40 pointer-events-none'
+                            : isSelected
+                              ? 'bg-[#0B1C38] border-cyan-400 text-white shadow-[0_0_14px_rgba(25,216,255,0.3)] cursor-pointer'
+                              : 'bg-[#07152E]/80 border-primary/15 text-text-muted hover:border-primary/30 hover:text-white cursor-pointer'
+                        }`}
                       >
                         <div className="text-xs font-extrabold">{q.title}</div>
                         <div className="text-[10px] text-text-muted/80">{q.sub}</div>
-                      </div>
-                    ))}
+                      </button>
+                    )
+                  })
+                )}
               </div>
             </div>
 
@@ -1196,32 +1233,42 @@ export default function DownloaderPage() {
               </div>
 
               <div className="grid grid-cols-3 gap-2">
-                {[
-                  { bitrate: 128, label: '128', unit: 'kbps' },
-                  { bitrate: 192, label: '192', unit: 'kbps' },
-                  { bitrate: 320, label: '320', unit: 'kbps' }
-                ].map((b) => {
-                  const isSelected = selectedAudioBitrate === b.bitrate
+                {!analyzedMedia ? (
+                  <div className="col-span-3 py-3 px-3 rounded-xl border border-dashed border-primary/15 bg-[#040B1C]/50 text-center text-text-muted/50 text-xs">
+                    Paste and analyze a media link to choose audio bitrate.
+                  </div>
+                ) : !mp3Available ? (
+                  <div className="col-span-3 py-3 px-3 rounded-xl border border-rose-500/20 bg-rose-500/10 text-center text-rose-400 text-xs">
+                    No audio stream is available for MP3 conversion.
+                  </div>
+                ) : (
+                  [
+                    { bitrate: 128, label: '128', unit: 'kbps' },
+                    { bitrate: 192, label: '192', unit: 'kbps' },
+                    { bitrate: 320, label: '320', unit: 'kbps' }
+                  ].map((b) => {
+                    const isSelected = selectedAudioBitrate === b.bitrate
 
-                  return (
-                    <button
-                      key={b.bitrate}
-                      type="button"
-                      disabled={!isMp3Active}
-                      onClick={() => isMp3Active && setSelectedAudioBitrate(b.bitrate)}
-                      className={`py-2.5 px-2 rounded-xl text-center border transition-all ${
-                        !isMp3Active
-                          ? 'opacity-35 cursor-not-allowed bg-[#07152E]/30 border-primary/10 text-text-muted/40 pointer-events-none'
-                          : isSelected
-                            ? 'bg-[#0B1C38] border-cyan-400 text-white shadow-[0_0_14px_rgba(25,216,255,0.3)] cursor-pointer'
-                            : 'bg-[#07152E]/80 border-primary/15 text-text-muted hover:border-primary/30 hover:text-white cursor-pointer'
-                      }`}
-                    >
-                      <div className="text-xs font-extrabold">{b.label}</div>
-                      <div className="text-[10px] text-text-muted/80">{b.unit}</div>
-                    </button>
-                  )
-                })}
+                    return (
+                      <button
+                        key={b.bitrate}
+                        type="button"
+                        disabled={!isMp3Active}
+                        onClick={() => isMp3Active && setSelectedAudioBitrate(b.bitrate)}
+                        className={`py-2.5 px-2 rounded-xl text-center border transition-all ${
+                          !isMp3Active
+                            ? 'opacity-35 cursor-not-allowed bg-[#07152E]/30 border-primary/10 text-text-muted/40 pointer-events-none'
+                            : isSelected
+                              ? 'bg-[#0B1C38] border-cyan-400 text-white shadow-[0_0_14px_rgba(25,216,255,0.3)] cursor-pointer'
+                              : 'bg-[#07152E]/80 border-primary/15 text-text-muted hover:border-primary/30 hover:text-white cursor-pointer'
+                        }`}
+                      >
+                        <div className="text-xs font-extrabold">{b.label}</div>
+                        <div className="text-[10px] text-text-muted/80">{b.unit}</div>
+                      </button>
+                    )
+                  })
+                )}
               </div>
             </div>
           </div>
