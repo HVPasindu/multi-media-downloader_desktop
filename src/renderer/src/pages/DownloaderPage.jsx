@@ -5,6 +5,7 @@ import {
   Globe2,
   Link2,
   Search,
+  Loader2,
   X,
   ClipboardPaste,
   AlertCircle,
@@ -20,10 +21,13 @@ import {
   Clock,
   CloudUpload
 } from 'lucide-react'
+import LoadingIndicator from '../components/common/LoadingIndicator'
 import DownloaderHeroIllustration from '../components/ui/DownloaderHeroIllustration'
 import MediaThumbnail from '../components/ui/MediaThumbnail'
 import PlatformBadge from '../components/ui/PlatformBadge'
 import { DOWNLOADER_MEDIA_PREVIEW, RECENT_DOWNLOADS_LIST } from '../data/uiPreviewData'
+import { analyzeMedia } from '../services/mediaApi'
+import { formatMediaDuration, getMediaFormatAvailability } from '../utils/mediaMetadata'
 import { extractUrlFromDataTransfer, validateMediaUrlInput } from '../utils/mediaUrlInput'
 
 /**
@@ -38,17 +42,12 @@ import { extractUrlFromDataTransfer, validateMediaUrlInput } from '../utils/medi
  * - Radiant full-width Download CTA button
  * - Right Column: Recent Downloads card with live progress, pause/play, folder action & Drag-and-Drop dropzone
  *
- * STEP 05.03 IMPLEMENTATION:
- * - URL input state management (single source of truth for typing, clipboard paste, drag & drop)
- * - Syntactic validation & security guards (length, schemes, control chars, credentials, ports, private IPs)
- * - Platform detection (YouTube, Facebook, Instagram, TikTok, X/Twitter)
- * - Explicit validatedUrl state to ensure ready preview ONLY appears for successfully validated URLs
- * - Stale platform detection prevention: editing URL immediately clears previous platform and validation state
- * - Synchronous native paste handling preventing race conditions with onChange
- * - Clipboard Paste action via navigator.clipboard.readText()
- * - Drag & Drop dropzone with text/uri-list & text/plain extraction, local file rejection, and visual dragover highlight
- * - Global window drag/drop prevention to protect Electron app navigation
- * - Step 05.03 Client-side validation only on Analyze (DO NOT call backend API until Step 05.04)
+ * STEPS 05.04 + 05.05 + 05.06 IMPLEMENTATION:
+ * - Step 05.04: Analyze URL integration with backend Express API via mediaApi.js / IPC bridge
+ * - Loading indicator during analysis, button state toggle, stale request invalidation
+ * - User-friendly API error handling (400, 401/403, 500, network/IPC)
+ * - Step 05.05: Dynamic media preview component showing actual thumbnail, title, platform, duration, and stream info
+ * - Step 05.06: MP4/MP3 format availability based on mp4Qualities and audioOptions with automatic selection rules
  */
 export default function DownloaderPage() {
   const [url, setUrl] = useState('https://www.youtube.com/watch?v=dQw4w9WgXcQ')
@@ -58,6 +57,12 @@ export default function DownloaderPage() {
   const [detectedPlatform, setDetectedPlatform] = useState(null)
   const [isDraggingOver, setIsDraggingOver] = useState(false)
 
+  // Step 05.04: Backend media analysis state
+  const [isAnalyzing, setIsAnalyzing] = useState(false)
+  const [analyzedMedia, setAnalyzedMedia] = useState(null)
+  const [apiError, setApiError] = useState(null)
+
+  // Step 05.06: Format selection state
   const [selectedFormat, setSelectedFormat] = useState('mp4')
   const [selectedVideoQuality, setSelectedVideoQuality] = useState('1080p')
   const [selectedAudioBitrate, setSelectedAudioBitrate] = useState('192k')
@@ -67,6 +72,7 @@ export default function DownloaderPage() {
   const [recentDownloads, setRecentDownloads] = useState(RECENT_DOWNLOADS_LIST)
 
   const inputRef = useRef(null)
+  const activeRequestIdRef = useRef(0)
 
   /**
    * Window-level drag & drop prevention to ensure Electron does not navigate
@@ -90,7 +96,7 @@ export default function DownloaderPage() {
   }, [])
 
   /**
-   * Applies validation result to component state.
+   * Applies client-side validation result to component state.
    */
   const applyValidationResult = (validation) => {
     if (validation.valid) {
@@ -98,23 +104,30 @@ export default function DownloaderPage() {
       setDetectedPlatform(validation.platform)
       setUrlStatus(validation.message)
       setUrlError(null)
+      setApiError(null)
     } else {
       setValidatedUrl(null)
       setDetectedPlatform(null)
       setUrlStatus(null)
       setUrlError(validation.error)
+      setAnalyzedMedia(null)
+      setApiError(null)
     }
   }
 
   /**
-   * Clears the current URL input and resets validation/status indicators.
+   * Clears the current URL input and resets all validation, analysis, and error indicators.
    */
   const handleClearUrl = () => {
+    activeRequestIdRef.current++
     setUrl('')
     setValidatedUrl(null)
     setUrlError(null)
     setUrlStatus(null)
     setDetectedPlatform(null)
+    setAnalyzedMedia(null)
+    setApiError(null)
+    setIsAnalyzing(false)
     if (inputRef.current) {
       inputRef.current.focus()
     }
@@ -122,14 +135,18 @@ export default function DownloaderPage() {
 
   /**
    * Handles user keystrokes in the URL input.
-   * Immediately clears previous validation and platform state upon editing.
+   * Immediately clears previous validation, analysis, and platform state upon editing.
    */
   const handleUrlChange = (value) => {
+    activeRequestIdRef.current++
     setUrl(value)
     setValidatedUrl(null)
     setDetectedPlatform(null)
     setUrlError(null)
     setUrlStatus(null)
+    setAnalyzedMedia(null)
+    setApiError(null)
+    setIsAnalyzing(false)
   }
 
   /**
@@ -142,6 +159,8 @@ export default function DownloaderPage() {
       setDetectedPlatform(null)
       setUrlError(null)
       setUrlStatus(null)
+      setAnalyzedMedia(null)
+      setApiError(null)
       return
     }
 
@@ -157,8 +176,12 @@ export default function DownloaderPage() {
     const pastedText = e.clipboardData?.getData('text')
     if (pastedText) {
       e.preventDefault()
+      activeRequestIdRef.current++
       const trimmed = pastedText.trim()
       setUrl(trimmed)
+      setAnalyzedMedia(null)
+      setApiError(null)
+      setIsAnalyzing(false)
       const validation = validateMediaUrlInput(trimmed)
       applyValidationResult(validation)
     }
@@ -175,6 +198,8 @@ export default function DownloaderPage() {
         setUrlStatus(null)
         setDetectedPlatform(null)
         setValidatedUrl(null)
+        setAnalyzedMedia(null)
+        setApiError(null)
         return
       }
 
@@ -186,10 +211,16 @@ export default function DownloaderPage() {
         setUrlStatus(null)
         setDetectedPlatform(null)
         setValidatedUrl(null)
+        setAnalyzedMedia(null)
+        setApiError(null)
         return
       }
 
+      activeRequestIdRef.current++
       setUrl(trimmed)
+      setAnalyzedMedia(null)
+      setApiError(null)
+      setIsAnalyzing(false)
       const validation = validateMediaUrlInput(trimmed)
       applyValidationResult(validation)
 
@@ -201,6 +232,8 @@ export default function DownloaderPage() {
       setUrlStatus(null)
       setDetectedPlatform(null)
       setValidatedUrl(null)
+      setAnalyzedMedia(null)
+      setApiError(null)
     }
   }
 
@@ -230,12 +263,18 @@ export default function DownloaderPage() {
       setUrlStatus(null)
       setDetectedPlatform(null)
       setValidatedUrl(null)
+      setAnalyzedMedia(null)
+      setApiError(null)
       return
     }
 
     if (extraction.url) {
+      activeRequestIdRef.current++
       const trimmed = extraction.url.trim()
       setUrl(trimmed)
+      setAnalyzedMedia(null)
+      setApiError(null)
+      setIsAnalyzing(false)
       const validation = validateMediaUrlInput(trimmed)
       applyValidationResult(validation)
 
@@ -256,37 +295,138 @@ export default function DownloaderPage() {
   }
 
   /**
-   * Analyze Action (Step 05.03 Scope):
-   * Validates media URL client-side only.
-   * NOTE: Backend media analysis API integration will be implemented in Step 05.04.
+   * Analyze Action (Steps 05.04 + 05.05 + 05.06):
+   * 1. Validates candidate URL client-side.
+   * 2. Calls backend Express API POST /api/media/analyze via mediaApi.js / IPC bridge.
+   * 3. Renders actual media metadata (thumbnail, title, platform, duration, available formats).
+   * 4. Updates MP4/MP3 format availability and auto-selects valid format.
    */
-  const handleAnalyzeClick = () => {
+  const handleAnalyzeClick = async () => {
+    if (isAnalyzing) return
+
     const trimmed = url.trim()
     if (!trimmed) {
       setUrlError('Please enter a media link.')
       setUrlStatus(null)
       setDetectedPlatform(null)
       setValidatedUrl(null)
+      setAnalyzedMedia(null)
+      setApiError(null)
       if (inputRef.current) {
         inputRef.current.focus()
       }
       return
     }
 
+    // Step 1: Client-side validation
     const validation = validateMediaUrlInput(trimmed)
-    applyValidationResult(validation)
+    if (!validation.valid) {
+      setValidatedUrl(null)
+      setDetectedPlatform(null)
+      setUrlStatus(null)
+      setUrlError(validation.error)
+      setAnalyzedMedia(null)
+      setApiError(null)
+      return
+    }
+
+    // Apply client validation state
+    setValidatedUrl(validation.url)
+    setDetectedPlatform(validation.platform)
+    setUrlStatus(validation.message)
+    setUrlError(null)
+    setApiError(null)
+
+    // Step 2: Call backend media analyzer API with stale-request tracking
+    const currentRequestId = ++activeRequestIdRef.current
+    setIsAnalyzing(true)
+
+    try {
+      const response = await analyzeMedia(validation.url)
+
+      // Guard against stale asynchronous response
+      if (currentRequestId !== activeRequestIdRef.current) {
+        return
+      }
+
+      if (response.ok && response.data?.success && response.data?.data) {
+        const metadata = response.data.data
+        setAnalyzedMedia(metadata)
+        setApiError(null)
+
+        // Step 05.06: Auto-select format based on real stream availability
+        const availability = getMediaFormatAvailability(metadata)
+        if (availability.mp4Available && !availability.mp3Available) {
+          setSelectedFormat('mp4')
+        } else if (!availability.mp4Available && availability.mp3Available) {
+          setSelectedFormat('mp3')
+        } else if (availability.mp4Available && availability.mp3Available) {
+          setSelectedFormat((prev) => (prev === 'mp3' ? 'mp3' : 'mp4'))
+        } else {
+          setSelectedFormat(null)
+        }
+      } else {
+        const status = response.status
+        let errorMsg = 'Failed to analyze media link. Please verify the URL and try again.'
+
+        if (status === 400) {
+          errorMsg = response.data?.message || 'Invalid or unsupported media URL.'
+        } else if (status === 401 || status === 403) {
+          errorMsg = 'API authorization failed. Please restart the application.'
+        } else if (status >= 500) {
+          errorMsg =
+            response.data?.message && response.data.message !== 'Internal server error'
+              ? response.data.message
+              : 'Media analysis failed. Please check your internet connection or verify the video is publicly accessible.'
+        } else if (response.data?.message) {
+          errorMsg = response.data.message
+        }
+
+        setApiError(errorMsg)
+        setAnalyzedMedia(null)
+      }
+    } catch (err) {
+      if (currentRequestId !== activeRequestIdRef.current) {
+        return
+      }
+      const isIpcError = err?.message?.includes('IPC') || err?.message?.includes('bridge')
+      const errorMsg = isIpcError
+        ? 'Local analyzer service could not be reached via IPC. Please restart the application.'
+        : err instanceof Error
+          ? err.message
+          : 'An unexpected error occurred while analyzing the media link.'
+      setApiError(errorMsg)
+      setAnalyzedMedia(null)
+    } finally {
+      if (currentRequestId === activeRequestIdRef.current) {
+        setIsAnalyzing(false)
+      }
+    }
   }
 
   const handleClearRecent = () => {
     setRecentDownloads([])
   }
 
-  // Derive explicit validation condition (Issue 01 & 02 fix)
+  // Derive explicit validation condition
   const isCurrentUrlValidated =
-    Boolean(validatedUrl) && validatedUrl === url.trim() && Boolean(detectedPlatform) && !urlError
+    Boolean(validatedUrl) &&
+    validatedUrl === url.trim() &&
+    Boolean(detectedPlatform) &&
+    !urlError &&
+    !apiError
 
   // Sample demonstration preview for initial page display before any editing/validation
-  const isSamplePreview = url === DOWNLOADER_MEDIA_PREVIEW.url && !validatedUrl
+  const isSamplePreview =
+    url === DOWNLOADER_MEDIA_PREVIEW.url &&
+    !validatedUrl &&
+    !analyzedMedia &&
+    !isAnalyzing &&
+    !apiError
+
+  // Step 05.06: Format availability extraction
+  const formatAvailability = getMediaFormatAvailability(analyzedMedia)
+  const { mp4Available, mp3Available, mp4Qualities } = formatAvailability
 
   return (
     <div className="p-6 lg:p-8 max-w-[1400px] w-full mx-auto flex flex-col gap-6 select-none animate-fadeIn">
@@ -349,14 +489,20 @@ export default function DownloaderPage() {
                   }}
                   placeholder="Paste YouTube, TikTok, Instagram, Facebook or X link here..."
                   aria-label="Media link URL"
-                  aria-invalid={!!urlError}
+                  aria-invalid={!!urlError || !!apiError}
                   aria-describedby={
-                    urlError ? 'media-url-error' : urlStatus ? 'media-url-status' : undefined
+                    urlError
+                      ? 'media-url-error'
+                      : apiError
+                        ? 'media-api-error'
+                        : urlStatus
+                          ? 'media-url-status'
+                          : undefined
                   }
                   className={`w-full bg-[#040B1C] border rounded-xl py-3 pl-10 pr-20 text-xs font-medium text-white placeholder:text-text-muted/50 focus:outline-none transition-all font-mono select-text ${
-                    urlError
+                    urlError || apiError
                       ? 'border-rose-500/60 focus:border-rose-500 focus:ring-1 focus:ring-rose-500/40'
-                      : urlStatus
+                      : urlStatus || analyzedMedia
                         ? 'border-cyan-400/50 focus:border-cyan-400 focus:ring-1 focus:ring-cyan-400/40'
                         : 'border-primary/20 focus:border-primary focus:ring-1 focus:ring-primary/40'
                   }`}
@@ -391,15 +537,20 @@ export default function DownloaderPage() {
               <button
                 type="button"
                 onClick={handleAnalyzeClick}
+                disabled={isAnalyzing || !url.trim()}
                 title="Analyze media URL"
-                className="flex items-center gap-2 px-5 py-3 rounded-xl font-bold text-xs bg-gradient-to-r from-[#19D8FF] to-[#3388FF] text-white shadow-[0_0_16px_rgba(25,216,255,0.35)] hover:shadow-[0_0_24px_rgba(25,216,255,0.55)] transition-all cursor-pointer flex-shrink-0"
+                className="flex items-center gap-2 px-5 py-3 rounded-xl font-bold text-xs bg-gradient-to-r from-[#19D8FF] to-[#3388FF] text-white shadow-[0_0_16px_rgba(25,216,255,0.35)] hover:shadow-[0_0_24px_rgba(25,216,255,0.55)] transition-all cursor-pointer flex-shrink-0 disabled:opacity-60 disabled:cursor-not-allowed"
               >
-                <Search className="w-3.5 h-3.5" />
-                <span>Analyze</span>
+                {isAnalyzing ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Search className="w-3.5 h-3.5" />
+                )}
+                <span>{isAnalyzing ? 'Analyzing...' : 'Analyze'}</span>
               </button>
             </div>
 
-            {/* Validation & Status Feedback */}
+            {/* Validation & API Error Feedback */}
             {urlError && (
               <div
                 id="media-url-error"
@@ -410,7 +561,17 @@ export default function DownloaderPage() {
                 <span>{urlError}</span>
               </div>
             )}
-            {!urlError && urlStatus && (
+            {apiError && !urlError && (
+              <div
+                id="media-api-error"
+                role="alert"
+                className="flex items-center gap-2 text-xs text-rose-400 bg-rose-500/10 border border-rose-500/20 px-3.5 py-2.5 rounded-xl animate-fadeIn"
+              >
+                <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                <span>{apiError}</span>
+              </div>
+            )}
+            {!urlError && !apiError && urlStatus && !analyzedMedia && !isAnalyzing && (
               <div
                 id="media-url-status"
                 role="status"
@@ -421,8 +582,57 @@ export default function DownloaderPage() {
               </div>
             )}
 
-            {/* Analyzed Media Preview Card */}
-            {isCurrentUrlValidated ? (
+            {/* Analyzed Media Preview Card (Step 05.05) */}
+            {isAnalyzing ? (
+              <div className="flex flex-col items-center justify-center p-8 rounded-xl bg-[#040B1C]/80 border border-primary/20 animate-fadeIn min-h-[140px]">
+                <LoadingIndicator
+                  type="spinner"
+                  label="Connecting to media source and retrieving format details..."
+                />
+              </div>
+            ) : analyzedMedia ? (
+              <div className="flex flex-col sm:flex-row items-center gap-4 p-3.5 rounded-xl bg-[#040B1C]/80 border border-primary/15 animate-fadeIn">
+                <div className="w-full sm:w-44 flex-shrink-0">
+                  {analyzedMedia.thumbnailUrl ? (
+                    <MediaThumbnail
+                      src={analyzedMedia.thumbnailUrl}
+                      duration={formatMediaDuration(analyzedMedia.durationSeconds)}
+                      showPlayOverlay={true}
+                      aspectRatio="aspect-video"
+                    />
+                  ) : (
+                    <div className="w-full aspect-video rounded-lg bg-surface flex flex-col items-center justify-center text-text-muted/60 border border-primary/10">
+                      <Video className="w-8 h-8 text-[#19D8FF]/70 mb-1" />
+                      <span className="text-[10px] font-mono tracking-wider">
+                        {formatMediaDuration(analyzedMedia.durationSeconds) || 'MEDIA'}
+                      </span>
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex-1 flex flex-col justify-center min-w-0">
+                  <h3 className="text-sm font-bold text-white truncate" title={analyzedMedia.title}>
+                    {analyzedMedia.title}
+                  </h3>
+                  <div className="mt-1 flex items-center gap-3">
+                    <PlatformBadge platform={analyzedMedia.platform} />
+                    {analyzedMedia.durationSeconds !== null && (
+                      <span className="text-[11px] text-text-muted">
+                        Duration: {formatMediaDuration(analyzedMedia.durationSeconds)}
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xs text-text-muted/80 mt-1.5 line-clamp-2 leading-relaxed">
+                    {mp4Qualities.length > 0
+                      ? `Available MP4 Qualities: ${mp4Qualities.slice(0, 4).join(', ')}${
+                          mp4Qualities.length > 4 ? ` (+${mp4Qualities.length - 4} more)` : ''
+                        }`
+                      : 'No MP4 video stream available'}
+                    {mp3Available ? ' • MP3 Audio stream ready' : ''}
+                  </p>
+                </div>
+              </div>
+            ) : isCurrentUrlValidated ? (
               <div className="flex flex-col sm:flex-row items-center gap-4 p-3.5 rounded-xl bg-[#040B1C]/80 border border-primary/15 animate-fadeIn">
                 <div className="w-full sm:w-44 aspect-video rounded-lg bg-surface flex flex-col items-center justify-center text-text-muted/60 border border-primary/10 flex-shrink-0">
                   <Video className="w-8 h-8 text-[#19D8FF]/70 mb-1" />
@@ -435,8 +645,8 @@ export default function DownloaderPage() {
                     <PlatformBadge platform={detectedPlatform?.id || 'web'} />
                   </div>
                   <p className="text-xs text-text-muted/80 mt-1.5 line-clamp-2 leading-relaxed">
-                    Supported media link ready. Step 05.04 will connect the backend analyzer to
-                    retrieve live thumbnail, title, duration, and download formats.
+                    Supported media link ready. Click Analyze to retrieve live video metadata,
+                    thumbnail, duration, and available download streams.
                   </p>
                 </div>
               </div>
@@ -466,47 +676,70 @@ export default function DownloaderPage() {
             ) : null}
           </div>
 
-          {/* Section 2: Choose Format */}
+          {/* Section 2: Choose Format (Step 05.06) */}
           <div className="flex flex-col gap-2.5">
-            <h2 className="text-xs font-bold uppercase tracking-wider text-text-muted">
-              2. Choose Format
-            </h2>
+            <div className="flex items-center justify-between">
+              <h2 className="text-xs font-bold uppercase tracking-wider text-text-muted">
+                2. Choose Format
+              </h2>
+              {analyzedMedia && (
+                <span className="text-[11px] text-text-muted">
+                  {mp4Available && mp3Available
+                    ? 'MP4 Video & MP3 Audio available'
+                    : mp4Available
+                      ? 'MP4 Video only'
+                      : mp3Available
+                        ? 'MP3 Audio only'
+                        : 'No format available'}
+                </span>
+              )}
+            </div>
+
             <div className="grid grid-cols-2 gap-3.5">
               {/* MP4 Video Option */}
               <button
                 type="button"
-                onClick={() => setSelectedFormat('mp4')}
-                className={`flex items-center justify-between p-4 rounded-2xl border transition-all text-left cursor-pointer ${
-                  selectedFormat === 'mp4'
-                    ? 'bg-[#0B1C38] border-cyan-400 shadow-[0_0_20px_rgba(25,216,255,0.3)]'
-                    : 'bg-[#07152E]/80 border-primary/15 hover:border-primary/30'
+                disabled={!mp4Available}
+                onClick={() => mp4Available && setSelectedFormat('mp4')}
+                className={`flex items-center justify-between p-4 rounded-2xl border transition-all text-left ${
+                  !mp4Available
+                    ? 'opacity-40 cursor-not-allowed bg-[#07152E]/40 border-primary/10'
+                    : selectedFormat === 'mp4'
+                      ? 'bg-[#0B1C38] border-cyan-400 shadow-[0_0_20px_rgba(25,216,255,0.3)] cursor-pointer'
+                      : 'bg-[#07152E]/80 border-primary/15 hover:border-primary/30 cursor-pointer'
                 }`}
               >
                 <div className="flex items-center gap-3">
                   <div
                     className={`w-10 h-10 rounded-xl flex items-center justify-center ${
-                      selectedFormat === 'mp4'
-                        ? 'bg-cyan-500/20 text-[#19D8FF]'
-                        : 'bg-surface text-text-muted'
+                      !mp4Available
+                        ? 'bg-surface text-text-muted/50'
+                        : selectedFormat === 'mp4'
+                          ? 'bg-cyan-500/20 text-[#19D8FF]'
+                          : 'bg-surface text-text-muted'
                     }`}
                   >
                     <Video className="w-5 h-5" />
                   </div>
                   <div>
                     <span className="text-sm font-extrabold text-white block">MP4</span>
-                    <span className="text-[11px] text-text-muted">Video (Best Quality)</span>
+                    <span className="text-[11px] text-text-muted">
+                      {mp4Available ? 'Video (Best Quality)' : 'Not Available'}
+                    </span>
                   </div>
                 </div>
 
                 {/* Radio Indicator */}
                 <div
                   className={`w-5 h-5 rounded-full border-2 flex items-center justify-center ${
-                    selectedFormat === 'mp4'
-                      ? 'border-[#19D8FF] bg-[#040B1C]'
-                      : 'border-text-muted/40'
+                    !mp4Available
+                      ? 'border-text-muted/20'
+                      : selectedFormat === 'mp4'
+                        ? 'border-[#19D8FF] bg-[#040B1C]'
+                        : 'border-text-muted/40'
                   }`}
                 >
-                  {selectedFormat === 'mp4' && (
+                  {selectedFormat === 'mp4' && mp4Available && (
                     <div className="w-2.5 h-2.5 rounded-full bg-[#19D8FF]" />
                   )}
                 </div>
@@ -515,43 +748,60 @@ export default function DownloaderPage() {
               {/* MP3 Audio Option */}
               <button
                 type="button"
-                onClick={() => setSelectedFormat('mp3')}
-                className={`flex items-center justify-between p-4 rounded-2xl border transition-all text-left cursor-pointer ${
-                  selectedFormat === 'mp3'
-                    ? 'bg-[#0B1C38] border-cyan-400 shadow-[0_0_20px_rgba(25,216,255,0.3)]'
-                    : 'bg-[#07152E]/80 border-primary/15 hover:border-primary/30'
+                disabled={!mp3Available}
+                onClick={() => mp3Available && setSelectedFormat('mp3')}
+                className={`flex items-center justify-between p-4 rounded-2xl border transition-all text-left ${
+                  !mp3Available
+                    ? 'opacity-40 cursor-not-allowed bg-[#07152E]/40 border-primary/10'
+                    : selectedFormat === 'mp3'
+                      ? 'bg-[#0B1C38] border-cyan-400 shadow-[0_0_20px_rgba(25,216,255,0.3)] cursor-pointer'
+                      : 'bg-[#07152E]/80 border-primary/15 hover:border-primary/30 cursor-pointer'
                 }`}
               >
                 <div className="flex items-center gap-3">
                   <div
                     className={`w-10 h-10 rounded-xl flex items-center justify-center ${
-                      selectedFormat === 'mp3'
-                        ? 'bg-cyan-500/20 text-[#19D8FF]'
-                        : 'bg-surface text-text-muted'
+                      !mp3Available
+                        ? 'bg-surface text-text-muted/50'
+                        : selectedFormat === 'mp3'
+                          ? 'bg-cyan-500/20 text-[#19D8FF]'
+                          : 'bg-surface text-text-muted'
                     }`}
                   >
                     <Music className="w-5 h-5" />
                   </div>
                   <div>
                     <span className="text-sm font-extrabold text-white block">MP3</span>
-                    <span className="text-[11px] text-text-muted">Audio Only</span>
+                    <span className="text-[11px] text-text-muted">
+                      {mp3Available ? 'Audio Only' : 'Not Available'}
+                    </span>
                   </div>
                 </div>
 
                 {/* Radio Indicator */}
                 <div
                   className={`w-5 h-5 rounded-full border-2 flex items-center justify-center ${
-                    selectedFormat === 'mp3'
-                      ? 'border-[#19D8FF] bg-[#040B1C]'
-                      : 'border-text-muted/40'
+                    !mp3Available
+                      ? 'border-text-muted/20'
+                      : selectedFormat === 'mp3'
+                        ? 'border-[#19D8FF] bg-[#040B1C]'
+                        : 'border-text-muted/40'
                   }`}
                 >
-                  {selectedFormat === 'mp3' && (
+                  {selectedFormat === 'mp3' && mp3Available && (
                     <div className="w-2.5 h-2.5 rounded-full bg-[#19D8FF]" />
                   )}
                 </div>
               </button>
             </div>
+
+            {/* Warning when neither format is available */}
+            {analyzedMedia && !mp4Available && !mp3Available && (
+              <div className="text-xs text-rose-400 bg-rose-500/10 border border-rose-500/20 px-3 py-2 rounded-xl">
+                No compatible MP4 video or MP3 audio streams could be extracted from this media
+                link.
+              </div>
+            )}
           </div>
 
           {/* Section 3 & 4: Quality & Bitrate Side by Side */}
