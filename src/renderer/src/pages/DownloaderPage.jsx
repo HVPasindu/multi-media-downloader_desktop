@@ -48,6 +48,7 @@ import { extractUrlFromDataTransfer, validateMediaUrlInput } from '../utils/medi
  * - User-friendly API error handling (400, 401/403, 500, network/IPC)
  * - Step 05.05: Dynamic media preview component showing actual thumbnail, title, platform, duration, and stream info
  * - Step 05.06: MP4/MP3 format availability based on mp4Qualities and audioOptions with automatic selection rules
+ * - Targeted Fix: Invalid drag & drop immediately invalidates in-flight Analyze requests
  */
 export default function DownloaderPage() {
   const [url, setUrl] = useState('https://www.youtube.com/watch?v=dQw4w9WgXcQ')
@@ -207,6 +208,8 @@ export default function DownloaderPage() {
       const trimmed = (text || '').trim()
 
       if (!trimmed) {
+        activeRequestIdRef.current++
+        setIsAnalyzing(false)
         setUrlError('Clipboard is empty. Copy a media link and try again.')
         setUrlStatus(null)
         setDetectedPlatform(null)
@@ -257,24 +260,24 @@ export default function DownloaderPage() {
     e.stopPropagation()
     setIsDraggingOver(false)
 
+    // Invalidate any previous in-flight Analyze request and stop analyzing state immediately
+    activeRequestIdRef.current++
+    setIsAnalyzing(false)
+    setAnalyzedMedia(null)
+    setApiError(null)
+
     const extraction = extractUrlFromDataTransfer(e.dataTransfer)
     if (extraction.error) {
       setUrlError(extraction.error)
       setUrlStatus(null)
       setDetectedPlatform(null)
       setValidatedUrl(null)
-      setAnalyzedMedia(null)
-      setApiError(null)
       return
     }
 
     if (extraction.url) {
-      activeRequestIdRef.current++
       const trimmed = extraction.url.trim()
       setUrl(trimmed)
-      setAnalyzedMedia(null)
-      setApiError(null)
-      setIsAnalyzing(false)
       const validation = validateMediaUrlInput(trimmed)
       applyValidationResult(validation)
 
@@ -593,21 +596,12 @@ export default function DownloaderPage() {
             ) : analyzedMedia ? (
               <div className="flex flex-col sm:flex-row items-center gap-4 p-3.5 rounded-xl bg-[#040B1C]/80 border border-primary/15 animate-fadeIn">
                 <div className="w-full sm:w-44 flex-shrink-0">
-                  {analyzedMedia.thumbnailUrl ? (
-                    <MediaThumbnail
-                      src={analyzedMedia.thumbnailUrl}
-                      duration={formatMediaDuration(analyzedMedia.durationSeconds)}
-                      showPlayOverlay={true}
-                      aspectRatio="aspect-video"
-                    />
-                  ) : (
-                    <div className="w-full aspect-video rounded-lg bg-surface flex flex-col items-center justify-center text-text-muted/60 border border-primary/10">
-                      <Video className="w-8 h-8 text-[#19D8FF]/70 mb-1" />
-                      <span className="text-[10px] font-mono tracking-wider">
-                        {formatMediaDuration(analyzedMedia.durationSeconds) || 'MEDIA'}
-                      </span>
-                    </div>
-                  )}
+                  <MediaThumbnail
+                    src={analyzedMedia.thumbnailUrl}
+                    duration={formatMediaDuration(analyzedMedia.durationSeconds)}
+                    showPlayOverlay={true}
+                    aspectRatio="aspect-video"
+                  />
                 </div>
 
                 <div className="flex-1 flex flex-col justify-center min-w-0">
