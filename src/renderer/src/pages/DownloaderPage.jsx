@@ -42,6 +42,9 @@ import { extractUrlFromDataTransfer, validateMediaUrlInput } from '../utils/medi
  * - URL input state management (single source of truth for typing, clipboard paste, drag & drop)
  * - Syntactic validation & security guards (length, schemes, control chars, credentials, ports, private IPs)
  * - Platform detection (YouTube, Facebook, Instagram, TikTok, X/Twitter)
+ * - Explicit validatedUrl state to ensure ready preview ONLY appears for successfully validated URLs
+ * - Stale platform detection prevention: editing URL immediately clears previous platform and validation state
+ * - Synchronous native paste handling preventing race conditions with onChange
  * - Clipboard Paste action via navigator.clipboard.readText()
  * - Drag & Drop dropzone with text/uri-list & text/plain extraction, local file rejection, and visual dragover highlight
  * - Global window drag/drop prevention to protect Electron app navigation
@@ -49,9 +52,10 @@ import { extractUrlFromDataTransfer, validateMediaUrlInput } from '../utils/medi
  */
 export default function DownloaderPage() {
   const [url, setUrl] = useState('https://www.youtube.com/watch?v=dQw4w9WgXcQ')
+  const [validatedUrl, setValidatedUrl] = useState(null)
   const [urlError, setUrlError] = useState(null)
   const [urlStatus, setUrlStatus] = useState(null)
-  const [detectedPlatform, setDetectedPlatform] = useState({ id: 'youtube', name: 'YouTube' })
+  const [detectedPlatform, setDetectedPlatform] = useState(null)
   const [isDraggingOver, setIsDraggingOver] = useState(false)
 
   const [selectedFormat, setSelectedFormat] = useState('mp4')
@@ -86,10 +90,28 @@ export default function DownloaderPage() {
   }, [])
 
   /**
+   * Applies validation result to component state.
+   */
+  const applyValidationResult = (validation) => {
+    if (validation.valid) {
+      setValidatedUrl(validation.url)
+      setDetectedPlatform(validation.platform)
+      setUrlStatus(validation.message)
+      setUrlError(null)
+    } else {
+      setValidatedUrl(null)
+      setDetectedPlatform(null)
+      setUrlStatus(null)
+      setUrlError(validation.error)
+    }
+  }
+
+  /**
    * Clears the current URL input and resets validation/status indicators.
    */
   const handleClearUrl = () => {
     setUrl('')
+    setValidatedUrl(null)
     setUrlError(null)
     setUrlStatus(null)
     setDetectedPlatform(null)
@@ -100,57 +122,45 @@ export default function DownloaderPage() {
 
   /**
    * Handles user keystrokes in the URL input.
-   * Keeps errors clear while typing to avoid aggressive disruption.
+   * Immediately clears previous validation and platform state upon editing.
    */
   const handleUrlChange = (value) => {
     setUrl(value)
+    setValidatedUrl(null)
+    setDetectedPlatform(null)
     setUrlError(null)
     setUrlStatus(null)
-
-    if (!value.trim()) {
-      setDetectedPlatform(null)
-    }
   }
 
   /**
    * Validates input when focus leaves the input field.
    */
   const handleUrlBlur = () => {
-    if (!url.trim()) {
+    const trimmed = url.trim()
+    if (!trimmed) {
+      setValidatedUrl(null)
+      setDetectedPlatform(null)
       setUrlError(null)
       setUrlStatus(null)
-      setDetectedPlatform(null)
       return
     }
 
-    const validation = validateMediaUrlInput(url)
-    if (validation.valid) {
-      setUrlError(null)
-      setUrlStatus(validation.message)
-      setDetectedPlatform(validation.platform)
-    } else {
-      setUrlError(validation.error)
-      setUrlStatus(null)
-      setDetectedPlatform(null)
-    }
+    const validation = validateMediaUrlInput(trimmed)
+    applyValidationResult(validation)
   }
 
   /**
    * Handles native paste event (Ctrl+V / right-click paste) on the input field.
+   * Uses preventDefault to avoid browser-level race conditions with subsequent onChange.
    */
   const handleInputPaste = (e) => {
     const pastedText = e.clipboardData?.getData('text')
     if (pastedText) {
-      const validation = validateMediaUrlInput(pastedText)
-      if (validation.valid) {
-        setUrlError(null)
-        setUrlStatus(validation.message)
-        setDetectedPlatform(validation.platform)
-      } else {
-        setUrlError(validation.error)
-        setUrlStatus(null)
-        setDetectedPlatform(null)
-      }
+      e.preventDefault()
+      const trimmed = pastedText.trim()
+      setUrl(trimmed)
+      const validation = validateMediaUrlInput(trimmed)
+      applyValidationResult(validation)
     }
   }
 
@@ -163,6 +173,8 @@ export default function DownloaderPage() {
       if (!navigator.clipboard || !navigator.clipboard.readText) {
         setUrlError('Clipboard access is unavailable. Press Ctrl+V to paste your link.')
         setUrlStatus(null)
+        setDetectedPlatform(null)
+        setValidatedUrl(null)
         return
       }
 
@@ -172,20 +184,14 @@ export default function DownloaderPage() {
       if (!trimmed) {
         setUrlError('Clipboard is empty. Copy a media link and try again.')
         setUrlStatus(null)
+        setDetectedPlatform(null)
+        setValidatedUrl(null)
         return
       }
 
       setUrl(trimmed)
       const validation = validateMediaUrlInput(trimmed)
-      if (validation.valid) {
-        setUrlError(null)
-        setUrlStatus(validation.message)
-        setDetectedPlatform(validation.platform)
-      } else {
-        setUrlError(validation.error)
-        setUrlStatus(null)
-        setDetectedPlatform(null)
-      }
+      applyValidationResult(validation)
 
       if (inputRef.current) {
         inputRef.current.focus()
@@ -193,6 +199,8 @@ export default function DownloaderPage() {
     } catch {
       setUrlError('Clipboard access is unavailable. Press Ctrl+V to paste your link.')
       setUrlStatus(null)
+      setDetectedPlatform(null)
+      setValidatedUrl(null)
     }
   }
 
@@ -221,21 +229,15 @@ export default function DownloaderPage() {
       setUrlError(extraction.error)
       setUrlStatus(null)
       setDetectedPlatform(null)
+      setValidatedUrl(null)
       return
     }
 
     if (extraction.url) {
-      setUrl(extraction.url)
-      const validation = validateMediaUrlInput(extraction.url)
-      if (validation.valid) {
-        setUrlError(null)
-        setUrlStatus(validation.message)
-        setDetectedPlatform(validation.platform)
-      } else {
-        setUrlError(validation.error)
-        setUrlStatus(null)
-        setDetectedPlatform(null)
-      }
+      const trimmed = extraction.url.trim()
+      setUrl(trimmed)
+      const validation = validateMediaUrlInput(trimmed)
+      applyValidationResult(validation)
 
       if (inputRef.current) {
         inputRef.current.focus()
@@ -255,38 +257,36 @@ export default function DownloaderPage() {
 
   /**
    * Analyze Action (Step 05.03 Scope):
-   * Validates media URL client-side.
+   * Validates media URL client-side only.
    * NOTE: Backend media analysis API integration will be implemented in Step 05.04.
    */
   const handleAnalyzeClick = () => {
-    if (!url.trim()) {
+    const trimmed = url.trim()
+    if (!trimmed) {
       setUrlError('Please enter a media link.')
       setUrlStatus(null)
       setDetectedPlatform(null)
+      setValidatedUrl(null)
       if (inputRef.current) {
         inputRef.current.focus()
       }
       return
     }
 
-    const validation = validateMediaUrlInput(url)
-    if (validation.valid) {
-      setUrlError(null)
-      setUrlStatus(validation.message)
-      setDetectedPlatform(validation.platform)
-    } else {
-      setUrlError(validation.error)
-      setUrlStatus(null)
-      setDetectedPlatform(null)
-    }
+    const validation = validateMediaUrlInput(trimmed)
+    applyValidationResult(validation)
   }
 
   const handleClearRecent = () => {
     setRecentDownloads([])
   }
 
-  // Determine which preview to render
-  const isSamplePreview = url === DOWNLOADER_MEDIA_PREVIEW.url
+  // Derive explicit validation condition (Issue 01 & 02 fix)
+  const isCurrentUrlValidated =
+    Boolean(validatedUrl) && validatedUrl === url.trim() && Boolean(detectedPlatform) && !urlError
+
+  // Sample demonstration preview for initial page display before any editing/validation
+  const isSamplePreview = url === DOWNLOADER_MEDIA_PREVIEW.url && !validatedUrl
 
   return (
     <div className="p-6 lg:p-8 max-w-[1400px] w-full mx-auto flex flex-col gap-6 select-none animate-fadeIn">
@@ -422,7 +422,25 @@ export default function DownloaderPage() {
             )}
 
             {/* Analyzed Media Preview Card */}
-            {isSamplePreview && DOWNLOADER_MEDIA_PREVIEW ? (
+            {isCurrentUrlValidated ? (
+              <div className="flex flex-col sm:flex-row items-center gap-4 p-3.5 rounded-xl bg-[#040B1C]/80 border border-primary/15 animate-fadeIn">
+                <div className="w-full sm:w-44 aspect-video rounded-lg bg-surface flex flex-col items-center justify-center text-text-muted/60 border border-primary/10 flex-shrink-0">
+                  <Video className="w-8 h-8 text-[#19D8FF]/70 mb-1" />
+                  <span className="text-[10px] font-mono tracking-wider">READY</span>
+                </div>
+
+                <div className="flex-1 flex flex-col justify-center min-w-0">
+                  <h3 className="text-sm font-bold text-white truncate">Link Ready for Analysis</h3>
+                  <div className="mt-1">
+                    <PlatformBadge platform={detectedPlatform?.id || 'web'} />
+                  </div>
+                  <p className="text-xs text-text-muted/80 mt-1.5 line-clamp-2 leading-relaxed">
+                    Supported media link ready. Step 05.04 will connect the backend analyzer to
+                    retrieve live thumbnail, title, duration, and download formats.
+                  </p>
+                </div>
+              </div>
+            ) : isSamplePreview && DOWNLOADER_MEDIA_PREVIEW && !urlError ? (
               <div className="flex flex-col sm:flex-row items-center gap-4 p-3.5 rounded-xl bg-[#040B1C]/80 border border-primary/15 animate-fadeIn">
                 <div className="w-full sm:w-44 flex-shrink-0">
                   <MediaThumbnail
@@ -442,24 +460,6 @@ export default function DownloaderPage() {
                   </div>
                   <p className="text-xs text-text-muted/80 mt-1.5 line-clamp-2 leading-relaxed">
                     {DOWNLOADER_MEDIA_PREVIEW.description}
-                  </p>
-                </div>
-              </div>
-            ) : url && !urlError ? (
-              <div className="flex flex-col sm:flex-row items-center gap-4 p-3.5 rounded-xl bg-[#040B1C]/80 border border-primary/15 animate-fadeIn">
-                <div className="w-full sm:w-44 aspect-video rounded-lg bg-surface flex flex-col items-center justify-center text-text-muted/60 border border-primary/10 flex-shrink-0">
-                  <Video className="w-8 h-8 text-[#19D8FF]/70 mb-1" />
-                  <span className="text-[10px] font-mono tracking-wider">READY</span>
-                </div>
-
-                <div className="flex-1 flex flex-col justify-center min-w-0">
-                  <h3 className="text-sm font-bold text-white truncate">Media Link Verified</h3>
-                  <div className="mt-1">
-                    <PlatformBadge platform={detectedPlatform?.id || 'web'} />
-                  </div>
-                  <p className="text-xs text-text-muted/80 mt-1.5 line-clamp-2 leading-relaxed">
-                    Supported media link ready. Step 05.04 will connect the backend analyzer to
-                    retrieve live thumbnail, title, duration, and download formats.
                   </p>
                 </div>
               </div>
