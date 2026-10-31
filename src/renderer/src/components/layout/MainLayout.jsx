@@ -1,3 +1,4 @@
+import { useRef, useEffect } from 'react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { Download, ListCollapse, History, Settings, Sparkles } from 'lucide-react'
 import officialLogo from '../../assets/branding/official-cloud-logo-transparent.png'
@@ -7,12 +8,20 @@ import { DOWNLOADS_MANAGER_LIST } from '../../data/uiPreviewData'
 /**
  * Main application layout matching the attached dark navy & electric cyan UI design.
  * Houses the persistent branded sidebar with dynamic decorative artwork,
- * slim window title bar, and the main page router outlet.
+ * slim window title bar, and the main page router outlet with scroll restoration.
  */
 export default function MainLayout({ onOpenSplashPreview = null }) {
   const location = useLocation()
+  const mainContentRef = useRef(null)
 
-  // Problem 04: Derive active downloads badge count dynamically from preview dataset
+  // Step 05.02: Reset main scroll container to top whenever the route changes
+  useEffect(() => {
+    if (mainContentRef.current) {
+      mainContentRef.current.scrollTop = 0
+    }
+  }, [location.pathname])
+
+  // Derive active downloads badge count dynamically from preview dataset
   // Counts items currently in downloading or finalizing state
   const activePreviewCount = DOWNLOADS_MANAGER_LIST.filter(
     (item) => item.status === 'downloading' || item.status === 'finalizing'
@@ -45,8 +54,8 @@ export default function MainLayout({ onOpenSplashPreview = null }) {
           </span>
         </div>
 
-        {/* Development-only Splash Preview Button (Problem 06) */}
-        {/* Fake decorative window controls removed; native OS window controls are used (Problem 05) */}
+        {/* Development-only Splash Preview Button */}
+        {/* Native OS window controls are used exclusively */}
         <div className="flex items-center gap-2">
           {import.meta.env.DEV && onOpenSplashPreview && (
             <button
@@ -132,7 +141,11 @@ export default function MainLayout({ onOpenSplashPreview = null }) {
         </aside>
 
         {/* ----------------- MAIN CONTENT AREA ----------------- */}
-        <main className="flex-1 flex flex-col h-full overflow-y-auto bg-[#040B1C] relative z-10">
+        {/* Step 05.02: min-w-0 prevents flex overflow; ref enables scroll restoration */}
+        <main
+          ref={mainContentRef}
+          className="flex-1 min-w-0 flex flex-col h-full overflow-y-auto bg-[#040B1C] relative z-10"
+        >
           <Outlet />
         </main>
       </div>

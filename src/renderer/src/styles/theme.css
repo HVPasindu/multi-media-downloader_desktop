@@ -108,3 +108,25 @@ body,
     left: 100%;
   }
 }
+
+/* Subtle, lightweight page entrance transition (Step 05.02) */
+@keyframes pageFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fadeIn {
+  animation: pageFadeIn 180ms ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-fadeIn {
+    animation: none;
+  }
+}
