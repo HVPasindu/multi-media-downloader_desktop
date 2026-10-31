@@ -81,7 +81,10 @@ export async function createDownloadJobController(req, res, next) {
       // Reuse the existing analyzer
       const analysis = await analyzeMedia(media.source_url)
 
-      const availableQualities = analysis.videoQualities
+      const availableQualities =
+        analysis.availableFormats?.mp4Qualities?.length > 0
+          ? analysis.availableFormats.mp4Qualities
+          : analysis.videoQualities || []
 
       // Reject unavailable video resolutions
       if (!availableQualities.includes(quality)) {

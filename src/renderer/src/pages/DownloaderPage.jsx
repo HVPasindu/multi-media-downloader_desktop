@@ -38,17 +38,19 @@ import { extractUrlFromDataTransfer, validateMediaUrlInput } from '../utils/medi
  * - Branded Header with feature pills & 3D hero pedestal illustration
  * - Two-column responsive desktop layout (1200x780 target)
  * - Section 1: Link input with Clear, Clipboard Paste and Analyze actions + Active Media Preview Card
- * - Section 2: Choose Format (MP4 Video / MP3 Audio selectable cards)
- * - Section 3 & 4: Video Quality & Audio Bitrate option pills
+ * - Section 2: Choose Format (MP4 Video / MP3 Audio selectable cards with visual isolation)
+ * - Section 3 & 4: Dynamic Video Quality & Audio Bitrate options with mutual visual isolation
  * - Section 5: Download Folder destination selector with Choose button
  * - Radiant full-width Download CTA button
  * - Right Column: Recent Downloads card with live progress, pause/play, folder action & Drag-and-Drop dropzone
  *
- * STEPS 05.07 + 05.08 + 05.09 + 05.10 IMPLEMENTATION:
- * - Step 05.07: Real Quality & Bitrate Selection with Best-Available resolution mapping
- * - Step 05.08: Saved Download Folder via secure Electron IPC bridge
- * - Step 05.09: Download Button integration with createDownload API
- * - Step 05.10: Live Recent Downloads polling with speed & status tracking
+ * PHASES 01 & 02 IMPLEMENTATION:
+ * - Step 01: In-memory analysis caching & deduplication (backend) + MP4 quality validation fix
+ * - Step 02: YouTube 429 Cooldown countdown & structured error classification with Retry button
+ * - Step 03: Dynamic MP4 Quality buttons from available streams without hardcoding, wrapped cleanly
+ * - Step 04: Visual isolation between MP4 and MP3 format configurations
+ * - Step 05: Invalid Drag & Drop request cancellation with activeRequestIdRef invalidation
+ * - Step 06: Thumbnail URL validation & fallback protection
  */
 export default function DownloaderPage() {
   const [url, setUrl] = useState('')
@@ -58,26 +60,29 @@ export default function DownloaderPage() {
   const [detectedPlatform, setDetectedPlatform] = useState(null)
   const [isDraggingOver, setIsDraggingOver] = useState(false)
 
-  // Step 05.04: Backend media analysis state
+  // Backend media analysis state
   const [isAnalyzing, setIsAnalyzing] = useState(false)
   const [analyzedMedia, setAnalyzedMedia] = useState(null)
   const [apiError, setApiError] = useState(null)
 
-  // Step 05.06 & 05.07: Format & Quality & Bitrate selection state
+  // Step 02: Rate limit cooldown countdown timer (in seconds)
+  const [cooldownRemaining, setCooldownRemaining] = useState(0)
+
+  // Step 03 & 04: Format & Quality & Bitrate selection state
   const [selectedFormat, setSelectedFormat] = useState('mp4')
   const [selectedVideoQuality, setSelectedVideoQuality] = useState('best')
   const [selectedAudioBitrate, setSelectedAudioBitrate] = useState(192)
 
-  // Step 05.08: Download folder settings state
+  // Download folder settings state
   const [downloadFolder, setDownloadFolder] = useState('')
   const [isLoadingFolder, setIsLoadingFolder] = useState(true)
   const [folderError, setFolderError] = useState(null)
 
-  // Step 05.09: Download job creation state
+  // Download job creation state
   const [isSubmittingDownload, setIsSubmittingDownload] = useState(false)
   const [downloadSubmitFeedback, setDownloadSubmitFeedback] = useState(null)
 
-  // Step 05.10: Live Recent Downloads state
+  // Live Recent Downloads state
   const [recentDownloads, setRecentDownloads] = useState([])
   const [isLoadingRecent, setIsLoadingRecent] = useState(true)
 
@@ -86,6 +91,25 @@ export default function DownloaderPage() {
   const speedTrackerRef = useRef(new Map())
   const isPollingRecentRef = useRef(false)
   const hasActiveRecentRef = useRef(false)
+
+  /**
+   * Cooldown countdown timer for YouTube rate limit (Step 02).
+   */
+  useEffect(() => {
+    if (cooldownRemaining <= 0) return
+
+    const timer = setInterval(() => {
+      setCooldownRemaining((prev) => {
+        if (prev <= 1) {
+          clearInterval(timer)
+          return 0
+        }
+        return prev - 1
+      })
+    }, 1000)
+
+    return () => clearInterval(timer)
+  }, [cooldownRemaining])
 
   /**
    * Window-level drag & drop prevention to ensure Electron does not navigate
@@ -130,6 +154,7 @@ export default function DownloaderPage() {
 
   /**
    * Clears the current URL input and resets all validation, analysis, and error indicators.
+   * Step 05: Invalidates activeRequestIdRef to discard any pending responses.
    */
   const handleClearUrl = () => {
     activeRequestIdRef.current++
@@ -150,6 +175,7 @@ export default function DownloaderPage() {
   /**
    * Handles user keystrokes in the URL input.
    * Immediately clears previous validation, analysis, and platform state upon editing.
+   * Step 05: Invalidates activeRequestIdRef to discard any pending responses.
    */
   const handleUrlChange = (value) => {
     activeRequestIdRef.current++
@@ -186,7 +212,7 @@ export default function DownloaderPage() {
 
   /**
    * Handles native paste event (Ctrl+V / right-click paste) on the input field.
-   * Uses preventDefault to avoid browser-level race conditions with subsequent onChange.
+   * Step 05: Invalidates activeRequestIdRef to discard any pending responses.
    */
   const handleInputPaste = (e) => {
     const pastedText = e.clipboardData?.getData('text')
@@ -206,7 +232,7 @@ export default function DownloaderPage() {
 
   /**
    * Reads text from system clipboard using the standard Async Clipboard API.
-   * Handles empty clipboard and permission denial gracefully.
+   * Step 05: Invalidates activeRequestIdRef to discard any pending responses.
    */
   const handlePasteFromClipboard = async () => {
     try {
@@ -262,6 +288,7 @@ export default function DownloaderPage() {
 
   /**
    * Drag & Drop event handlers for the dedicated dropzone.
+   * Step 05: Invalidate activeRequestIdRef immediately on drop (valid, invalid URL, or file).
    */
   const handleDragOver = (e) => {
     e.preventDefault()
@@ -280,7 +307,7 @@ export default function DownloaderPage() {
     e.stopPropagation()
     setIsDraggingOver(false)
 
-    // Invalidate any previous in-flight Analyze request and stop analyzing state immediately
+    // Step 05: Invalidate in-flight Analyze request and stop analyzing state immediately
     activeRequestIdRef.current++
     setIsAnalyzing(false)
     setAnalyzedMedia(null)
@@ -319,14 +346,28 @@ export default function DownloaderPage() {
   }
 
   /**
-   * Analyze Action (Steps 05.04 + 05.05 + 05.06):
+   * Helper function to return user-friendly labels for video qualities.
+   */
+  const getQualitySubLabel = (qualityString) => {
+    const num = parseInt(qualityString, 10)
+    if (num >= 2160) return '4K'
+    if (num >= 1440) return '2K'
+    if (num >= 1080) return 'Full HD'
+    if (num >= 720) return 'HD'
+    if (num >= 480) return 'SD'
+    return 'Available'
+  }
+
+  /**
+   * Analyze Action (Steps 01 + 02):
    * 1. Validates candidate URL client-side.
-   * 2. Calls backend Express API POST /api/media/analyze via mediaApi.js / IPC bridge.
-   * 3. Renders actual media metadata (thumbnail, title, platform, duration, available formats).
-   * 4. Updates MP4/MP3 format availability and auto-selects valid format.
+   * 2. Checks active cooldown for rate-limited requests.
+   * 3. Calls backend Express API POST /api/media/analyze via mediaApi.js / IPC bridge.
+   * 4. Renders actual media metadata (thumbnail, title, platform, duration, available formats).
+   * 5. Handles structured error codes (429, bot verification, PO token, network errors).
    */
   const handleAnalyzeClick = async () => {
-    if (isAnalyzing) return
+    if (isAnalyzing || cooldownRemaining > 0) return
 
     const trimmed = url.trim()
     if (!trimmed) {
@@ -360,7 +401,6 @@ export default function DownloaderPage() {
     setUrlStatus(validation.message)
     setUrlError(null)
     setApiError(null)
-
     // Step 2: Call backend media analyzer API with stale-request tracking
     const currentRequestId = ++activeRequestIdRef.current
     setIsAnalyzing(true)
@@ -379,7 +419,7 @@ export default function DownloaderPage() {
         setApiError(null)
         setDownloadSubmitFeedback(null)
 
-        // Step 05.06 & 05.07: Auto-select format & quality based on real stream availability
+        // Step 03 & 04: Auto-select format & quality based on real stream availability
         const availability = getMediaFormatAvailability(metadata)
         const availableMp4Qualities =
           metadata.availableFormats?.mp4Qualities?.length > 0
@@ -399,8 +439,9 @@ export default function DownloaderPage() {
         // Auto-select valid MP4 quality
         if (availableMp4Qualities.length > 0) {
           setSelectedVideoQuality((prev) => {
-            if (prev === '1080p' && availableMp4Qualities.includes('1080p')) return '1080p'
-            if (prev === '720p' && availableMp4Qualities.includes('720p')) return '720p'
+            if (prev !== 'best' && availableMp4Qualities.includes(prev)) {
+              return prev
+            }
             return 'best'
           })
         }
@@ -413,19 +454,27 @@ export default function DownloaderPage() {
         }
       } else {
         const status = response.status
+        const data = response.data || {}
         let errorMsg = 'Failed to analyze media link. Please verify the URL and try again.'
 
-        if (status === 400) {
-          errorMsg = response.data?.message || 'Invalid or unsupported media URL.'
+        if (status === 429 || data.code === 'YOUTUBE_RATE_LIMITED') {
+          const waitSec = data.retryAfterSeconds || 60
+          setCooldownRemaining(waitSec)
+          errorMsg =
+            data.message || `YouTube rate limit reached. Please wait ${waitSec}s before retrying.`
+        } else if (data.code) {
+          errorMsg = data.message || 'Media analysis failed.'
+        } else if (status === 400) {
+          errorMsg = data.message || 'Invalid or unsupported media URL.'
         } else if (status === 401 || status === 403) {
           errorMsg = 'API authorization failed. Please restart the application.'
         } else if (status >= 500) {
           errorMsg =
-            response.data?.message && response.data.message !== 'Internal server error'
-              ? response.data.message
+            data.message && data.message !== 'Internal server error'
+              ? data.message
               : 'Media analysis failed. Please check your internet connection or verify the video is publicly accessible.'
-        } else if (response.data?.message) {
-          errorMsg = response.data.message
+        } else if (data.message) {
+          errorMsg = data.message
         }
 
         setApiError(errorMsg)
@@ -535,16 +584,24 @@ export default function DownloaderPage() {
     }
   }, [fetchRecentDownloads])
 
-  // Step 05.09: Download Job Creation Handler
+  // Step 04 & Step 05.09: Download Job Creation Handler
   const handleDownloadClick = async () => {
-    if (isSubmittingDownload) return
+    if (isSubmittingDownload || isAnalyzing) return
     setDownloadSubmitFeedback(null)
 
-    // 1. Validation
+    // 1. Validation: Ensure media is analyzed and URL matches
     if (!analyzedMedia || !analyzedMedia.mediaItemId) {
       setDownloadSubmitFeedback({
         type: 'error',
         message: 'Please analyze a valid media link first before downloading.'
+      })
+      return
+    }
+
+    if (analyzedMedia.sourceUrl && analyzedMedia.sourceUrl !== url.trim()) {
+      setDownloadSubmitFeedback({
+        type: 'error',
+        message: 'The entered link does not match the currently analyzed media. Please re-analyze.'
       })
       return
     }
@@ -669,7 +726,7 @@ export default function DownloaderPage() {
     !urlError &&
     !apiError
 
-  // Step 05.06 & 05.07: Format & Quality availability extraction
+  // Step 04: Format & Quality availability extraction
   const formatAvailability = getMediaFormatAvailability(analyzedMedia)
   const { mp4Available, mp3Available } = formatAvailability
 
@@ -678,10 +735,11 @@ export default function DownloaderPage() {
       ? analyzedMedia.availableFormats.mp4Qualities
       : analyzedMedia?.videoQualities || []
 
-  const is720pAvailable = mp4Qualities.includes('720p')
-  const is1080pAvailable = mp4Qualities.includes('1080p')
-  const isBestAvailable = mp4Qualities.length > 0
   const highestAvailableQuality = mp4Qualities.length > 0 ? mp4Qualities[0] : null
+
+  // Visual isolation states between MP4 and MP3 configurations
+  const isMp4Active = selectedFormat === 'mp4' && Boolean(analyzedMedia) && mp4Available
+  const isMp3Active = selectedFormat === 'mp3' && Boolean(analyzedMedia) && mp3Available
 
   return (
     <div className="p-6 lg:p-8 max-w-[1400px] w-full mx-auto flex flex-col gap-6 select-none animate-fadeIn">
@@ -739,6 +797,8 @@ export default function DownloaderPage() {
                   onChange={(e) => handleUrlChange(e.target.value)}
                   onBlur={handleUrlBlur}
                   onPaste={handleInputPaste}
+                  onDrop={handleDrop}
+                  onDragOver={handleDragOver}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') handleAnalyzeClick()
                   }}
@@ -788,24 +848,36 @@ export default function DownloaderPage() {
                 </div>
               </div>
 
-              {/* Analyze Button */}
+              {/* Analyze Button with Cooldown Countdown (Step 02) */}
               <button
                 type="button"
                 onClick={handleAnalyzeClick}
-                disabled={isAnalyzing || !url.trim()}
-                title="Analyze media URL"
+                disabled={isAnalyzing || !url.trim() || cooldownRemaining > 0}
+                title={
+                  cooldownRemaining > 0
+                    ? `Rate limit cooldown: ${cooldownRemaining}s remaining`
+                    : 'Analyze media URL'
+                }
                 className="flex items-center gap-2 px-5 py-3 rounded-xl font-bold text-xs bg-gradient-to-r from-[#19D8FF] to-[#3388FF] text-white shadow-[0_0_16px_rgba(25,216,255,0.35)] hover:shadow-[0_0_24px_rgba(25,216,255,0.55)] transition-all cursor-pointer flex-shrink-0 disabled:opacity-60 disabled:cursor-not-allowed"
               >
                 {isAnalyzing ? (
                   <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : cooldownRemaining > 0 ? (
+                  <Clock className="w-3.5 h-3.5" />
                 ) : (
                   <Search className="w-3.5 h-3.5" />
                 )}
-                <span>{isAnalyzing ? 'Analyzing...' : 'Analyze'}</span>
+                <span>
+                  {isAnalyzing
+                    ? 'Analyzing...'
+                    : cooldownRemaining > 0
+                      ? `Wait ${cooldownRemaining}s`
+                      : 'Analyze'}
+                </span>
               </button>
             </div>
 
-            {/* Validation & API Error Feedback */}
+            {/* Validation & API Error Feedback with Retry Action (Step 02) */}
             {urlError && (
               <div
                 id="media-url-error"
@@ -820,10 +892,21 @@ export default function DownloaderPage() {
               <div
                 id="media-api-error"
                 role="alert"
-                className="flex items-center gap-2 text-xs text-rose-400 bg-rose-500/10 border border-rose-500/20 px-3.5 py-2.5 rounded-xl animate-fadeIn"
+                className="flex items-center justify-between gap-3 text-xs text-rose-400 bg-rose-500/10 border border-rose-500/20 px-3.5 py-2.5 rounded-xl animate-fadeIn"
               >
-                <AlertCircle className="w-4 h-4 flex-shrink-0" />
-                <span>{apiError}</span>
+                <div className="flex items-center gap-2 min-w-0">
+                  <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                  <span className="truncate">{apiError}</span>
+                </div>
+                {cooldownRemaining === 0 && (
+                  <button
+                    type="button"
+                    onClick={handleAnalyzeClick}
+                    className="px-3 py-1 rounded-lg text-[11px] font-bold bg-rose-500/20 hover:bg-rose-500/30 text-rose-200 transition-colors cursor-pointer flex-shrink-0"
+                  >
+                    Retry
+                  </button>
+                )}
               </div>
             )}
             {!urlError && !apiError && urlStatus && !analyzedMedia && !isAnalyzing && (
@@ -837,7 +920,7 @@ export default function DownloaderPage() {
               </div>
             )}
 
-            {/* Analyzed Media Preview Card (Step 05.05) */}
+            {/* Analyzed Media Preview Card */}
             {isAnalyzing ? (
               <div className="flex flex-col items-center justify-center p-8 rounded-xl bg-[#040B1C]/80 border border-primary/20 animate-fadeIn min-h-[140px]">
                 <LoadingIndicator
@@ -899,33 +982,33 @@ export default function DownloaderPage() {
             ) : null}
           </div>
 
-          {/* Section 2: Choose Format (Step 05.06) */}
+          {/* Section 2: Choose Format (Step 04 - Visual State Isolation) */}
           <div className="flex flex-col gap-2.5">
             <div className="flex items-center justify-between">
               <h2 className="text-xs font-bold uppercase tracking-wider text-text-muted">
                 2. Choose Format
               </h2>
-              {analyzedMedia && (
-                <span className="text-[11px] text-text-muted">
-                  {mp4Available && mp3Available
+              <span className="text-[11px] text-text-muted">
+                {analyzedMedia
+                  ? mp4Available && mp3Available
                     ? 'MP4 Video & MP3 Audio available'
                     : mp4Available
                       ? 'MP4 Video only'
                       : mp3Available
                         ? 'MP3 Audio only'
-                        : 'No format available'}
-                </span>
-              )}
+                        : 'No format available'
+                  : 'Analyze media to view available formats'}
+              </span>
             </div>
 
             <div className="grid grid-cols-2 gap-3.5">
               {/* MP4 Video Option */}
               <button
                 type="button"
-                disabled={!mp4Available}
+                disabled={!analyzedMedia || !mp4Available}
                 onClick={() => mp4Available && setSelectedFormat('mp4')}
                 className={`flex items-center justify-between p-4 rounded-2xl border transition-all text-left ${
-                  !mp4Available
+                  !analyzedMedia || !mp4Available
                     ? 'opacity-40 cursor-not-allowed bg-[#07152E]/40 border-primary/10'
                     : selectedFormat === 'mp4'
                       ? 'bg-[#0B1C38] border-cyan-400 shadow-[0_0_20px_rgba(25,216,255,0.3)] cursor-pointer'
@@ -935,7 +1018,7 @@ export default function DownloaderPage() {
                 <div className="flex items-center gap-3">
                   <div
                     className={`w-10 h-10 rounded-xl flex items-center justify-center ${
-                      !mp4Available
+                      !analyzedMedia || !mp4Available
                         ? 'bg-surface text-text-muted/50'
                         : selectedFormat === 'mp4'
                           ? 'bg-cyan-500/20 text-[#19D8FF]'
@@ -947,7 +1030,11 @@ export default function DownloaderPage() {
                   <div>
                     <span className="text-sm font-extrabold text-white block">MP4</span>
                     <span className="text-[11px] text-text-muted">
-                      {mp4Available ? 'Video (Best Quality)' : 'Not Available'}
+                      {!analyzedMedia
+                        ? 'Video (Best Quality)'
+                        : mp4Available
+                          ? 'Video (Best Quality)'
+                          : 'Not Available'}
                     </span>
                   </div>
                 </div>
@@ -955,14 +1042,14 @@ export default function DownloaderPage() {
                 {/* Radio Indicator */}
                 <div
                   className={`w-5 h-5 rounded-full border-2 flex items-center justify-center ${
-                    !mp4Available
+                    !analyzedMedia || !mp4Available
                       ? 'border-text-muted/20'
                       : selectedFormat === 'mp4'
                         ? 'border-[#19D8FF] bg-[#040B1C]'
                         : 'border-text-muted/40'
                   }`}
                 >
-                  {selectedFormat === 'mp4' && mp4Available && (
+                  {selectedFormat === 'mp4' && analyzedMedia && mp4Available && (
                     <div className="w-2.5 h-2.5 rounded-full bg-[#19D8FF]" />
                   )}
                 </div>
@@ -971,10 +1058,10 @@ export default function DownloaderPage() {
               {/* MP3 Audio Option */}
               <button
                 type="button"
-                disabled={!mp3Available}
+                disabled={!analyzedMedia || !mp3Available}
                 onClick={() => mp3Available && setSelectedFormat('mp3')}
                 className={`flex items-center justify-between p-4 rounded-2xl border transition-all text-left ${
-                  !mp3Available
+                  !analyzedMedia || !mp3Available
                     ? 'opacity-40 cursor-not-allowed bg-[#07152E]/40 border-primary/10'
                     : selectedFormat === 'mp3'
                       ? 'bg-[#0B1C38] border-cyan-400 shadow-[0_0_20px_rgba(25,216,255,0.3)] cursor-pointer'
@@ -984,7 +1071,7 @@ export default function DownloaderPage() {
                 <div className="flex items-center gap-3">
                   <div
                     className={`w-10 h-10 rounded-xl flex items-center justify-center ${
-                      !mp3Available
+                      !analyzedMedia || !mp3Available
                         ? 'bg-surface text-text-muted/50'
                         : selectedFormat === 'mp3'
                           ? 'bg-cyan-500/20 text-[#19D8FF]'
@@ -996,7 +1083,11 @@ export default function DownloaderPage() {
                   <div>
                     <span className="text-sm font-extrabold text-white block">MP3</span>
                     <span className="text-[11px] text-text-muted">
-                      {mp3Available ? 'Audio Only' : 'Not Available'}
+                      {!analyzedMedia
+                        ? 'Audio Only'
+                        : mp3Available
+                          ? 'Audio Only'
+                          : 'Not Available'}
                     </span>
                   </div>
                 </div>
@@ -1004,14 +1095,14 @@ export default function DownloaderPage() {
                 {/* Radio Indicator */}
                 <div
                   className={`w-5 h-5 rounded-full border-2 flex items-center justify-center ${
-                    !mp3Available
+                    !analyzedMedia || !mp3Available
                       ? 'border-text-muted/20'
                       : selectedFormat === 'mp3'
                         ? 'border-[#19D8FF] bg-[#040B1C]'
                         : 'border-text-muted/40'
                   }`}
                 >
-                  {selectedFormat === 'mp3' && mp3Available && (
+                  {selectedFormat === 'mp3' && analyzedMedia && mp3Available && (
                     <div className="w-2.5 h-2.5 rounded-full bg-[#19D8FF]" />
                   )}
                 </div>
@@ -1027,81 +1118,101 @@ export default function DownloaderPage() {
             )}
           </div>
 
-          {/* Section 3 & 4: Quality & Bitrate Side by Side */}
+          {/* Section 3 & 4: Dynamic Quality & Bitrate (Step 03 & Step 04) */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            {/* 3. Video Quality */}
+            {/* 3. Video Quality (Dynamic Render - Step 03) */}
             <div className="flex flex-col gap-2">
-              <h2 className="text-xs font-bold uppercase tracking-wider text-text-muted">
-                3. Video Quality
-              </h2>
-              <div className="grid grid-cols-3 gap-2">
-                {[
-                  {
-                    id: '720p',
-                    title: '720p',
-                    sub: 'HD',
-                    available: is720pAvailable && mp4Available
-                  },
-                  {
-                    id: '1080p',
-                    title: '1080p',
-                    sub: 'Full HD',
-                    available: is1080pAvailable && mp4Available
-                  },
-                  {
-                    id: 'best',
-                    title: 'Best',
-                    sub: highestAvailableQuality ? `${highestAvailableQuality} 👑` : 'Available 👑',
-                    available: isBestAvailable && mp4Available
-                  }
-                ].map((q) => {
-                  const isSel = selectedVideoQuality === q.id
-                  const isAvail = q.available
-                  return (
-                    <button
-                      key={q.id}
-                      type="button"
-                      disabled={!isAvail}
-                      onClick={() => isAvail && setSelectedVideoQuality(q.id)}
-                      className={`py-2.5 px-2 rounded-xl text-center border transition-all ${
-                        !isAvail
-                          ? 'opacity-40 cursor-not-allowed bg-[#07152E]/40 border-primary/10 text-text-muted/40'
-                          : isSel
-                            ? 'bg-[#0B1C38] border-cyan-400 text-white shadow-[0_0_14px_rgba(25,216,255,0.3)] cursor-pointer'
-                            : 'bg-[#07152E]/80 border-primary/15 text-text-muted hover:border-primary/30 hover:text-white cursor-pointer'
-                      }`}
-                    >
-                      <div className="text-xs font-extrabold">{q.title}</div>
-                      <div className="text-[10px] text-text-muted/80">{q.sub}</div>
-                    </button>
-                  )
-                })}
+              <div className="flex items-center justify-between">
+                <h2 className="text-xs font-bold uppercase tracking-wider text-text-muted">
+                  3. Video Quality
+                </h2>
+                {isMp4Active && (
+                  <span className="text-[10px] text-cyan-400 font-semibold">Active</span>
+                )}
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                {analyzedMedia && mp4Qualities.length > 0
+                  ? [
+                      {
+                        id: 'best',
+                        title: 'Best',
+                        sub: highestAvailableQuality
+                          ? `${highestAvailableQuality} 👑`
+                          : 'Available 👑'
+                      },
+                      ...mp4Qualities.map((q) => ({
+                        id: q,
+                        title: q,
+                        sub: getQualitySubLabel(q)
+                      }))
+                    ].map((q) => {
+                      const isSelected = selectedVideoQuality === q.id
+
+                      return (
+                        <button
+                          key={q.id}
+                          type="button"
+                          disabled={!isMp4Active}
+                          onClick={() => isMp4Active && setSelectedVideoQuality(q.id)}
+                          className={`flex-1 min-w-[76px] py-2 px-2 rounded-xl text-center border transition-all ${
+                            !isMp4Active
+                              ? 'opacity-35 cursor-not-allowed bg-[#07152E]/30 border-primary/10 text-text-muted/40 pointer-events-none'
+                              : isSelected
+                                ? 'bg-[#0B1C38] border-cyan-400 text-white shadow-[0_0_14px_rgba(25,216,255,0.3)] cursor-pointer'
+                                : 'bg-[#07152E]/80 border-primary/15 text-text-muted hover:border-primary/30 hover:text-white cursor-pointer'
+                          }`}
+                        >
+                          <div className="text-xs font-extrabold">{q.title}</div>
+                          <div className="text-[10px] text-text-muted/80">{q.sub}</div>
+                        </button>
+                      )
+                    })
+                  : [
+                      { id: '720p', title: '720p', sub: 'HD' },
+                      { id: '1080p', title: '1080p', sub: 'Full HD' },
+                      { id: 'best', title: 'Best', sub: 'Available 👑' }
+                    ].map((q) => (
+                      <div
+                        key={q.id}
+                        className="flex-1 min-w-[76px] py-2.5 px-2 rounded-xl text-center border opacity-40 bg-[#07152E]/40 border-primary/10 text-text-muted/40 select-none"
+                      >
+                        <div className="text-xs font-extrabold">{q.title}</div>
+                        <div className="text-[10px] text-text-muted/80">{q.sub}</div>
+                      </div>
+                    ))}
               </div>
             </div>
 
-            {/* 4. Audio Bitrate */}
+            {/* 4. Audio Bitrate (for MP3) - Visually isolated when MP4 is selected (Step 04) */}
             <div className="flex flex-col gap-2">
-              <h2 className="text-xs font-bold uppercase tracking-wider text-text-muted">
-                4. Audio Bitrate (for MP3)
-              </h2>
+              <div className="flex items-center justify-between">
+                <h2 className="text-xs font-bold uppercase tracking-wider text-text-muted">
+                  4. Audio Bitrate (for MP3)
+                </h2>
+                {isMp3Active && (
+                  <span className="text-[10px] text-cyan-400 font-semibold">Active</span>
+                )}
+              </div>
+
               <div className="grid grid-cols-3 gap-2">
                 {[
                   { bitrate: 128, label: '128', unit: 'kbps' },
                   { bitrate: 192, label: '192', unit: 'kbps' },
                   { bitrate: 320, label: '320', unit: 'kbps' }
                 ].map((b) => {
-                  const isSel = selectedAudioBitrate === b.bitrate
-                  const isAvail = mp3Available
+                  const isSelected = selectedAudioBitrate === b.bitrate
+
                   return (
                     <button
                       key={b.bitrate}
                       type="button"
-                      disabled={!isAvail}
-                      onClick={() => isAvail && setSelectedAudioBitrate(b.bitrate)}
+                      disabled={!isMp3Active}
+                      onClick={() => isMp3Active && setSelectedAudioBitrate(b.bitrate)}
                       className={`py-2.5 px-2 rounded-xl text-center border transition-all ${
-                        !isAvail
-                          ? 'opacity-40 cursor-not-allowed bg-[#07152E]/40 border-primary/10 text-text-muted/40'
-                          : isSel
+                        !isMp3Active
+                          ? 'opacity-35 cursor-not-allowed bg-[#07152E]/30 border-primary/10 text-text-muted/40 pointer-events-none'
+                          : isSelected
                             ? 'bg-[#0B1C38] border-cyan-400 text-white shadow-[0_0_14px_rgba(25,216,255,0.3)] cursor-pointer'
                             : 'bg-[#07152E]/80 border-primary/15 text-text-muted hover:border-primary/30 hover:text-white cursor-pointer'
                       }`}
@@ -1158,7 +1269,8 @@ export default function DownloaderPage() {
               !analyzedMedia ||
               isAnalyzing ||
               isSubmittingDownload ||
-              (!mp4Available && !mp3Available)
+              (selectedFormat === 'mp4' && !mp4Available) ||
+              (selectedFormat === 'mp3' && !mp3Available)
             }
             className="w-full py-4 rounded-2xl font-black text-sm lg:text-base tracking-wide bg-gradient-to-r from-[#19D8FF] via-[#3388FF] to-[#514BFF] text-white shadow-[0_0_28px_rgba(25,216,255,0.45)] hover:shadow-[0_0_36px_rgba(25,216,255,0.65)] hover:scale-[1.01] active:scale-[0.99] transition-all flex items-center justify-center gap-2.5 cursor-pointer mt-1 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100 disabled:shadow-none"
           >

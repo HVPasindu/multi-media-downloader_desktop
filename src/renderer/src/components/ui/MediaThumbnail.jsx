@@ -2,6 +2,49 @@ import { useState } from 'react'
 import { Play, AlertCircle, Video } from 'lucide-react'
 
 /**
+ * Validates whether a thumbnail URL is a safe, valid HTTP/HTTPS URL.
+ * Strictly rejects javascript:, file:, data:, blob:, credentials (user:pass), and localhost.
+ *
+ * @param {string|null|undefined} urlString
+ * @returns {boolean}
+ */
+function isSafeThumbnailUrl(urlString) {
+  if (typeof urlString !== 'string') return false
+  const trimmed = urlString.trim()
+  if (!trimmed) return false
+
+  try {
+    const parsed = new URL(trimmed)
+    // Only allow http: and https: protocols
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return false
+    }
+
+    // Reject embedded user/password credentials
+    if (parsed.username || parsed.password) {
+      return false
+    }
+
+    // Reject localhost and loopback/private addresses
+    const hostname = parsed.hostname.toLowerCase()
+    if (
+      hostname === 'localhost' ||
+      hostname === '127.0.0.1' ||
+      hostname === '::1' ||
+      hostname === '0.0.0.0' ||
+      hostname.endsWith('.localhost') ||
+      hostname.endsWith('.local')
+    ) {
+      return false
+    }
+
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
  * Reusable Media Thumbnail Component.
  * Supports:
  * - Rounded preview with subtle glowing border
@@ -21,7 +64,8 @@ export default function MediaThumbnail({
 }) {
   const [failedSrc, setFailedSrc] = useState(null)
 
-  const isImageAvailable = Boolean(src) && failedSrc !== src && !hasError
+  const isSafe = isSafeThumbnailUrl(src)
+  const isImageAvailable = isSafe && failedSrc !== src && !hasError
 
   return (
     <div

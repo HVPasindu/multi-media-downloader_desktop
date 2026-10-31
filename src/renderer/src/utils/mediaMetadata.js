@@ -33,6 +33,7 @@ export function formatMediaDuration(seconds) {
  *
  * MP4 is available if availableFormats.mp4Qualities has at least one quality option.
  * MP3 is available if audioOptions includes 'mp3'.
+ * When media has not been analyzed or is null, both formats are unavailable and defaultFormat is null.
  *
  * @param {object|null|undefined} analyzedMedia - Media object returned from backend
  * @returns {{
@@ -45,10 +46,10 @@ export function formatMediaDuration(seconds) {
 export function getMediaFormatAvailability(analyzedMedia) {
   if (!analyzedMedia || typeof analyzedMedia !== 'object') {
     return {
-      mp4Available: true,
-      mp3Available: true,
+      mp4Available: false,
+      mp3Available: false,
       mp4Qualities: [],
-      defaultFormat: 'mp4'
+      defaultFormat: null
     }
   }
 
