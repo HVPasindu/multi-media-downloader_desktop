@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useCallback } from 'react'
 import {
   Zap,
   ShieldCheck,
@@ -25,8 +25,10 @@ import LoadingIndicator from '../components/common/LoadingIndicator'
 import DownloaderHeroIllustration from '../components/ui/DownloaderHeroIllustration'
 import MediaThumbnail from '../components/ui/MediaThumbnail'
 import PlatformBadge from '../components/ui/PlatformBadge'
-import { DOWNLOADER_MEDIA_PREVIEW, RECENT_DOWNLOADS_LIST } from '../data/uiPreviewData'
+import { chooseDownloadFolder, getDownloadFolder } from '../services/api'
+import { createDownload, listDownloads } from '../services/downloadsApi'
 import { analyzeMedia } from '../services/mediaApi'
+import { normalizeDownloadJob } from '../utils/downloadPresentation'
 import { formatMediaDuration, getMediaFormatAvailability } from '../utils/mediaMetadata'
 import { extractUrlFromDataTransfer, validateMediaUrlInput } from '../utils/mediaUrlInput'
 
@@ -42,16 +44,14 @@ import { extractUrlFromDataTransfer, validateMediaUrlInput } from '../utils/medi
  * - Radiant full-width Download CTA button
  * - Right Column: Recent Downloads card with live progress, pause/play, folder action & Drag-and-Drop dropzone
  *
- * STEPS 05.04 + 05.05 + 05.06 IMPLEMENTATION:
- * - Step 05.04: Analyze URL integration with backend Express API via mediaApi.js / IPC bridge
- * - Loading indicator during analysis, button state toggle, stale request invalidation
- * - User-friendly API error handling (400, 401/403, 500, network/IPC)
- * - Step 05.05: Dynamic media preview component showing actual thumbnail, title, platform, duration, and stream info
- * - Step 05.06: MP4/MP3 format availability based on mp4Qualities and audioOptions with automatic selection rules
- * - Targeted Fix: Invalid drag & drop immediately invalidates in-flight Analyze requests
+ * STEPS 05.07 + 05.08 + 05.09 + 05.10 IMPLEMENTATION:
+ * - Step 05.07: Real Quality & Bitrate Selection with Best-Available resolution mapping
+ * - Step 05.08: Saved Download Folder via secure Electron IPC bridge
+ * - Step 05.09: Download Button integration with createDownload API
+ * - Step 05.10: Live Recent Downloads polling with speed & status tracking
  */
 export default function DownloaderPage() {
-  const [url, setUrl] = useState('https://www.youtube.com/watch?v=dQw4w9WgXcQ')
+  const [url, setUrl] = useState('')
   const [validatedUrl, setValidatedUrl] = useState(null)
   const [urlError, setUrlError] = useState(null)
   const [urlStatus, setUrlStatus] = useState(null)
@@ -63,17 +63,29 @@ export default function DownloaderPage() {
   const [analyzedMedia, setAnalyzedMedia] = useState(null)
   const [apiError, setApiError] = useState(null)
 
-  // Step 05.06: Format selection state
+  // Step 05.06 & 05.07: Format & Quality & Bitrate selection state
   const [selectedFormat, setSelectedFormat] = useState('mp4')
-  const [selectedVideoQuality, setSelectedVideoQuality] = useState('1080p')
-  const [selectedAudioBitrate, setSelectedAudioBitrate] = useState('192k')
-  const [downloadFolder, setDownloadFolder] = useState(
-    'C:\\Users\\Alex\\Downloads\\Multi Media Downloader'
-  )
-  const [recentDownloads, setRecentDownloads] = useState(RECENT_DOWNLOADS_LIST)
+  const [selectedVideoQuality, setSelectedVideoQuality] = useState('best')
+  const [selectedAudioBitrate, setSelectedAudioBitrate] = useState(192)
+
+  // Step 05.08: Download folder settings state
+  const [downloadFolder, setDownloadFolder] = useState('')
+  const [isLoadingFolder, setIsLoadingFolder] = useState(true)
+  const [folderError, setFolderError] = useState(null)
+
+  // Step 05.09: Download job creation state
+  const [isSubmittingDownload, setIsSubmittingDownload] = useState(false)
+  const [downloadSubmitFeedback, setDownloadSubmitFeedback] = useState(null)
+
+  // Step 05.10: Live Recent Downloads state
+  const [recentDownloads, setRecentDownloads] = useState([])
+  const [isLoadingRecent, setIsLoadingRecent] = useState(true)
 
   const inputRef = useRef(null)
   const activeRequestIdRef = useRef(0)
+  const speedTrackerRef = useRef(new Map())
+  const isPollingRecentRef = useRef(false)
+  const hasActiveRecentRef = useRef(false)
 
   /**
    * Window-level drag & drop prevention to ensure Electron does not navigate
@@ -128,6 +140,7 @@ export default function DownloaderPage() {
     setDetectedPlatform(null)
     setAnalyzedMedia(null)
     setApiError(null)
+    setDownloadSubmitFeedback(null)
     setIsAnalyzing(false)
     if (inputRef.current) {
       inputRef.current.focus()
@@ -147,6 +160,7 @@ export default function DownloaderPage() {
     setUrlStatus(null)
     setAnalyzedMedia(null)
     setApiError(null)
+    setDownloadSubmitFeedback(null)
     setIsAnalyzing(false)
   }
 
@@ -162,6 +176,7 @@ export default function DownloaderPage() {
       setUrlStatus(null)
       setAnalyzedMedia(null)
       setApiError(null)
+      setDownloadSubmitFeedback(null)
       return
     }
 
@@ -182,6 +197,7 @@ export default function DownloaderPage() {
       setUrl(trimmed)
       setAnalyzedMedia(null)
       setApiError(null)
+      setDownloadSubmitFeedback(null)
       setIsAnalyzing(false)
       const validation = validateMediaUrlInput(trimmed)
       applyValidationResult(validation)
@@ -201,6 +217,7 @@ export default function DownloaderPage() {
         setValidatedUrl(null)
         setAnalyzedMedia(null)
         setApiError(null)
+        setDownloadSubmitFeedback(null)
         return
       }
 
@@ -216,6 +233,7 @@ export default function DownloaderPage() {
         setValidatedUrl(null)
         setAnalyzedMedia(null)
         setApiError(null)
+        setDownloadSubmitFeedback(null)
         return
       }
 
@@ -223,6 +241,7 @@ export default function DownloaderPage() {
       setUrl(trimmed)
       setAnalyzedMedia(null)
       setApiError(null)
+      setDownloadSubmitFeedback(null)
       setIsAnalyzing(false)
       const validation = validateMediaUrlInput(trimmed)
       applyValidationResult(validation)
@@ -237,6 +256,7 @@ export default function DownloaderPage() {
       setValidatedUrl(null)
       setAnalyzedMedia(null)
       setApiError(null)
+      setDownloadSubmitFeedback(null)
     }
   }
 
@@ -265,6 +285,7 @@ export default function DownloaderPage() {
     setIsAnalyzing(false)
     setAnalyzedMedia(null)
     setApiError(null)
+    setDownloadSubmitFeedback(null)
 
     const extraction = extractUrlFromDataTransfer(e.dataTransfer)
     if (extraction.error) {
@@ -356,9 +377,15 @@ export default function DownloaderPage() {
         const metadata = response.data.data
         setAnalyzedMedia(metadata)
         setApiError(null)
+        setDownloadSubmitFeedback(null)
 
-        // Step 05.06: Auto-select format based on real stream availability
+        // Step 05.06 & 05.07: Auto-select format & quality based on real stream availability
         const availability = getMediaFormatAvailability(metadata)
+        const availableMp4Qualities =
+          metadata.availableFormats?.mp4Qualities?.length > 0
+            ? metadata.availableFormats.mp4Qualities
+            : metadata.videoQualities || []
+
         if (availability.mp4Available && !availability.mp3Available) {
           setSelectedFormat('mp4')
         } else if (!availability.mp4Available && availability.mp3Available) {
@@ -367,6 +394,22 @@ export default function DownloaderPage() {
           setSelectedFormat((prev) => (prev === 'mp3' ? 'mp3' : 'mp4'))
         } else {
           setSelectedFormat(null)
+        }
+
+        // Auto-select valid MP4 quality
+        if (availableMp4Qualities.length > 0) {
+          setSelectedVideoQuality((prev) => {
+            if (prev === '1080p' && availableMp4Qualities.includes('1080p')) return '1080p'
+            if (prev === '720p' && availableMp4Qualities.includes('720p')) return '720p'
+            return 'best'
+          })
+        }
+
+        // Auto-select valid MP3 bitrate
+        if (availability.mp3Available) {
+          setSelectedAudioBitrate((prev) =>
+            [128, 192, 320].includes(Number(prev)) ? Number(prev) : 192
+          )
         }
       } else {
         const status = response.status
@@ -407,6 +450,213 @@ export default function DownloaderPage() {
     }
   }
 
+  // Load saved download folder on mount (Step 05.08)
+  useEffect(() => {
+    let isMounted = true
+
+    async function loadSavedFolder() {
+      try {
+        const folder = await getDownloadFolder()
+        if (isMounted && folder) {
+          setDownloadFolder(folder)
+          setFolderError(null)
+        }
+      } catch (err) {
+        if (isMounted) {
+          setFolderError(err?.message || 'Unable to retrieve saved download folder.')
+        }
+      } finally {
+        if (isMounted) {
+          setIsLoadingFolder(false)
+        }
+      }
+    }
+
+    loadSavedFolder()
+
+    return () => {
+      isMounted = false
+    }
+  }, [])
+
+  const handleChooseFolder = async () => {
+    setFolderError(null)
+    try {
+      const selected = await chooseDownloadFolder()
+      if (selected) {
+        setDownloadFolder(selected)
+      }
+    } catch (err) {
+      setFolderError(err?.message || 'Failed to update download folder.')
+    }
+  }
+
+  // Fetch recent downloads (Step 05.10)
+  const fetchRecentDownloads = useCallback(async () => {
+    if (isPollingRecentRef.current) return
+    isPollingRecentRef.current = true
+
+    try {
+      const response = await listDownloads({ limit: 5 })
+      if (response.ok && response.data?.success && Array.isArray(response.data.data)) {
+        const normalized = response.data.data
+          .map((job) => normalizeDownloadJob(job, speedTrackerRef.current))
+          .filter(Boolean)
+        hasActiveRecentRef.current = normalized.some(
+          (i) => i.status === 'downloading' || i.status === 'queued'
+        )
+        setRecentDownloads(normalized)
+      }
+    } catch (err) {
+      console.warn('Recent downloads polling error:', err)
+    } finally {
+      isPollingRecentRef.current = false
+      setIsLoadingRecent(false)
+    }
+  }, [])
+
+  // Controlled live polling for Recent Downloads
+  useEffect(() => {
+    let isMounted = true
+    let timerId = null
+
+    async function poll() {
+      await fetchRecentDownloads()
+      if (!isMounted) return
+      const interval = hasActiveRecentRef.current ? 2000 : 8000
+      timerId = setTimeout(poll, interval)
+    }
+
+    poll()
+
+    return () => {
+      isMounted = false
+      if (timerId) clearTimeout(timerId)
+    }
+  }, [fetchRecentDownloads])
+
+  // Step 05.09: Download Job Creation Handler
+  const handleDownloadClick = async () => {
+    if (isSubmittingDownload) return
+    setDownloadSubmitFeedback(null)
+
+    // 1. Validation
+    if (!analyzedMedia || !analyzedMedia.mediaItemId) {
+      setDownloadSubmitFeedback({
+        type: 'error',
+        message: 'Please analyze a valid media link first before downloading.'
+      })
+      return
+    }
+
+    if (selectedFormat !== 'mp4' && selectedFormat !== 'mp3') {
+      setDownloadSubmitFeedback({
+        type: 'error',
+        message: 'Please select a valid output format (MP4 or MP3).'
+      })
+      return
+    }
+
+    let payload = null
+
+    if (selectedFormat === 'mp4') {
+      if (!mp4Available || mp4Qualities.length === 0) {
+        setDownloadSubmitFeedback({
+          type: 'error',
+          message: 'No compatible MP4 video stream is available for this media.'
+        })
+        return
+      }
+
+      let resolvedQuality = selectedVideoQuality
+      if (resolvedQuality === 'best' || !mp4Qualities.includes(resolvedQuality)) {
+        resolvedQuality = highestAvailableQuality
+      }
+
+      if (!resolvedQuality || !mp4Qualities.includes(resolvedQuality)) {
+        setDownloadSubmitFeedback({
+          type: 'error',
+          message: 'Selected video resolution is not available for this media.'
+        })
+        return
+      }
+
+      payload = {
+        mediaItemId: analyzedMedia.mediaItemId,
+        outputFormat: 'mp4',
+        quality: resolvedQuality
+      }
+    } else if (selectedFormat === 'mp3') {
+      if (!mp3Available) {
+        setDownloadSubmitFeedback({
+          type: 'error',
+          message: 'No audio stream is available for MP3 conversion.'
+        })
+        return
+      }
+
+      const bitrate = Number(selectedAudioBitrate)
+      if (![128, 192, 320].includes(bitrate)) {
+        setDownloadSubmitFeedback({
+          type: 'error',
+          message: 'Please select a valid audio bitrate (128, 192, or 320 kbps).'
+        })
+        return
+      }
+
+      payload = {
+        mediaItemId: analyzedMedia.mediaItemId,
+        outputFormat: 'mp3',
+        audioBitrateKbps: bitrate
+      }
+    }
+
+    // 2. Submit job creation to backend
+    setIsSubmittingDownload(true)
+
+    try {
+      const response = await createDownload(payload)
+
+      if (response.status === 201) {
+        const jobId = response.data?.data?.id
+        setDownloadSubmitFeedback({
+          type: 'success',
+          message: jobId
+            ? `Download job #${jobId} created and queued successfully!`
+            : 'Download queued successfully!'
+        })
+        await fetchRecentDownloads()
+      } else if (response.status === 200 && response.data?.duplicate) {
+        setDownloadSubmitFeedback({
+          type: 'info',
+          message: response.data.message || 'An equivalent download is already active or in queue.'
+        })
+        await fetchRecentDownloads()
+      } else {
+        const errorMsg =
+          response.data?.message ||
+          `Download request failed with status ${response.status}. Please try again.`
+        setDownloadSubmitFeedback({
+          type: 'error',
+          message: errorMsg
+        })
+      }
+    } catch (err) {
+      const isIpc = err?.message?.includes('IPC') || err?.message?.includes('bridge')
+      const errorMsg = isIpc
+        ? 'Communication with download service failed. Please restart the application.'
+        : err instanceof Error
+          ? err.message
+          : 'An unexpected error occurred while queuing the download.'
+      setDownloadSubmitFeedback({
+        type: 'error',
+        message: errorMsg
+      })
+    } finally {
+      setIsSubmittingDownload(false)
+    }
+  }
+
   const handleClearRecent = () => {
     setRecentDownloads([])
   }
@@ -419,17 +669,19 @@ export default function DownloaderPage() {
     !urlError &&
     !apiError
 
-  // Sample demonstration preview for initial page display before any editing/validation
-  const isSamplePreview =
-    url === DOWNLOADER_MEDIA_PREVIEW.url &&
-    !validatedUrl &&
-    !analyzedMedia &&
-    !isAnalyzing &&
-    !apiError
-
-  // Step 05.06: Format availability extraction
+  // Step 05.06 & 05.07: Format & Quality availability extraction
   const formatAvailability = getMediaFormatAvailability(analyzedMedia)
-  const { mp4Available, mp3Available, mp4Qualities } = formatAvailability
+  const { mp4Available, mp3Available } = formatAvailability
+
+  const mp4Qualities =
+    analyzedMedia?.availableFormats?.mp4Qualities?.length > 0
+      ? analyzedMedia.availableFormats.mp4Qualities
+      : analyzedMedia?.videoQualities || []
+
+  const is720pAvailable = mp4Qualities.includes('720p')
+  const is1080pAvailable = mp4Qualities.includes('1080p')
+  const isBestAvailable = mp4Qualities.length > 0
+  const highestAvailableQuality = mp4Qualities.length > 0 ? mp4Qualities[0] : null
 
   return (
     <div className="p-6 lg:p-8 max-w-[1400px] w-full mx-auto flex flex-col gap-6 select-none animate-fadeIn">
@@ -644,29 +896,6 @@ export default function DownloaderPage() {
                   </p>
                 </div>
               </div>
-            ) : isSamplePreview && DOWNLOADER_MEDIA_PREVIEW && !urlError ? (
-              <div className="flex flex-col sm:flex-row items-center gap-4 p-3.5 rounded-xl bg-[#040B1C]/80 border border-primary/15 animate-fadeIn">
-                <div className="w-full sm:w-44 flex-shrink-0">
-                  <MediaThumbnail
-                    src={DOWNLOADER_MEDIA_PREVIEW.thumbnail}
-                    duration={DOWNLOADER_MEDIA_PREVIEW.duration}
-                    showPlayOverlay={true}
-                    aspectRatio="aspect-video"
-                  />
-                </div>
-
-                <div className="flex-1 flex flex-col justify-center min-w-0">
-                  <h3 className="text-sm font-bold text-white truncate">
-                    {DOWNLOADER_MEDIA_PREVIEW.title}
-                  </h3>
-                  <div className="mt-1">
-                    <PlatformBadge platform={DOWNLOADER_MEDIA_PREVIEW.platform} />
-                  </div>
-                  <p className="text-xs text-text-muted/80 mt-1.5 line-clamp-2 leading-relaxed">
-                    {DOWNLOADER_MEDIA_PREVIEW.description}
-                  </p>
-                </div>
-              </div>
             ) : null}
           </div>
 
@@ -807,20 +1036,39 @@ export default function DownloaderPage() {
               </h2>
               <div className="grid grid-cols-3 gap-2">
                 {[
-                  { id: '720p', title: '720p', sub: 'HD' },
-                  { id: '1080p', title: '1080p', sub: 'Full HD' },
-                  { id: 'best', title: 'Best', sub: 'Available 👑' }
+                  {
+                    id: '720p',
+                    title: '720p',
+                    sub: 'HD',
+                    available: is720pAvailable && mp4Available
+                  },
+                  {
+                    id: '1080p',
+                    title: '1080p',
+                    sub: 'Full HD',
+                    available: is1080pAvailable && mp4Available
+                  },
+                  {
+                    id: 'best',
+                    title: 'Best',
+                    sub: highestAvailableQuality ? `${highestAvailableQuality} 👑` : 'Available 👑',
+                    available: isBestAvailable && mp4Available
+                  }
                 ].map((q) => {
                   const isSel = selectedVideoQuality === q.id
+                  const isAvail = q.available
                   return (
                     <button
                       key={q.id}
                       type="button"
-                      onClick={() => setSelectedVideoQuality(q.id)}
-                      className={`py-2.5 px-2 rounded-xl text-center border transition-all cursor-pointer ${
-                        isSel
-                          ? 'bg-[#0B1C38] border-cyan-400 text-white shadow-[0_0_14px_rgba(25,216,255,0.3)]'
-                          : 'bg-[#07152E]/80 border-primary/15 text-text-muted hover:border-primary/30 hover:text-white'
+                      disabled={!isAvail}
+                      onClick={() => isAvail && setSelectedVideoQuality(q.id)}
+                      className={`py-2.5 px-2 rounded-xl text-center border transition-all ${
+                        !isAvail
+                          ? 'opacity-40 cursor-not-allowed bg-[#07152E]/40 border-primary/10 text-text-muted/40'
+                          : isSel
+                            ? 'bg-[#0B1C38] border-cyan-400 text-white shadow-[0_0_14px_rgba(25,216,255,0.3)] cursor-pointer'
+                            : 'bg-[#07152E]/80 border-primary/15 text-text-muted hover:border-primary/30 hover:text-white cursor-pointer'
                       }`}
                     >
                       <div className="text-xs font-extrabold">{q.title}</div>
@@ -838,20 +1086,24 @@ export default function DownloaderPage() {
               </h2>
               <div className="grid grid-cols-3 gap-2">
                 {[
-                  { id: '128k', label: '128', unit: 'kbps' },
-                  { id: '192k', label: '192', unit: 'kbps' },
-                  { id: '320k', label: '320', unit: 'kbps' }
+                  { bitrate: 128, label: '128', unit: 'kbps' },
+                  { bitrate: 192, label: '192', unit: 'kbps' },
+                  { bitrate: 320, label: '320', unit: 'kbps' }
                 ].map((b) => {
-                  const isSel = selectedAudioBitrate === b.id
+                  const isSel = selectedAudioBitrate === b.bitrate
+                  const isAvail = mp3Available
                   return (
                     <button
-                      key={b.id}
+                      key={b.bitrate}
                       type="button"
-                      onClick={() => setSelectedAudioBitrate(b.id)}
-                      className={`py-2.5 px-2 rounded-xl text-center border transition-all cursor-pointer ${
-                        isSel
-                          ? 'bg-[#0B1C38] border-cyan-400 text-white shadow-[0_0_14px_rgba(25,216,255,0.3)]'
-                          : 'bg-[#07152E]/80 border-primary/15 text-text-muted hover:border-primary/30 hover:text-white'
+                      disabled={!isAvail}
+                      onClick={() => isAvail && setSelectedAudioBitrate(b.bitrate)}
+                      className={`py-2.5 px-2 rounded-xl text-center border transition-all ${
+                        !isAvail
+                          ? 'opacity-40 cursor-not-allowed bg-[#07152E]/40 border-primary/10 text-text-muted/40'
+                          : isSel
+                            ? 'bg-[#0B1C38] border-cyan-400 text-white shadow-[0_0_14px_rgba(25,216,255,0.3)] cursor-pointer'
+                            : 'bg-[#07152E]/80 border-primary/15 text-text-muted hover:border-primary/30 hover:text-white cursor-pointer'
                       }`}
                     >
                       <div className="text-xs font-extrabold">{b.label}</div>
@@ -870,31 +1122,81 @@ export default function DownloaderPage() {
             </h2>
             <div className="flex items-center gap-2">
               <div className="relative flex-1 flex items-center">
-                <FolderOpen className="absolute left-3.5 w-4 h-4 text-text-muted" />
+                <FolderOpen className="absolute left-3.5 w-4 h-4 text-text-muted pointer-events-none" />
                 <input
                   type="text"
-                  value={downloadFolder}
-                  onChange={(e) => setDownloadFolder(e.target.value)}
-                  className="w-full bg-[#040B1C] border border-primary/20 rounded-xl py-2.5 pl-10 pr-3 text-xs text-text-muted font-mono focus:outline-none focus:border-primary"
+                  readOnly
+                  value={isLoadingFolder ? 'Loading saved folder...' : downloadFolder}
+                  placeholder="Select download folder..."
+                  className="w-full bg-[#040B1C] border border-primary/20 rounded-xl py-2.5 pl-10 pr-3 text-xs text-text-muted font-mono focus:outline-none focus:border-primary select-text"
                 />
               </div>
               <button
                 type="button"
-                className="px-4 py-2.5 rounded-xl text-xs font-bold bg-[#07152E] hover:bg-[#0B1C38] border border-primary/25 text-white transition-all cursor-pointer"
+                onClick={handleChooseFolder}
+                className="px-4 py-2.5 rounded-xl text-xs font-bold bg-[#07152E] hover:bg-[#0B1C38] border border-primary/25 text-white transition-all cursor-pointer flex-shrink-0"
               >
                 Choose...
               </button>
             </div>
+            {folderError && (
+              <div
+                role="alert"
+                className="flex items-center gap-2 text-xs text-rose-400 bg-rose-500/10 border border-rose-500/20 px-3.5 py-2 rounded-xl animate-fadeIn"
+              >
+                <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                <span>{folderError}</span>
+              </div>
+            )}
           </div>
 
           {/* Big Download Button */}
           <button
             type="button"
-            className="w-full py-4 rounded-2xl font-black text-sm lg:text-base tracking-wide bg-gradient-to-r from-[#19D8FF] via-[#3388FF] to-[#514BFF] text-white shadow-[0_0_28px_rgba(25,216,255,0.45)] hover:shadow-[0_0_36px_rgba(25,216,255,0.65)] hover:scale-[1.01] active:scale-[0.99] transition-all flex items-center justify-center gap-2.5 cursor-pointer mt-1"
+            onClick={handleDownloadClick}
+            disabled={
+              !analyzedMedia ||
+              isAnalyzing ||
+              isSubmittingDownload ||
+              (!mp4Available && !mp3Available)
+            }
+            className="w-full py-4 rounded-2xl font-black text-sm lg:text-base tracking-wide bg-gradient-to-r from-[#19D8FF] via-[#3388FF] to-[#514BFF] text-white shadow-[0_0_28px_rgba(25,216,255,0.45)] hover:shadow-[0_0_36px_rgba(25,216,255,0.65)] hover:scale-[1.01] active:scale-[0.99] transition-all flex items-center justify-center gap-2.5 cursor-pointer mt-1 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100 disabled:shadow-none"
           >
-            <Download className="w-5 h-5 stroke-[2.5]" />
-            <span>Download</span>
+            {isSubmittingDownload ? (
+              <>
+                <Loader2 className="w-5 h-5 animate-spin" />
+                <span>Queuing Download...</span>
+              </>
+            ) : (
+              <>
+                <Download className="w-5 h-5 stroke-[2.5]" />
+                <span>Download</span>
+              </>
+            )}
           </button>
+
+          {/* Download Submit Feedback Notification */}
+          {downloadSubmitFeedback && (
+            <div
+              role="alert"
+              className={`flex items-center gap-2.5 text-xs px-4 py-3 rounded-xl border animate-fadeIn ${
+                downloadSubmitFeedback.type === 'success'
+                  ? 'text-[#00DEA5] bg-emerald-500/10 border-emerald-500/25'
+                  : downloadSubmitFeedback.type === 'info'
+                    ? 'text-cyan-300 bg-cyan-500/10 border-cyan-500/25'
+                    : 'text-rose-400 bg-rose-500/10 border-rose-500/25'
+              }`}
+            >
+              {downloadSubmitFeedback.type === 'success' ? (
+                <CheckCircle2 className="w-4 h-4 flex-shrink-0 text-[#00DEA5]" />
+              ) : downloadSubmitFeedback.type === 'info' ? (
+                <CheckCircle2 className="w-4 h-4 flex-shrink-0 text-cyan-400" />
+              ) : (
+                <AlertCircle className="w-4 h-4 flex-shrink-0 text-rose-400" />
+              )}
+              <span className="font-medium">{downloadSubmitFeedback.message}</span>
+            </div>
+          )}
         </div>
 
         {/* ================= RIGHT COLUMN: RECENT DOWNLOADS & DROPZONE (5 COLS) ================= */}
@@ -906,122 +1208,146 @@ export default function DownloaderPage() {
               <button
                 type="button"
                 onClick={handleClearRecent}
-                className="flex items-center gap-1 text-[11px] font-semibold text-text-muted hover:text-white transition-colors cursor-pointer"
+                disabled={recentDownloads.length === 0}
+                className="flex items-center gap-1 text-[11px] font-semibold text-text-muted hover:text-white transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 <Trash2 className="w-3.5 h-3.5" />
                 <span>Clear All</span>
               </button>
             </div>
 
-            {/* List of 5 items matching Reference Image 1 */}
+            {/* List of items matching Reference Image 1 */}
             <div className="flex flex-col gap-3">
-              {recentDownloads.map((item) => {
-                const isDownloading = item.status === 'downloading'
-                const isPaused = item.status === 'paused'
+              {recentDownloads.length === 0 ? (
+                <div className="py-8 text-center text-text-muted/60 text-xs">
+                  {isLoadingRecent
+                    ? 'Loading recent downloads...'
+                    : 'No recent downloads yet. Paste a link and click Download to start.'}
+                </div>
+              ) : (
+                recentDownloads.map((item) => {
+                  const isDownloading = item.status === 'downloading'
+                  const isQueued = item.status === 'queued'
+                  const isCompleted = item.status === 'completed'
+                  const isFailed = item.status === 'failed'
 
-                return (
-                  <div
-                    key={item.id}
-                    className="flex items-center gap-3 p-2.5 rounded-xl bg-[#040B1C]/70 border border-primary/10 hover:border-primary/25 transition-all"
-                  >
-                    {/* Thumbnail */}
-                    <div className="w-16 h-11 flex-shrink-0">
-                      <MediaThumbnail
-                        src={item.thumbnail}
-                        duration={item.duration}
-                        aspectRatio="aspect-video"
-                      />
-                    </div>
-
-                    {/* Metadata & Progress */}
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center justify-between gap-1">
-                        <span className="text-xs font-bold text-white truncate block">
-                          {item.title}
-                        </span>
+                  return (
+                    <div
+                      key={item.id}
+                      className="flex items-center gap-3 p-2.5 rounded-xl bg-[#040B1C]/70 border border-primary/10 hover:border-primary/25 transition-all"
+                    >
+                      {/* Thumbnail */}
+                      <div className="w-16 h-11 flex-shrink-0">
+                        <MediaThumbnail
+                          src={item.thumbnail}
+                          duration={item.duration}
+                          aspectRatio="aspect-video"
+                        />
                       </div>
 
-                      <div className="text-[10px] text-text-muted mt-0.5">
-                        {item.format} • {item.quality} • {item.fileSize || item.size}
+                      {/* Metadata & Progress */}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center justify-between gap-1">
+                          <span className="text-xs font-bold text-white truncate block">
+                            {item.title}
+                          </span>
+                        </div>
+
+                        <div className="text-[10px] text-text-muted mt-0.5">
+                          {item.format} • {item.quality} • {item.fileSize || item.size}
+                        </div>
+
+                        {/* Downloading state: active progress bar */}
+                        {isDownloading && (
+                          <div className="mt-1.5 flex flex-col gap-1">
+                            <div className="flex items-center justify-between text-[10px]">
+                              <span className="text-[#19D8FF] font-semibold">
+                                {item.statusText || `Downloading... ${item.progress}%`}
+                              </span>
+                              <span className="text-white font-bold">{item.progress}%</span>
+                            </div>
+                            <div className="w-full h-1.5 rounded-full bg-[#0B1C38] overflow-hidden">
+                              <div
+                                className="h-full bg-gradient-to-r from-[#19D8FF] to-[#3388FF] rounded-full transition-all duration-300"
+                                style={{ width: `${item.progress}%` }}
+                              />
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Completed state */}
+                        {isCompleted && (
+                          <div className="mt-1 flex items-center gap-1.5 text-[10px] text-[#00DEA5] font-semibold">
+                            <CheckCircle2 className="w-3 h-3" />
+                            <span>{item.statusText || 'Completed'}</span>
+                          </div>
+                        )}
+
+                        {/* Queued state */}
+                        {isQueued && (
+                          <div className="mt-1 flex items-center gap-1.5 text-[10px] text-blue-400 font-semibold">
+                            <Clock className="w-3 h-3" />
+                            <span>Queued</span>
+                          </div>
+                        )}
+
+                        {/* Failed state */}
+                        {isFailed && (
+                          <div className="mt-1 flex items-center gap-1.5 text-[10px] text-rose-400 font-semibold truncate">
+                            <AlertCircle className="w-3 h-3 flex-shrink-0" />
+                            <span className="truncate">{item.errorMessage || 'Failed'}</span>
+                          </div>
+                        )}
                       </div>
 
-                      {/* Downloading state: active progress bar */}
-                      {isDownloading && (
-                        <div className="mt-1.5 flex flex-col gap-1">
-                          <div className="flex items-center justify-between text-[10px]">
-                            <span className="text-[#19D8FF] font-semibold">
-                              {item.statusText || `Downloading... ${item.progress}%`}
-                            </span>
-                            <span className="text-white font-bold">{item.progress}%</span>
-                          </div>
-                          <div className="w-full h-1.5 rounded-full bg-[#0B1C38] overflow-hidden">
-                            <div
-                              className="h-full bg-gradient-to-r from-[#19D8FF] to-[#3388FF] rounded-full"
-                              style={{ width: `${item.progress}%` }}
-                            />
-                          </div>
-                        </div>
-                      )}
+                      {/* Quick Action Button (Disabled pending Step 05.11 implementation) */}
+                      <div className="flex items-center gap-1 flex-shrink-0">
+                        {isDownloading && (
+                          <button
+                            type="button"
+                            disabled
+                            className="w-8 h-8 rounded-lg bg-surface flex items-center justify-center text-text-muted/40 border border-primary/10 cursor-not-allowed"
+                            title="Pause control will be connected in Step 05.11"
+                          >
+                            <Pause className="w-3.5 h-3.5" />
+                          </button>
+                        )}
 
-                      {/* Completed state */}
-                      {item.status === 'completed' && (
-                        <div className="mt-1 flex items-center gap-1.5 text-[10px] text-[#00DEA5] font-semibold">
-                          <CheckCircle2 className="w-3 h-3" />
-                          <span>{item.statusText || 'Completed'}</span>
-                        </div>
-                      )}
+                        {isQueued && (
+                          <button
+                            type="button"
+                            disabled
+                            className="w-8 h-8 rounded-lg bg-surface flex items-center justify-center text-text-muted/40 border border-primary/10 cursor-not-allowed"
+                            title="Start queue control will be connected in Step 05.11"
+                          >
+                            <Play className="w-3.5 h-3.5 ml-0.5" />
+                          </button>
+                        )}
 
-                      {/* Paused state */}
-                      {isPaused && (
-                        <div className="mt-1 flex items-center gap-1.5 text-[10px] text-purple-400 font-semibold">
-                          <Clock className="w-3 h-3" />
-                          <span>{item.statusText || 'Paused'}</span>
-                        </div>
-                      )}
+                        {isCompleted && (
+                          <button
+                            type="button"
+                            disabled
+                            className="w-8 h-8 rounded-lg bg-surface flex items-center justify-center text-text-muted/40 border border-primary/10 cursor-not-allowed"
+                            title="Open folder will be connected in Step 05.11"
+                          >
+                            <FolderOpen className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+
+                        <button
+                          type="button"
+                          disabled
+                          className="w-7 h-8 flex items-center justify-center text-text-muted/30 cursor-not-allowed"
+                          title="Actions menu will be connected in Step 05.11"
+                        >
+                          <MoreVertical className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     </div>
-
-                    {/* Quick Action Button */}
-                    <div className="flex items-center gap-1 flex-shrink-0">
-                      {isDownloading && (
-                        <button
-                          type="button"
-                          className="w-8 h-8 rounded-lg bg-surface flex items-center justify-center text-text-muted hover:text-white border border-primary/10 cursor-pointer"
-                          title="Pause"
-                        >
-                          <Pause className="w-3.5 h-3.5" />
-                        </button>
-                      )}
-
-                      {isPaused && (
-                        <button
-                          type="button"
-                          className="w-8 h-8 rounded-lg bg-surface flex items-center justify-center text-text-muted hover:text-white border border-primary/10 cursor-pointer"
-                          title="Resume"
-                        >
-                          <Play className="w-3.5 h-3.5 ml-0.5" />
-                        </button>
-                      )}
-
-                      {item.status === 'completed' && (
-                        <button
-                          type="button"
-                          className="w-8 h-8 rounded-lg bg-surface flex items-center justify-center text-text-muted hover:text-white border border-primary/10 cursor-pointer"
-                          title="Open Folder"
-                        >
-                          <FolderOpen className="w-3.5 h-3.5" />
-                        </button>
-                      )}
-
-                      <button
-                        type="button"
-                        className="w-7 h-8 flex items-center justify-center text-text-muted/60 hover:text-white cursor-pointer"
-                      >
-                        <MoreVertical className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  </div>
-                )
-              })}
+                  )
+                })
+              )}
             </div>
           </div>
 

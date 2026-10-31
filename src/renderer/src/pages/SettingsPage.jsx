@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import {
   Settings as SettingsIcon,
   Download,
@@ -11,10 +11,12 @@ import {
   Info,
   Folder,
   HardDrive,
-  Check
+  Check,
+  AlertCircle
 } from 'lucide-react'
 import ToggleSwitch from '../components/ui/ToggleSwitch'
 import { SETTINGS_SECTIONS, SETTINGS_STORAGE_INFO } from '../data/uiPreviewData'
+import { chooseDownloadFolder, getDownloadFolder } from '../services/api'
 
 /**
  * Settings Page
@@ -34,8 +36,51 @@ export default function SettingsPage() {
   const [showNotifications, setShowNotifications] = useState(true)
   const [checkForUpdates, setCheckForUpdates] = useState(true)
 
-  // Download Folder & Options demonstration state
-  const [downloadFolder, setDownloadFolder] = useState('C:\\Users\\YourName\\Downloads\\MultiMedia')
+  // Download Folder state connected to SQLite settings via Electron IPC (Step 05.08)
+  const [downloadFolder, setDownloadFolder] = useState('')
+  const [isLoadingFolder, setIsLoadingFolder] = useState(true)
+  const [folderError, setFolderError] = useState(null)
+
+  useEffect(() => {
+    let isMounted = true
+
+    async function loadSavedFolder() {
+      try {
+        const folder = await getDownloadFolder()
+        if (isMounted && folder) {
+          setDownloadFolder(folder)
+          setFolderError(null)
+        }
+      } catch (err) {
+        if (isMounted) {
+          setFolderError(err?.message || 'Unable to retrieve saved download folder.')
+        }
+      } finally {
+        if (isMounted) {
+          setIsLoadingFolder(false)
+        }
+      }
+    }
+
+    loadSavedFolder()
+
+    return () => {
+      isMounted = false
+    }
+  }, [])
+
+  const handleChooseFolder = async () => {
+    setFolderError(null)
+    try {
+      const selected = await chooseDownloadFolder()
+      if (selected) {
+        setDownloadFolder(selected)
+      }
+    } catch (err) {
+      setFolderError(err?.message || 'Failed to update download folder.')
+    }
+  }
+
   const [folderOptions, setFolderOptions] = useState({
     subfolderPerPlatform: true,
     subfolderPerVideo: true,
@@ -241,20 +286,34 @@ export default function SettingsPage() {
                   </div>
 
                   {/* Folder Path Input & Change Button */}
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="text"
-                      value={downloadFolder}
-                      onChange={(e) => setDownloadFolder(e.target.value)}
-                      className="flex-1 bg-[#040B1C] border border-primary/20 rounded-xl py-2 px-3 text-xs text-text-muted font-mono focus:outline-none focus:border-primary"
-                    />
-                    <button
-                      type="button"
-                      title="Folder chooser will be connected in Step 05.12"
-                      className="px-4 py-2 rounded-xl text-xs font-bold bg-gradient-to-r from-[#19D8FF] to-[#3388FF] text-white shadow-[0_0_12px_rgba(25,216,255,0.3)] hover:shadow-[0_0_18px_rgba(25,216,255,0.45)] transition-all cursor-pointer flex-shrink-0"
-                    >
-                      Change
-                    </button>
+                  <div className="flex flex-col gap-2">
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="text"
+                        readOnly
+                        value={isLoadingFolder ? 'Loading saved folder...' : downloadFolder}
+                        placeholder="Choose download folder..."
+                        className="flex-1 bg-[#040B1C] border border-primary/20 rounded-xl py-2 px-3 text-xs text-text-muted font-mono focus:outline-none focus:border-primary select-text"
+                      />
+                      <button
+                        type="button"
+                        onClick={handleChooseFolder}
+                        title="Choose destination directory"
+                        className="px-4 py-2 rounded-xl text-xs font-bold bg-gradient-to-r from-[#19D8FF] to-[#3388FF] text-white shadow-[0_0_12px_rgba(25,216,255,0.3)] hover:shadow-[0_0_18px_rgba(25,216,255,0.45)] transition-all cursor-pointer flex-shrink-0"
+                      >
+                        Change
+                      </button>
+                    </div>
+
+                    {folderError && (
+                      <div
+                        role="alert"
+                        className="flex items-center gap-2 text-xs text-rose-400 bg-rose-500/10 border border-rose-500/20 px-3 py-2 rounded-xl animate-fadeIn"
+                      >
+                        <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                        <span>{folderError}</span>
+                      </div>
+                    )}
                   </div>
 
                   {/* Folder Options Checkboxes */}

@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect, useRef } from 'react'
 import {
   Search,
   SlidersHorizontal,
@@ -9,14 +9,16 @@ import {
   Pause,
   Play,
   Square,
-  Trash2
+  Trash2,
+  Download
 } from 'lucide-react'
 import StatCard from '../components/ui/StatCard'
 import FilterTabs from '../components/ui/FilterTabs'
 import MediaThumbnail from '../components/ui/MediaThumbnail'
 import PlatformBadge from '../components/ui/PlatformBadge'
 import StatusBadge from '../components/ui/StatusBadge'
-import { DOWNLOADS_MANAGER_LIST } from '../data/uiPreviewData'
+import { listDownloads } from '../services/downloadsApi'
+import { normalizeDownloadJob } from '../utils/downloadPresentation'
 
 /**
  * Cleanly extracts secondary contextual subtitle from statusText without duplicating
@@ -41,35 +43,92 @@ function getStatusSubtitle(statusText, status) {
 export default function DownloadsPage() {
   const [activeTab, setActiveTab] = useState('all')
   const [searchQuery, setSearchQuery] = useState('')
-  const [downloadsList, setDownloadsList] = useState(DOWNLOADS_MANAGER_LIST)
+  const [downloadsList, setDownloadsList] = useState([])
+  const [isLoading, setIsLoading] = useState(true)
 
-  // Problem 07: Dynamically calculate counts directly from the in-memory preview list
-  const downloadingCount = downloadsList.filter(
-    (item) => item.status === 'downloading' || item.status === 'finalizing'
-  ).length
+  const speedTrackerRef = useRef(new Map())
+  const isPollingRef = useRef(false)
+  const hasActiveRef = useRef(false)
+
+  // Step 05.10: Controlled live polling using secure IPC bridge (listDownloads)
+  useEffect(() => {
+    let isMounted = true
+    let timerId = null
+
+    async function fetchJobs() {
+      if (isPollingRef.current) return
+      isPollingRef.current = true
+
+      try {
+        const response = await listDownloads({ limit: 50 })
+        if (
+          isMounted &&
+          response.ok &&
+          response.data?.success &&
+          Array.isArray(response.data.data)
+        ) {
+          const normalized = response.data.data
+            .map((job) => normalizeDownloadJob(job, speedTrackerRef.current))
+            .filter(Boolean)
+          hasActiveRef.current = normalized.some(
+            (item) => item.status === 'downloading' || item.status === 'queued'
+          )
+          setDownloadsList(normalized)
+        }
+      } catch (err) {
+        console.warn('Downloads polling error:', err)
+      } finally {
+        isPollingRef.current = false
+        if (isMounted) {
+          setIsLoading(false)
+        }
+      }
+    }
+
+    // Initial immediate fetch
+    fetchJobs()
+
+    // Dynamic adaptive interval: 2s when active jobs exist, 8s when idle
+    function scheduleNext() {
+      const interval = hasActiveRef.current ? 2000 : 8000
+      timerId = setTimeout(async () => {
+        if (isMounted) {
+          await fetchJobs()
+          scheduleNext()
+        }
+      }, interval)
+    }
+
+    scheduleNext()
+
+    return () => {
+      isMounted = false
+      if (timerId) clearTimeout(timerId)
+    }
+  }, [])
+
+  // Dynamically calculate counts directly from real SQLite-backed records
+  const downloadingCount = downloadsList.filter((item) => item.status === 'downloading').length
   const queuedCount = downloadsList.filter((item) => item.status === 'queued').length
   const completedCount = downloadsList.filter((item) => item.status === 'completed').length
-  const failedCount = downloadsList.filter((item) => item.status === 'failed').length
+  const failedCount = downloadsList.filter(
+    (item) => item.status === 'failed' || item.status === 'cancelled'
+  ).length
   const totalCount = downloadsList.length
 
   // Filter items based on active tab and search query
   const filteredItems = useMemo(() => {
     return downloadsList.filter((item) => {
-      // Tab filter (treat finalizing as part of active downloading group)
-      if (
-        activeTab === 'downloading' &&
-        item.status !== 'downloading' &&
-        item.status !== 'finalizing'
-      )
-        return false
+      if (activeTab === 'downloading' && item.status !== 'downloading') return false
       if (activeTab === 'queued' && item.status !== 'queued') return false
       if (activeTab === 'completed' && item.status !== 'completed') return false
-      if (activeTab === 'failed' && item.status !== 'failed') return false
+      if (activeTab === 'failed' && item.status !== 'failed' && item.status !== 'cancelled')
+        return false
 
       // Search query filter
       if (searchQuery.trim() !== '') {
         const query = searchQuery.toLowerCase()
-        const matchesTitle = item.title.toLowerCase().includes(query)
+        const matchesTitle = (item.title || '').toLowerCase().includes(query)
         const matchesPlatform = (item.platform || '').toLowerCase().includes(query)
         return matchesTitle || matchesPlatform
       }
@@ -78,8 +137,9 @@ export default function DownloadsPage() {
     })
   }, [downloadsList, activeTab, searchQuery])
 
-  // Clear completed items and update counts consistently
+  // Clear completed items notice (Destructive history actions belong to Step 05.12)
   const handleClearCompleted = () => {
+    // Retain UI responsiveness while awaiting Step 05.12 history delete API integration
     setDownloadsList((prev) => prev.filter((item) => item.status !== 'completed'))
   }
 
@@ -100,9 +160,6 @@ export default function DownloadsPage() {
             <h1 className="text-3xl lg:text-4xl font-extrabold text-white tracking-tight">
               Downloads Manager
             </h1>
-            <span className="text-[10px] font-bold tracking-wider px-2 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20 uppercase">
-              Preview
-            </span>
           </div>
           <p className="text-sm text-text-muted mt-1 font-medium">
             Manage your active, queued and completed downloads
@@ -210,7 +267,6 @@ export default function DownloadsPage() {
             <tbody className="divide-y divide-primary/10 text-xs">
               {filteredItems.map((item, idx) => {
                 const isDownloading = item.status === 'downloading'
-                const isFinalizing = item.status === 'finalizing'
                 const isQueued = item.status === 'queued'
 
                 return (
@@ -262,7 +318,7 @@ export default function DownloadsPage() {
                       </span>
                     </td>
 
-                    {/* Progress Bar & Numerical Metrics (Problem 01: bound to item.progressText) */}
+                    {/* Progress Bar & Numerical Metrics */}
                     <td className="py-3.5 px-4">
                       <div className="flex flex-col gap-1.5">
                         <div className="flex items-center justify-between text-[11px]">
@@ -276,7 +332,7 @@ export default function DownloadsPage() {
                         <div className="w-full h-2 rounded-full bg-[#040B1C] overflow-hidden border border-primary/10">
                           <div
                             className={`h-full rounded-full transition-all duration-300 ${
-                              isDownloading || isFinalizing
+                              isDownloading
                                 ? 'bg-gradient-to-r from-[#19D8FF] to-[#3388FF]'
                                 : 'bg-primary/20'
                             }`}
@@ -286,7 +342,7 @@ export default function DownloadsPage() {
                       </div>
                     </td>
 
-                    {/* Status Column with animated spinner, gear, or hourglass (Problem 01: Clean subtitle) */}
+                    {/* Status Column with animated spinner, gear, or hourglass */}
                     <td className="py-3.5 px-4">
                       <StatusBadge
                         status={item.status}
@@ -294,15 +350,16 @@ export default function DownloadsPage() {
                       />
                     </td>
 
-                    {/* Action Buttons (Pause / Resume / Cancel) */}
+                    {/* Action Buttons (Disabled pending Step 05.11 implementation) */}
                     <td className="py-3.5 px-4">
                       <div className="flex items-center justify-center gap-2">
                         {/* Play/Pause Button */}
                         {isDownloading && (
                           <button
                             type="button"
-                            className="w-8 h-8 rounded-lg bg-[#040B1C] hover:bg-[#102449] border border-primary/20 flex items-center justify-center text-text-muted hover:text-white transition-all cursor-pointer"
-                            title="Pause"
+                            disabled
+                            className="w-8 h-8 rounded-lg bg-[#040B1C]/50 border border-primary/10 flex items-center justify-center text-text-muted/40 cursor-not-allowed"
+                            title="Pause control will be connected in Step 05.11"
                           >
                             <Pause className="w-3.5 h-3.5" />
                           </button>
@@ -311,33 +368,20 @@ export default function DownloadsPage() {
                         {isQueued && (
                           <button
                             type="button"
-                            className="w-8 h-8 rounded-lg bg-[#040B1C] hover:bg-[#102449] border border-primary/20 flex items-center justify-center text-text-muted hover:text-white transition-all cursor-pointer"
-                            title="Start Download"
-                          >
-                            <Play className="w-3.5 h-3.5 ml-0.5" />
-                          </button>
-                        )}
-
-                        {isFinalizing && (
-                          <button
                             disabled
                             className="w-8 h-8 rounded-lg bg-[#040B1C]/50 border border-primary/10 flex items-center justify-center text-text-muted/40 cursor-not-allowed"
-                            title="Finalizing (Cannot pause)"
+                            title="Start queue control will be connected in Step 05.11"
                           >
-                            <Pause className="w-3.5 h-3.5" />
+                            <Play className="w-3.5 h-3.5 ml-0.5" />
                           </button>
                         )}
 
                         {/* Cancel / Stop Button */}
                         <button
                           type="button"
-                          disabled={isFinalizing}
-                          className={`w-8 h-8 rounded-lg border flex items-center justify-center transition-all ${
-                            isFinalizing
-                              ? 'bg-[#040B1C]/50 border-primary/10 text-text-muted/40 cursor-not-allowed'
-                              : 'bg-[#040B1C] hover:bg-red-500/20 border-red-500/30 text-red-400 hover:text-red-300 cursor-pointer'
-                          }`}
-                          title="Cancel Download"
+                          disabled
+                          className="w-8 h-8 rounded-lg border bg-[#040B1C]/50 border-primary/10 text-text-muted/40 flex items-center justify-center cursor-not-allowed"
+                          title="Cancel download will be connected in Step 05.11"
                         >
                           <Square className="w-3 h-3 fill-current" />
                         </button>
@@ -347,13 +391,27 @@ export default function DownloadsPage() {
                 )
               })}
 
-              {filteredItems.length === 0 && (
+              {downloadsList.length === 0 ? (
+                <tr>
+                  <td colSpan={7} className="py-16 text-center text-text-muted">
+                    <div className="flex flex-col items-center justify-center gap-2 select-none">
+                      <Download className="w-8 h-8 text-text-muted/40" />
+                      <span className="text-sm font-semibold text-white">No downloads found</span>
+                      <span className="text-xs text-text-muted">
+                        {isLoading
+                          ? 'Loading active and completed downloads...'
+                          : 'Start downloading videos or audio from the Downloader page.'}
+                      </span>
+                    </div>
+                  </td>
+                </tr>
+              ) : filteredItems.length === 0 ? (
                 <tr>
                   <td colSpan={7} className="py-12 text-center text-text-muted">
                     No downloads match the current filter.
                   </td>
                 </tr>
-              )}
+              ) : null}
             </tbody>
           </table>
         </div>
