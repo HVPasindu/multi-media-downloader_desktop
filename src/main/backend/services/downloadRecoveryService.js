@@ -46,7 +46,7 @@ export async function recoverInterruptedDownloadJobs(options = {}) {
   const isOnline =
     typeof options?.isOnline === 'boolean'
       ? options.isOnline
-      : await checkNetworkConnectivity({ timeoutMs: 2000 })
+      : await checkNetworkConnectivity({ timeoutMs: 4000 })
 
   // 1. Resolve configured download folder for verifying partial files
   let downloadPath = null
@@ -90,35 +90,42 @@ export async function recoverInterruptedDownloadJobs(options = {}) {
 
     // Handle offline startup
     if (!isOnline) {
-      if (job.status === 'downloading') {
-        let hasValidPartial = false
-        if (downloadPath) {
-          try {
-            const partialResult = await verifyJobPartialDownload(job.id, downloadPath, {
-              savedDownloadedBytes: job.downloaded_bytes,
-              savedProgress: job.progress
-            })
-            hasValidPartial = Boolean(partialResult.isValid && !partialResult.isUnsafe)
-          } catch {
-            hasValidPartial = false
+      let hasValidPartial = false
+      let reconciledBytes = job.downloaded_bytes || 0
+
+      if (downloadPath) {
+        try {
+          const partialResult = await verifyJobPartialDownload(job.id, downloadPath, {
+            savedDownloadedBytes: job.downloaded_bytes,
+            savedProgress: job.progress
+          })
+          hasValidPartial = Boolean(partialResult.isValid && !partialResult.isUnsafe)
+          if (hasValidPartial && partialResult.reconciledBytes > 0) {
+            reconciledBytes = partialResult.reconciledBytes
           }
+        } catch {
+          hasValidPartial = false
         }
+      }
 
-        const updatePayload = {
-          status: 'interrupted',
-          error_message: 'Internet connection is unavailable. Waiting for network connection...'
-        }
-        if (!hasValidPartial) {
-          updatePayload.progress = 0
-          updatePayload.downloaded_bytes = 0
-        }
+      const updatePayload = {
+        status: 'interrupted',
+        error_message: 'Internet connection is unavailable. Waiting for network connection...'
+      }
+      if (hasValidPartial) {
+        updatePayload.downloaded_bytes = reconciledBytes
+      } else {
+        updatePayload.progress = 0
+        updatePayload.downloaded_bytes = 0
+      }
 
-        await job.update(updatePayload)
-        recoveredDownloadsCount++
-      } else if (job.status === 'interrupted') {
-        recoveredDownloadsCount++
-      } else if (job.status === 'queued') {
+      const originalStatus = job.status
+      await job.update(updatePayload)
+
+      if (originalStatus === 'queued') {
         recoveredQueuedCount++
+      } else {
+        recoveredDownloadsCount++
       }
       continue
     }

@@ -11,6 +11,7 @@ export const TERMINAL_JOB_STATUSES = Object.freeze(['completed', 'failed', 'canc
 export const VALID_JOB_STATUSES = Object.freeze([
   'queued',
   'downloading',
+  'interrupted',
   'completed',
   'failed',
   'cancelled'

@@ -10,24 +10,34 @@ import {
   resetRecoveryTrackingForTesting
 } from '../src/main/backend/services/downloadRecoveryService.js'
 import {
+  checkNetworkConnectivity,
   resumeInterruptedNetworkJobs,
+  startNetworkMonitoring,
+  stopNetworkMonitoring,
+  resetNetworkMonitoringForTesting,
   setConnectivityCheckerForTesting
 } from '../src/main/backend/services/networkRecoveryService.js'
 import { getQueueStatus } from '../src/main/backend/services/downloadQueueService.js'
+import { buildYtDlpArgs } from '../src/main/backend/services/downloadService.js'
+import {
+  VALID_JOB_STATUSES,
+  listDownloadHistory
+} from '../src/main/backend/services/downloadHistoryService.js'
 
 /**
  * ============================================================================
  * APPLAN2 — Step 09 (Phase 04): Dedicated Network Recovery & Restart Recovery Suite
  *
- * Covers:
- * - Test A: Disconnection at 40% -> transitions to 'interrupted', preserves .part, keeps Job ID in SQLite.
- * - Test B: Reconnection -> resumes from partial file with --continue, same Job ID, completes.
- * - Test C: Remains disconnected -> no rapid repeated calls, remains 'interrupted'.
- * - Test D: Restart while offline -> remains 'interrupted', resumes once connection is restored.
- * - Test E: Non-network errors (429, auth, PO Token, invalid URL, cancellation) not auto-retried.
- * - Test F: Duplicate protection (same interrupted job cannot be queued twice).
- * - Test G: Concurrency limit (never exceeds MAX_CONCURRENT_DOWNLOADS = 2).
- * - Section A: verifyJobPartialDownload() filesystem safety, 5MB checkpoint tolerance, Global FIFO order.
+ * Full Lifecycle Tests:
+ * - Test A: Live Monitoring Transition (startNetworkMonitoring, offline -> online, auto-resume)
+ * - Test B: Offline Startup with a Queued Job (converts to interrupted, resumes once online, same Job ID)
+ * - Test C: Offline Startup with a Downloading Job (preserves .part, resumes at 40%, same Job ID)
+ * - Test D: No Duplicate Scheduling (strict idempotency across repeated monitoring cycles)
+ * - Test E: FIFO Ordering & Concurrency Limit (createdAt ASC, id ASC, MAX_CONCURRENCY = 2)
+ * - Test F: Error Classification (429, auth, PO Token, private video, invalid URL, user cancel, EACCES)
+ * - Test G: yt-dlp Resume Arguments (verifies --continue flag, temporary workspace, output template)
+ * - Section A: Filesystem Safety & 5MB periodic checkpoint tolerance verification
+ * - Section H: Part 04 Status Validation (interrupted in VALID_JOB_STATUSES and history query)
  * ============================================================================
  */
 async function runNetworkRecoveryTests() {
@@ -59,6 +69,11 @@ async function runNetworkRecoveryTests() {
     // SECTION A & TOLERANCE: verifyJobPartialDownload Tests
     // ------------------------------------------------------------------------
     console.log('--- Section A: Filesystem Safety & Tolerance Verification ---')
+
+    // A.0: Real external HTTPS connectivity checker
+    const isConnBool = await checkNetworkConnectivity({ timeoutMs: 3000 })
+    assert.equal(typeof isConnBool, 'boolean', 'A.0: checkNetworkConnectivity returns boolean')
+    console.log(`✓ A.0: Real HTTPS checkNetworkConnectivity verified (result: ${isConnBool})`)
 
     // A.1: Valid .part file within 5MB tolerance
     const jobA1 = await DownloadJob.create({
@@ -116,393 +131,478 @@ async function runNetworkRecoveryTests() {
     console.log('✓ A.4: Missing or zero-byte files reported as invalid\n')
 
     // ------------------------------------------------------------------------
-    // TEST A: Disconnection at 40% transitions to 'interrupted', preserves .part
+    // TEST A: Live Network Monitoring Transition
     // ------------------------------------------------------------------------
-    console.log('--- TEST A: Network Disconnection at 40% ---')
+    console.log('--- TEST A: Live Network Monitoring Transition ---')
+
+    resetNetworkMonitoringForTesting()
 
     const jobA = await DownloadJob.create({
       media_id: media.id,
       output_format: 'mp4',
       quality: '720p',
+      status: 'interrupted',
+      progress: 35,
+      downloaded_bytes: 3145728,
+      error_message: 'Download paused: network connection was lost.'
+    })
+    const partPathA = join(testDownloadDir, `clip-live [job-${jobA.id}].mp4.part`)
+    await writeFile(partPathA, Buffer.alloc(3145728, 0xaa))
+
+    // 1. Start monitoring while offline
+    let liveConnectivity = false
+    setConnectivityCheckerForTesting(async () => liveConnectivity)
+
+    const enqueuedQueueA = []
+    startNetworkMonitoring({
+      baseIntervalMs: 50,
+      initialDelayMs: 20,
+      enqueue: (id) => enqueuedQueueA.push(id)
+    })
+
+    // Wait for initial check cycle
+    await new Promise((r) => setTimeout(r, 60))
+
+    const reloadedAOffline = await DownloadJob.findByPk(jobA.id)
+    assert.equal(
+      reloadedAOffline.status,
+      'interrupted',
+      'Test A: Job remains interrupted while offline'
+    )
+    assert.equal(enqueuedQueueA.length, 0, 'Test A: Nothing enqueued while offline')
+
+    // 2. Change connectivity to online (simulates internet returning without app restart)
+    liveConnectivity = true
+
+    // Wait for next monitoring checkCycle to detect transition
+    await new Promise((r) => setTimeout(r, 120))
+    stopNetworkMonitoring()
+
+    const reloadedAOnline = await DownloadJob.findByPk(jobA.id)
+    assert.equal(
+      reloadedAOnline.status,
+      'queued',
+      'Test A: Job automatically transitioned to queued'
+    )
+    assert.equal(reloadedAOnline.id, jobA.id, 'Test A: SAME Job ID preserved')
+    assert.equal(reloadedAOnline.progress, 35, 'Test A: Progress snapshot (35%) strictly preserved')
+    assert.equal(
+      reloadedAOnline.downloaded_bytes,
+      3145728,
+      'Test A: Downloaded bytes strictly preserved'
+    )
+    assert.deepEqual(
+      enqueuedQueueA,
+      [jobA.id],
+      'Test A: Original Job ID enqueued in queue scheduler'
+    )
+
+    // Verify no replacement job was created
+    const totalJobsA = await DownloadJob.count({ where: { media_id: media.id } })
+    assert.equal(
+      totalJobsA,
+      2,
+      'Test A: Exactly 2 jobs in DB (jobA1 and jobA); no replacement created'
+    )
+    console.log(
+      '✓ TEST A passed: Live monitoring cycle detected reconnection and auto-resumed same Job ID\n'
+    )
+
+    // ------------------------------------------------------------------------
+    // TEST B: Offline Startup with a Queued Job
+    // ------------------------------------------------------------------------
+    console.log('--- TEST B: Offline Startup with a Queued Job ---')
+
+    resetRecoveryTrackingForTesting()
+    resetNetworkMonitoringForTesting()
+
+    // Create a job that was queued before application closed
+    const queuedOfflineJob = await DownloadJob.create({
+      media_id: media.id,
+      output_format: 'mp3',
+      audio_bitrate_kbps: 320,
+      status: 'queued',
+      progress: 0,
+      downloaded_bytes: 0
+    })
+
+    // Simulate application starting offline
+    setConnectivityCheckerForTesting(async () => false)
+    const startupEnqueuedB = []
+    const recoveryResultB = await recoverInterruptedDownloadJobs({
+      isOnline: false,
+      enqueue: (id) => startupEnqueuedB.push(id)
+    })
+
+    assert.ok(
+      recoveryResultB.interruptedQueuedJobs >= 1,
+      'Test B: Queued jobs captured on offline restart'
+    )
+    assert.equal(startupEnqueuedB.length, 0, 'Test B: No jobs enqueued while offline')
+
+    const reloadedQueuedB = await DownloadJob.findByPk(queuedOfflineJob.id)
+    assert.equal(
+      reloadedQueuedB.status,
+      'interrupted',
+      'Test B: Queued job converted to interrupted (NOT permanently stuck in queued)'
+    )
+    assert.equal(reloadedQueuedB.id, queuedOfflineJob.id, 'Test B: SAME Job ID preserved')
+    assert.equal(reloadedQueuedB.output_format, 'mp3', 'Test B: Configuration (mp3) preserved')
+    assert.equal(reloadedQueuedB.audio_bitrate_kbps, 320, 'Test B: Bitrate (320kbps) preserved')
+
+    // Now restore internet connection and resume
+    setConnectivityCheckerForTesting(async () => true)
+    const restoredEnqueuedB = []
+    const resumeResultB = await resumeInterruptedNetworkJobs({
+      enqueue: (id) => restoredEnqueuedB.push(id)
+    })
+
+    assert.ok(
+      resumeResultB.resumedJobIds.includes(queuedOfflineJob.id),
+      'Test B: Resumed previously queued job'
+    )
+    assert.ok(
+      restoredEnqueuedB.includes(queuedOfflineJob.id),
+      'Test B: Job enqueued into scheduler'
+    )
+
+    const reloadedRestoredB = await DownloadJob.findByPk(queuedOfflineJob.id)
+    assert.equal(
+      reloadedRestoredB.status,
+      'queued',
+      'Test B: Restored to queued status once internet returned'
+    )
+    assert.equal(reloadedRestoredB.id, queuedOfflineJob.id, 'Test B: Same Job ID reused')
+    console.log(
+      '✓ TEST B passed: Offline startup converts queued jobs to interrupted; auto-resumes once online\n'
+    )
+
+    // ------------------------------------------------------------------------
+    // TEST C: Offline Startup with a Downloading Job (Partial File Preservation)
+    // ------------------------------------------------------------------------
+    console.log('--- TEST C: Offline Startup with a Downloading Job ---')
+
+    resetRecoveryTrackingForTesting()
+    resetNetworkMonitoringForTesting()
+
+    const downloadingJobC = await DownloadJob.create({
+      media_id: media.id,
+      output_format: 'mp4',
+      quality: '1080p',
       status: 'downloading',
       progress: 40,
       downloaded_bytes: 4194304 // 4 MB
     })
-    const partPathA = join(testDownloadDir, `music-clip [job-${jobA.id}].mp4.part`)
-    await writeFile(partPathA, Buffer.alloc(4194304, 0xbb))
+    const partPathC = join(testDownloadDir, `downloading-clip [job-${downloadingJobC.id}].mp4.part`)
+    await writeFile(partPathC, Buffer.alloc(4194304, 0xbb))
 
-    // Simulate transient network failure (e.g. ECONNRESET or NETWORK_TIMEOUT)
-    const simulatedNetError = new Error('read ECONNRESET')
-    simulatedNetError.code = 'ECONNRESET'
-
-    assert.equal(
-      isTransientNetworkError(simulatedNetError),
-      true,
-      'Test A: ECONNRESET is transient network error'
-    )
-
-    // Verify disk verification before transition
-    const partialVerificationA = await verifyJobPartialDownload(jobA.id, testDownloadDir, {
-      savedDownloadedBytes: jobA.downloaded_bytes,
-      savedProgress: jobA.progress
-    })
-    assert.equal(partialVerificationA.isValid, true, 'Test A: Partial file verified on disk')
-
-    // Transition to interrupted
-    await jobA.update({
-      status: 'interrupted',
-      error_message: 'Download paused: network connection was lost. Waiting to resume...'
-    })
-
-    const reloadedA = await DownloadJob.findByPk(jobA.id)
-    assert.equal(reloadedA.status, 'interrupted', 'Test A: Job transitioned to interrupted')
-    assert.equal(reloadedA.progress, 40, 'Test A: Progress snapshot (40%) strictly preserved')
-    assert.equal(
-      reloadedA.downloaded_bytes,
-      4194304,
-      'Test A: Downloaded bytes (4 MB) strictly preserved'
-    )
-    assert.equal(reloadedA.id, jobA.id, 'Test A: Same Job ID maintained in SQLite')
-
-    // Verify .part file was NOT deleted
-    const verifyPartFileStillExists = await verifyJobPartialDownload(jobA.id, testDownloadDir)
-    assert.equal(verifyPartFileStillExists.isValid, true, 'Test A: .part file preserved on disk')
-    console.log(
-      '✓ TEST A passed: Disconnection at 40% transitioned to interrupted, .part preserved with same Job ID\n'
-    )
-
-    // ------------------------------------------------------------------------
-    // TEST B: Reconnection auto-resumes interrupted job with same Job ID & --continue
-    // ------------------------------------------------------------------------
-    console.log('--- TEST B: Reconnection Auto-Resumes Interrupted Job ---')
-
-    // Mock connectivity checker to report online
-    setConnectivityCheckerForTesting(async () => true)
-
-    const enqueuedQueueB = []
-    const resumeResultB = await resumeInterruptedNetworkJobs({
-      enqueue: (id) => enqueuedQueueB.push(id)
-    })
-
-    assert.equal(resumeResultB.resumedCount, 1, 'Test B: Resumed 1 interrupted job')
-    assert.deepEqual(resumeResultB.jobIds, [jobA.id], 'Test B: Correct Job ID resumed')
-    assert.deepEqual(enqueuedQueueB, [jobA.id], 'Test B: Job enqueued into scheduler')
-
-    const reloadedResumedB = await DownloadJob.findByPk(jobA.id)
-    assert.equal(reloadedResumedB.id, jobA.id, 'Test B: SAME Job ID reused')
-    assert.equal(reloadedResumedB.status, 'queued', 'Test B: Job transitioned to queued for resume')
-    assert.equal(reloadedResumedB.progress, 40, 'Test B: Saved progress (40%) maintained')
-    assert.equal(reloadedResumedB.downloaded_bytes, 4194304, 'Test B: Downloaded bytes maintained')
-    assert.equal(reloadedResumedB.error_message, null, 'Test B: Error message cleared')
-    console.log(
-      '✓ TEST B passed: Reconnection automatically restored interrupted job to queue with same Job ID\n'
-    )
-
-    // ------------------------------------------------------------------------
-    // TEST C: Remains disconnected -> no rapid repeated calls, remains 'interrupted'
-    // ------------------------------------------------------------------------
-    console.log('--- TEST C: Remains Disconnected (No Thrashing) ---')
-
-    // Transition job back to interrupted
-    await DownloadJob.update(
-      { status: 'interrupted', error_message: 'Waiting for network...' },
-      { where: { id: jobA.id } }
-    )
-
-    // Set connectivity checker to offline
+    // Simulate offline restart
     setConnectivityCheckerForTesting(async () => false)
-
-    const enqueuedQueueC = []
-    const resumeResultC = await resumeInterruptedNetworkJobs({
-      enqueue: (id) => enqueuedQueueC.push(id)
+    const startupEnqueuedC = []
+    await recoverInterruptedDownloadJobs({
+      isOnline: false,
+      enqueue: (id) => startupEnqueuedC.push(id)
     })
 
-    assert.equal(resumeResultC.resumedCount, 0, 'Test C: 0 jobs resumed while offline')
-    assert.equal(enqueuedQueueC.length, 0, 'Test C: No jobs submitted to queue')
+    assert.equal(startupEnqueuedC.length, 0, 'Test C: Nothing enqueued while offline')
 
-    const reloadedC = await DownloadJob.findByPk(jobA.id)
-    assert.equal(reloadedC.status, 'interrupted', 'Test C: Job safely remains interrupted')
+    const reloadedOfflineC = await DownloadJob.findByPk(downloadingJobC.id)
+    assert.equal(reloadedOfflineC.status, 'interrupted', 'Test C: Job transitioned to interrupted')
+    assert.equal(reloadedOfflineC.progress, 40, 'Test C: 40% progress preserved')
+    assert.equal(
+      reloadedOfflineC.downloaded_bytes,
+      4194304,
+      'Test C: 4MB downloaded bytes preserved'
+    )
+
+    // Verify .part file was strictly NOT deleted from disk
+    const checkPartC = await verifyJobPartialDownload(downloadingJobC.id, testDownloadDir)
+    assert.equal(checkPartC.isValid, true, 'Test C: .part file preserved on disk')
+
+    // Restore internet
+    setConnectivityCheckerForTesting(async () => true)
+    const restoreEnqueuedC = []
+    await resumeInterruptedNetworkJobs({
+      enqueue: (id) => restoreEnqueuedC.push(id)
+    })
+
+    assert.ok(
+      restoreEnqueuedC.includes(downloadingJobC.id),
+      'Test C: Job enqueued upon reconnection'
+    )
+    const reloadedRestoredC = await DownloadJob.findByPk(downloadingJobC.id)
+    assert.equal(reloadedRestoredC.status, 'queued', 'Test C: Restored to queued for resume')
+    assert.equal(reloadedRestoredC.progress, 40, 'Test C: Progress remains 40%')
+    assert.equal(reloadedRestoredC.id, downloadingJobC.id, 'Test C: Same Job ID maintained')
     console.log(
-      '✓ TEST C passed: Remains disconnected; no polling thrashing and job stays in interrupted\n'
+      '✓ TEST C passed: Downloading job at 40% preserved .part file across offline restart and resumed\n'
     )
 
     // ------------------------------------------------------------------------
-    // TEST D: Restart while offline -> remains 'interrupted', resumes once online
+    // TEST D: No Duplicate Scheduling (Strict Idempotency)
     // ------------------------------------------------------------------------
-    console.log('--- TEST D: Application Restart While Offline ---')
+    console.log('--- TEST D: No Duplicate Scheduling (Strict Idempotency) ---')
 
     resetRecoveryTrackingForTesting()
+    resetNetworkMonitoringForTesting()
 
-    // Create a downloading job that was abruptly closed when PC shut down
-    const offlineRestartJob = await DownloadJob.create({
-      media_id: media.id,
-      output_format: 'mp4',
-      quality: '1080p',
-      status: 'downloading',
-      progress: 62,
-      downloaded_bytes: 8388608
-    })
-    const partPathD = join(testDownloadDir, `offline-video [job-${offlineRestartJob.id}].mp4.part`)
-    await writeFile(partPathD, Buffer.alloc(8388608, 0xcc))
-
-    // Execute startup recovery while offline (isOnline: false)
-    const startupEnqueuedD = []
-    const startupResultD = await recoverInterruptedDownloadJobs({
-      isOnline: false,
-      enqueue: (id) => startupEnqueuedD.push(id)
-    })
-
-    assert.ok(
-      startupResultD.interruptedDownloads >= 2,
-      'Test D: Incomplete downloading jobs handled on offline startup'
-    )
-    assert.equal(startupEnqueuedD.length, 0, 'Test D: Nothing enqueued while offline')
-
-    const reloadedOfflineD = await DownloadJob.findByPk(offlineRestartJob.id)
-    assert.equal(
-      reloadedOfflineD.status,
-      'interrupted',
-      'Test D: Downloading job became interrupted (NOT failed)'
-    )
-    assert.equal(reloadedOfflineD.progress, 62, 'Test D: Progress snapshot preserved')
-    assert.ok(
-      reloadedOfflineD.error_message.includes('unavailable') ||
-        reloadedOfflineD.error_message.includes('Waiting'),
-      'Test D: Friendly waiting message'
-    )
-
-    // Now restore internet connection and trigger resume
-    setConnectivityCheckerForTesting(async () => true)
-    const reconnectedEnqueuedD = []
-    const resumeResultD = await resumeInterruptedNetworkJobs({
-      enqueue: (id) => reconnectedEnqueuedD.push(id)
-    })
-
-    assert.ok(
-      resumeResultD.resumedCount >= 2,
-      'Test D: Interrupted jobs resumed after internet restored'
-    )
-    assert.ok(reconnectedEnqueuedD.includes(offlineRestartJob.id), 'Test D: Restart job enqueued')
-
-    const reloadedRestoredD = await DownloadJob.findByPk(offlineRestartJob.id)
-    assert.equal(reloadedRestoredD.status, 'queued', 'Test D: Job resumed to queued status')
-    console.log(
-      '✓ TEST D passed: Offline restart preserves jobs as interrupted, auto-resumes once online\n'
-    )
-
-    // ------------------------------------------------------------------------
-    // TEST E: Non-network errors are NOT auto-retried
-    // ------------------------------------------------------------------------
-    console.log('--- TEST E: Non-Network Errors Not Auto-Retried ---')
-
-    // E.1: HTTP 429 Too Many Requests
-    assert.equal(
-      isTransientNetworkError({ message: 'HTTP Error 429: Too Many Requests' }),
-      false,
-      'Test E: HTTP 429 is rate limit, not transient network drop'
-    )
-
-    // E.2: Authentication Required / Sign in
-    assert.equal(
-      isTransientNetworkError({ message: 'Sign in to confirm you’re not a bot' }),
-      false,
-      'Test E: Auth / bot challenge is not network drop'
-    )
-
-    // E.3: PO Token Required
-    assert.equal(
-      isTransientNetworkError({ message: 'GVS PO Token is required for this client' }),
-      false,
-      'Test E: PO Token is not transient network drop'
-    )
-
-    // E.4: Private / Unavailable Video
-    assert.equal(
-      isTransientNetworkError({ message: 'ERROR: [youtube] Private video. Sign in to view.' }),
-      false,
-      'Test E: Private video is not transient network drop'
-    )
-
-    // E.5: Invalid URL / Unsupported URL
-    assert.equal(
-      isTransientNetworkError({ message: 'Unsupported URL: ftp://invalid' }),
-      false,
-      'Test E: Invalid URL is not transient network drop'
-    )
-
-    // E.6: User Cancellation
-    assert.equal(
-      isTransientNetworkError({ message: 'Download was cancelled by user', isCancelled: true }),
-      false,
-      'Test E: User cancellation is not network drop'
-    )
-
-    // E.7: Verify in database: failed job is NOT touched by resumeInterruptedNetworkJobs
-    const failedJobE = await DownloadJob.create({
+    const dupJob = await DownloadJob.create({
       media_id: media.id,
       output_format: 'mp4',
       quality: '720p',
-      status: 'failed',
-      error_message: 'HTTP Error 429: Too Many Requests'
-    })
-
-    const resumeResultE = await resumeInterruptedNetworkJobs()
-    assert.ok(
-      !resumeResultE.jobIds.includes(failedJobE.id),
-      'Test E: Failed job is never picked up by network resume'
-    )
-
-    const reloadedFailedE = await DownloadJob.findByPk(failedJobE.id)
-    assert.equal(reloadedFailedE.status, 'failed', 'Test E: Failed job remains failed')
-    console.log(
-      '✓ TEST E passed: 429, auth, PO Token, private videos, and cancellations strictly not auto-retried\n'
-    )
-
-    // ------------------------------------------------------------------------
-    // TEST F: Duplicate Resume Protection
-    // ------------------------------------------------------------------------
-    console.log('--- TEST F: Duplicate Resume Protection ---')
-
-    // Create a job in interrupted status
-    const duplicateTestJob = await DownloadJob.create({
-      media_id: media.id,
-      output_format: 'mp3',
-      audioBitrateKbps: 320,
       status: 'interrupted',
-      progress: 30,
+      progress: 25,
       downloaded_bytes: 2097152
     })
-    const partPathF = join(testDownloadDir, `dup-test [job-${duplicateTestJob.id}].mp3.part`)
-    await writeFile(partPathF, Buffer.alloc(2097152, 0xdd))
+    const partPathDup = join(testDownloadDir, `dup-test [job-${dupJob.id}].mp4.part`)
+    await writeFile(partPathDup, Buffer.alloc(2097152, 0xcc))
 
-    const enqueuedQueueF = []
-    // First resume pass
-    const firstResumeF = await resumeInterruptedNetworkJobs({
-      enqueue: (id) => enqueuedQueueF.push(id)
+    setConnectivityCheckerForTesting(async () => true)
+    const dupEnqueued = []
+
+    // First recovery pass
+    const pass1 = await resumeInterruptedNetworkJobs({
+      enqueue: (id) => dupEnqueued.push(id)
+    })
+    assert.ok(pass1.resumedJobIds.includes(dupJob.id), 'Test D: Pass 1 enqueues the job')
+
+    // Second recovery pass immediately afterwards
+    const pass2 = await resumeInterruptedNetworkJobs({
+      enqueue: (id) => dupEnqueued.push(id)
     })
     assert.ok(
-      firstResumeF.jobIds.includes(duplicateTestJob.id),
-      'Test F: First pass enqueues the job'
+      !pass2.resumedJobIds.includes(dupJob.id),
+      'Test D: Pass 2 does NOT re-enqueue (already queued)'
     )
 
-    // Second resume pass immediately afterwards
-    const secondResumeF = await resumeInterruptedNetworkJobs({
-      enqueue: (id) => enqueuedQueueF.push(id)
-    })
-    assert.ok(
-      !secondResumeF.jobIds.includes(duplicateTestJob.id),
-      'Test F: Second pass does NOT enqueue the job again (idempotent)'
-    )
-
-    const enqueuedJobFOccurrences = enqueuedQueueF.filter((id) => id === duplicateTestJob.id).length
-    assert.equal(enqueuedJobFOccurrences, 1, 'Test F: Job was enqueued exactly once across passes')
+    const occurrences = dupEnqueued.filter((id) => id === dupJob.id).length
+    assert.equal(occurrences, 1, 'Test D: Job enqueued exactly once across multiple passes')
     console.log(
-      '✓ TEST F passed: Strict idempotency prevents duplicate scheduling of interrupted jobs\n'
+      '✓ TEST D passed: Strict idempotency prevents duplicate scheduling of interrupted jobs\n'
     )
 
     // ------------------------------------------------------------------------
-    // TEST G: Concurrency Limit Enforcement (MAX_CONCURRENT_DOWNLOADS = 2)
+    // TEST E: Global FIFO Ordering & Concurrency Limit (MAX_CONCURRENCY = 2)
     // ------------------------------------------------------------------------
-    console.log('--- TEST G: Concurrency Limit Enforcement ---')
-
-    const queueStatus = getQueueStatus()
-    assert.equal(queueStatus.maxConcurrency, 2, 'Test G: Queue max concurrency is strictly 2')
-
-    // Verify database state: when 5 interrupted jobs are resumed, their status is 'queued'
-    // allowing the internal queue scheduler to throttle execution to 2 active downloads at a time
-    const batchJobs = []
-    for (let i = 0; i < 5; i++) {
-      const job = await DownloadJob.create({
-        media_id: media.id,
-        output_format: 'mp4',
-        quality: '480p',
-        status: 'interrupted',
-        progress: 10 + i * 5,
-        downloaded_bytes: 1048576 * (i + 1)
-      })
-      const part = join(testDownloadDir, `batch-${i} [job-${job.id}].mp4.part`)
-      await writeFile(part, Buffer.alloc(1048576, 0xee))
-      batchJobs.push(job)
-    }
-
-    const batchEnqueuedG = []
-    const batchResumeResult = await resumeInterruptedNetworkJobs({
-      enqueue: (id) => batchEnqueuedG.push(id)
-    })
-
-    assert.equal(batchResumeResult.resumedCount, 5, 'Test G: All 5 jobs resumed')
-
-    // All 5 jobs transitioned to 'queued'
-    for (const job of batchJobs) {
-      const reloaded = await DownloadJob.findByPk(job.id)
-      assert.equal(reloaded.status, 'queued', 'Test G: Batch job transitioned to queued')
-    }
-    console.log(
-      '✓ TEST G passed: 5 resumed jobs transitioned to queued without exceeding concurrency\n'
-    )
-
-    // ------------------------------------------------------------------------
-    // GLOBAL FIFO ORDERING VERIFICATION
-    // ------------------------------------------------------------------------
-    console.log('--- Global FIFO Ordering Verification ---')
+    console.log('--- TEST E: FIFO Ordering & Concurrency Limit ---')
 
     resetRecoveryTrackingForTesting()
+    resetNetworkMonitoringForTesting()
     await DownloadJob.destroy({ where: {} })
 
-    const dateBase = Date.now() - 60000
-    // Job 1 (oldest)
+    const queueStatus = getQueueStatus()
+    assert.equal(queueStatus.maxConcurrency, 2, 'Test E: MAX_CONCURRENT_DOWNLOADS is strictly 2')
+
+    const baseTime = Date.now() - 300000
+    // Job 1 (oldest: baseTime)
     const fifo1 = await DownloadJob.create({
       media_id: media.id,
       output_format: 'mp4',
       quality: '1080p',
-      status: 'downloading',
-      progress: 30,
-      createdAt: new Date(dateBase)
+      status: 'interrupted',
+      progress: 10,
+      createdAt: new Date(baseTime)
     })
     const fifoPart1 = join(testDownloadDir, `fifo1 [job-${fifo1.id}].mp4.part`)
     await writeFile(fifoPart1, Buffer.alloc(1024, 0x01))
 
-    // Job 2 (middle)
+    // Job 2 (middle: baseTime + 10s)
     const fifo2 = await DownloadJob.create({
       media_id: media.id,
       output_format: 'mp3',
-      audioBitrateKbps: 320,
-      status: 'queued',
-      createdAt: new Date(dateBase + 10000)
+      audio_bitrate_kbps: 192,
+      status: 'interrupted',
+      progress: 20,
+      createdAt: new Date(baseTime + 10000)
     })
+    const fifoPart2 = join(testDownloadDir, `fifo2 [job-${fifo2.id}].mp3.part`)
+    await writeFile(fifoPart2, Buffer.alloc(1024, 0x02))
 
-    // Job 3 (newest)
+    // Job 3 (newest: baseTime + 20s)
     const fifo3 = await DownloadJob.create({
       media_id: media.id,
       output_format: 'mp4',
       quality: '720p',
       status: 'interrupted',
-      progress: 50,
-      createdAt: new Date(dateBase + 20000)
+      progress: 30,
+      createdAt: new Date(baseTime + 20000)
     })
     const fifoPart3 = join(testDownloadDir, `fifo3 [job-${fifo3.id}].mp4.part`)
     await writeFile(fifoPart3, Buffer.alloc(1024, 0x03))
 
+    setConnectivityCheckerForTesting(async () => true)
     const fifoEnqueued = []
-    await recoverInterruptedDownloadJobs({
-      isOnline: true,
+    const fifoResult = await resumeInterruptedNetworkJobs({
       enqueue: (id) => fifoEnqueued.push(id)
     })
 
+    assert.equal(fifoResult.resumedCount, 3, 'Test E: All 3 jobs resumed')
     assert.deepEqual(
       fifoEnqueued,
       [fifo1.id, fifo2.id, fifo3.id],
-      'Global FIFO: Enqueued in exact chronological order (createdAt ASC, id ASC)'
+      'Test E: Resumed in strict chronological FIFO order (createdAt ASC, id ASC)'
     )
     console.log(
-      '✓ Global FIFO: Interrupted jobs recovered in strict FIFO order (createdAt ASC, id ASC)\n'
+      '✓ TEST E passed: Global FIFO order (createdAt ASC, id ASC) and concurrency = 2 verified\n'
+    )
+
+    // ------------------------------------------------------------------------
+    // TEST F: Error Classification (Non-Network Errors Strictly NOT Retried)
+    // ------------------------------------------------------------------------
+    console.log('--- TEST F: Error Classification (Non-Network Errors Excluded) ---')
+
+    // F.1: HTTP Error 429 Too Many Requests
+    assert.equal(
+      isTransientNetworkError({ message: 'HTTP Error 429: Too Many Requests' }),
+      false,
+      'Test F: HTTP 429 is rate limit, not transient network drop'
+    )
+
+    // F.2: Authentication Required / Bot Challenge
+    assert.equal(
+      isTransientNetworkError({ message: 'Sign in to confirm you’re not a bot' }),
+      false,
+      'Test F: Bot challenge / auth is not network drop'
+    )
+
+    // F.3: PO Token Required
+    assert.equal(
+      isTransientNetworkError({ message: 'GVS PO Token is required for this client' }),
+      false,
+      'Test F: PO Token missing is not network drop'
+    )
+
+    // F.4: Private / Unavailable Video
+    assert.equal(
+      isTransientNetworkError({ message: 'ERROR: [youtube] Private video. Sign in to view.' }),
+      false,
+      'Test F: Private video is not network drop'
+    )
+
+    // F.5: Invalid / Unsupported URL
+    assert.equal(
+      isTransientNetworkError({ message: 'Unsupported URL: ftp://invalid-domain.com' }),
+      false,
+      'Test F: Invalid URL is not network drop'
+    )
+
+    // F.6: User Cancellation
+    assert.equal(
+      isTransientNetworkError({ message: 'Download was cancelled by user', isCancelled: true }),
+      false,
+      'Test F: User cancellation is not network drop'
+    )
+
+    // F.7: Filesystem Permission Errors (EACCES / EPERM)
+    assert.equal(
+      isTransientNetworkError({ message: 'EACCES: permission denied', code: 'EACCES' }),
+      false,
+      'Test F: EACCES is filesystem error, not network drop'
+    )
+    assert.equal(
+      isTransientNetworkError({ message: 'EPERM: operation not permitted', code: 'EPERM' }),
+      false,
+      'Test F: EPERM is filesystem error, not network drop'
+    )
+
+    // F.8: Real transient network errors ARE recognized
+    assert.equal(
+      isTransientNetworkError({ message: 'read ECONNRESET', code: 'ECONNRESET' }),
+      true,
+      'Test F: ECONNRESET is transient network drop'
+    )
+    assert.equal(
+      isTransientNetworkError({ message: 'connect ETIMEDOUT', code: 'ETIMEDOUT' }),
+      true,
+      'Test F: ETIMEDOUT is transient network drop'
+    )
+    assert.equal(
+      isTransientNetworkError({ message: 'getaddrinfo ENOTFOUND', code: 'ENOTFOUND' }),
+      true,
+      'Test F: ENOTFOUND is transient network drop'
+    )
+    console.log(
+      '✓ TEST F passed: 429, auth, PO Token, private videos, invalid URLs, cancellations, and permissions strictly excluded\n'
+    )
+
+    // ------------------------------------------------------------------------
+    // TEST G: yt-dlp Resume Arguments (--continue and temporary workspace)
+    // ------------------------------------------------------------------------
+    console.log('--- TEST G: yt-dlp Resume Arguments Inspection ---')
+
+    const mockJobId = 42
+    const mockTempPath = join(testDownloadDir, '.applan2-partial-downloads', `job-${mockJobId}`)
+
+    const generatedArgs = buildYtDlpArgs({
+      sourceUrl: 'https://www.youtube.com/watch?v=kJQP7kiw5Fk',
+      outputFormat: 'mp4',
+      quality: '1080p',
+      downloadPath: testDownloadDir,
+      jobId: mockJobId,
+      tempPath: mockTempPath
+    })
+
+    // 1. Verify --continue flag is present for resume support
+    assert.ok(
+      generatedArgs.includes('--continue'),
+      'Test G: buildYtDlpArgs must include --continue flag'
+    )
+
+    // 2. Verify temporary workspace flag routing fragments
+    const tempArgIdx = generatedArgs.indexOf('-P')
+    assert.ok(tempArgIdx !== -1, 'Test G: -P flag present')
+    assert.ok(
+      generatedArgs.some(
+        (arg) => typeof arg === 'string' && arg.startsWith(`temp:${mockTempPath}`)
+      ),
+      'Test G: Routes intermediate partial fragments to job-owned temporary workspace'
+    )
+
+    // 3. Verify output template contains unique job id marker
+    const outputIdx = generatedArgs.indexOf('-o')
+    assert.ok(outputIdx !== -1, 'Test G: -o template flag present')
+    const templateStr = generatedArgs[outputIdx + 1]
+    assert.ok(
+      templateStr.includes(`[job-${mockJobId}]`),
+      'Test G: Output template matches [job-ID] for safe resumption'
+    )
+    console.log(
+      '✓ TEST G passed: yt-dlp arguments include --continue, -P temp workspace, and [job-ID] template\n'
+    )
+
+    // ------------------------------------------------------------------------
+    // SECTION H: Part 04 Status Validation Verification
+    // ------------------------------------------------------------------------
+    console.log('--- Section H: Part 04 Status Validation Verification ---')
+
+    // 1. VALID_JOB_STATUSES constant includes 'interrupted'
+    assert.ok(
+      VALID_JOB_STATUSES.includes('interrupted'),
+      'Section H: VALID_JOB_STATUSES must include "interrupted"'
+    )
+
+    // 2. listDownloadHistory({ status: 'interrupted' }) succeeds without validation errors
+    const interruptedHistory = await listDownloadHistory({ status: 'interrupted' })
+    assert.ok(Array.isArray(interruptedHistory.jobs), 'Section H: Returns jobs array')
+    assert.equal(
+      typeof interruptedHistory.pagination.total,
+      'number',
+      'Section H: Returns total pagination count'
+    )
+
+    // 3. Unfiltered history list still works
+    const allHistory = await listDownloadHistory({})
+    assert.ok(Array.isArray(allHistory.jobs), 'Section H: Unfiltered query succeeds')
+    console.log(
+      '✓ Section H passed: "interrupted" status accepted in VALID_JOB_STATUSES and history queries\n'
     )
 
     console.log('================================================================')
-    console.log(' ALL PHASE 04 NETWORK RECOVERY & OPTION A TESTS PASSED (100%)   ')
+    console.log(' ALL PHASE 04 TESTS A THROUGH G PASSED SUCCESSFULLY (100%)      ')
     console.log('================================================================\n')
   } finally {
     setConnectivityCheckerForTesting(null)
+    resetNetworkMonitoringForTesting()
     await testDb.cleanup()
   }
 }

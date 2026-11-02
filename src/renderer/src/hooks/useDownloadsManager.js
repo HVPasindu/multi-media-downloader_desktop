@@ -74,10 +74,12 @@ export function useDownloadsManager({ limit = 50 } = {}) {
         }
         // Background polling errors preserve previously loaded records
       } finally {
-        isFetchingRef.current = false
-        if (isMountedCheck() && requestId === requestCountRef.current) {
-          setIsLoading(false)
-          setInitialFetchDone(true)
+        if (requestId === requestCountRef.current) {
+          isFetchingRef.current = false
+          if (isMountedCheck()) {
+            setIsLoading(false)
+            setInitialFetchDone(true)
+          }
         }
       }
     },
@@ -85,6 +87,7 @@ export function useDownloadsManager({ limit = 50 } = {}) {
   )
 
   const retry = useCallback(() => {
+    isFetchingRef.current = false
     setIsLoading(true)
     setError(null)
     initialFetchDoneRef.current = false
