@@ -15,10 +15,16 @@ import { checkDownloadDuplicate } from '../services/downloadsApi'
  *    resolution (e.g. '1080p') to match backend canonical request identity.
  * 3. Race & Stale Protection: Outdated asynchronous responses are discarded using an internal
  *    request-generation sequence counter (requestGenerationRef).
- * 4. Controlled Polling: When a duplicate is active, polls every 2.5 seconds WITHOUT setting
+ * 4. Stale State Invalidation: Selection changes (URL, quality, bitrate, format) and early returns
+ *    immediately invalidate outstanding requests and clear previous duplicate state so prior
+ *    selections never block new selections.
+ * 5. Deadlock-Free Loading State: The latest valid request generation always releases
+ *    isCheckingDuplicate upon settling, ensuring background requests cannot leave the foreground
+ *    loading spinner permanently stuck.
+ * 6. Controlled Polling: When a duplicate is active, polls every 2.5 seconds WITHOUT setting
  *    loading spinners or causing button flicker. Immediately clears duplicate state and
  *    re-enables the button when the job reaches terminal state ('completed', 'failed', 'cancelled').
- * 5. Event-Driven Reactivity: Automatically re-checks when 'applan2:download-state-changed' fires.
+ * 7. Event-Driven Reactivity: Automatically re-checks when 'applan2:download-state-changed' fires.
  *
  * @param {object} params
  * @param {number|null} params.mediaItemId - SQLite MediaItem ID
@@ -50,8 +56,9 @@ export function useDownloadDuplicateGuard({
 
   const requestGenerationRef = useRef(0)
   const isMountedRef = useRef(true)
+  const lastSelectionKeyRef = useRef(null)
 
-  // Track mount state
+  // Track mount state and invalidate in-flight responses on unmount
   useEffect(() => {
     isMountedRef.current = true
     return () => {
@@ -77,13 +84,15 @@ export function useDownloadDuplicateGuard({
     async (options = {}) => {
       const isBackground = options?.isBackground === true
 
-      // If disabled or missing required identifiers, reset and exit
+      // If disabled or missing required identifiers, invalidate in-flight requests and reset state
       if (
         !enabled ||
         !Number.isInteger(mediaItemId) ||
         mediaItemId <= 0 ||
         (selectedFormat !== 'mp4' && selectedFormat !== 'mp3')
       ) {
+        requestGenerationRef.current++
+        lastSelectionKeyRef.current = null
         setIsDuplicate(false)
         setDuplicateJob(null)
         setIsCheckingDuplicate(false)
@@ -92,6 +101,8 @@ export function useDownloadDuplicateGuard({
 
       // Ensure valid format settings exist before querying
       if (selectedFormat === 'mp4' && (!resolvedQuality || typeof resolvedQuality !== 'string')) {
+        requestGenerationRef.current++
+        lastSelectionKeyRef.current = null
         setIsDuplicate(false)
         setDuplicateJob(null)
         setIsCheckingDuplicate(false)
@@ -99,10 +110,24 @@ export function useDownloadDuplicateGuard({
       }
 
       if (selectedFormat === 'mp3' && ![128, 192, 320].includes(resolvedBitrate)) {
+        requestGenerationRef.current++
+        lastSelectionKeyRef.current = null
         setIsDuplicate(false)
         setDuplicateJob(null)
         setIsCheckingDuplicate(false)
         return
+      }
+
+      const selectionKey = `${mediaItemId}:${selectedFormat}:${selectedFormat === 'mp4' ? resolvedQuality : resolvedBitrate}`
+      const isNewSelection = lastSelectionKeyRef.current !== selectionKey
+      lastSelectionKeyRef.current = selectionKey
+
+      // When the selection changes (new media, format, quality, or bitrate):
+      // Invalidate outstanding requests and clear prior duplicate state so previous info cannot block new selection
+      if (isNewSelection) {
+        requestGenerationRef.current++
+        setIsDuplicate(false)
+        setDuplicateJob(null)
       }
 
       const requestId = ++requestGenerationRef.current
@@ -146,10 +171,11 @@ export function useDownloadDuplicateGuard({
         // In case of communication error, avoid blocking user action
         console.warn('[duplicate-guard] Duplicate check error:', err?.message)
       } finally {
+        // The latest valid request always releases the checking state when settling,
+        // ensuring background requests (e.g. from download-state-changed) cannot leave
+        // the initial foreground loading spinner permanently stuck.
         if (requestId === requestGenerationRef.current && isMountedRef.current) {
-          if (!isBackground) {
-            setIsCheckingDuplicate(false)
-          }
+          setIsCheckingDuplicate(false)
         }
       }
     },
