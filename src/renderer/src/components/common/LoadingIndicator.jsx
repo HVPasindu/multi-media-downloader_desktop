@@ -38,4 +38,3 @@ export default function LoadingIndicator({ type = 'bar', label = null, className
     </div>
   )
 }
-

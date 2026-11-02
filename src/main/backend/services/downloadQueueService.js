@@ -1,4 +1,5 @@
 import { executeDownloadJob, cancelRunningDownload } from './downloadService.js'
+import { isTransientNetworkError } from './downloadErrorService.js'
 import { getDatabase } from '../config/database.js'
 
 // Maximum number of download jobs running at once
@@ -52,6 +53,11 @@ function processDownloadQueue() {
 
         if (error?.name === 'DownloadInterruptedError') {
           console.log(`[queue] Download Job ${jobId} was interrupted by shutdown`)
+          return
+        }
+
+        if (isTransientNetworkError(error)) {
+          console.log(`[queue] Download Job ${jobId} was interrupted by network loss`)
           return
         }
 
@@ -134,6 +140,36 @@ export async function cancelDownloadJob(jobId) {
       outcome: 'already_cancelled',
       status: 'cancelled',
       message: 'Download is already cancelled'
+    }
+  }
+
+  // Step 09.B - Handle Interrupted Job (cancellation while waiting for network)
+  if (job.status === 'interrupted') {
+    const queueIndex = waitingJobIds.indexOf(jobId)
+    if (queueIndex !== -1) {
+      waitingJobIds.splice(queueIndex, 1)
+    }
+    scheduledJobIds.delete(jobId)
+
+    const [updatedCount] = await DownloadJob.update(
+      {
+        status: 'cancelled',
+        error_message: null
+      },
+      {
+        where: {
+          id: jobId,
+          status: 'interrupted'
+        }
+      }
+    )
+
+    if (updatedCount === 1) {
+      return {
+        outcome: 'cancelled',
+        status: 'cancelled',
+        message: 'Download cancelled successfully'
+      }
     }
   }
 

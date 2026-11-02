@@ -405,15 +405,21 @@ export async function cleanupStaleJobTemporaryFiles(jobId, downloadPath) {
 }
 
 /**
- * Step 09.E - Inspects and verifies partial download artifacts for an interrupted job.
+ * Step 09.E / Step 09.A - Inspects and verifies partial download artifacts for an interrupted job.
  * Checks both the target download directory (for .part files) and the job-owned
  * temporary workspace for readable, non-empty, non-symlink partial file streams.
  *
+ * Verifies consistency with SQLite byte checkpoints within a documented tolerance
+ * (5 MB) to account for periodic checkpointing vs actual file growth.
+ *
  * @param {number} jobId - Download job ID
  * @param {string} downloadPath - Base download folder
- * @returns {Promise<{ isValid: boolean, partialBytes: number, files: Array<{ path: string, size: number }> }>}
+ * @param {object} [options={}]
+ * @param {number} [options.savedDownloadedBytes] - Last saved byte count in SQLite
+ * @param {number} [options.savedProgress] - Last saved progress percentage in SQLite
+ * @returns {Promise<{ isValid: boolean, partialBytes: number, reconciledBytes: number, isConsistent: boolean, files: Array<{ path: string, size: number }> }>}
  */
-export async function verifyJobPartialDownload(jobId, downloadPath) {
+export async function verifyJobPartialDownload(jobId, downloadPath, options = {}) {
   validateJobId(jobId)
   validateDownloadPath(downloadPath)
 
@@ -439,7 +445,26 @@ export async function verifyJobPartialDownload(jobId, downloadPath) {
         try {
           const fileStat = await lstat(fullPath)
           if (fileStat.isSymbolicLink()) {
-            return { isValid: false, partialBytes: 0, files: [], isUnsafe: true }
+            return {
+              isValid: false,
+              partialBytes: 0,
+              reconciledBytes: 0,
+              isConsistent: false,
+              files: [],
+              isUnsafe: true
+            }
+          }
+          // Ensure realpath stays inside download directory
+          const realTarget = await realpath(fullPath)
+          if (!realTarget.toLowerCase().startsWith(normalizedDownloadPath.toLowerCase())) {
+            return {
+              isValid: false,
+              partialBytes: 0,
+              reconciledBytes: 0,
+              isConsistent: false,
+              files: [],
+              isUnsafe: true
+            }
           }
           if (fileStat.isFile() && fileStat.size > 0) {
             validFiles.push({ path: fullPath, size: fileStat.size })
@@ -460,17 +485,54 @@ export async function verifyJobPartialDownload(jobId, downloadPath) {
     const tempDirStat = await lstat(jobTempPath)
 
     if (tempDirStat.isSymbolicLink()) {
-      return { isValid: false, partialBytes: 0, files: [], isUnsafe: true }
+      return {
+        isValid: false,
+        partialBytes: 0,
+        reconciledBytes: 0,
+        isConsistent: false,
+        files: [],
+        isUnsafe: true
+      }
     }
 
     if (tempDirStat.isDirectory()) {
+      const realTempDir = await realpath(jobTempPath)
+      if (!realTempDir.toLowerCase().startsWith(normalizedDownloadPath.toLowerCase())) {
+        return {
+          isValid: false,
+          partialBytes: 0,
+          reconciledBytes: 0,
+          isConsistent: false,
+          files: [],
+          isUnsafe: true
+        }
+      }
+
       const tempEntries = await readdir(jobTempPath)
       for (const tempEntry of tempEntries) {
         const fullTempPath = path.join(jobTempPath, tempEntry)
         try {
           const fileStat = await lstat(fullTempPath)
           if (fileStat.isSymbolicLink()) {
-            return { isValid: false, partialBytes: 0, files: [], isUnsafe: true }
+            return {
+              isValid: false,
+              partialBytes: 0,
+              reconciledBytes: 0,
+              isConsistent: false,
+              files: [],
+              isUnsafe: true
+            }
+          }
+          const realFile = await realpath(fullTempPath)
+          if (!realFile.toLowerCase().startsWith(normalizedDownloadPath.toLowerCase())) {
+            return {
+              isValid: false,
+              partialBytes: 0,
+              reconciledBytes: 0,
+              isConsistent: false,
+              files: [],
+              isUnsafe: true
+            }
           }
           if (fileStat.isFile() && fileStat.size > 0) {
             validFiles.push({ path: fullTempPath, size: fileStat.size })
@@ -485,9 +547,28 @@ export async function verifyJobPartialDownload(jobId, downloadPath) {
     // Workspace does not exist or inaccessible
   }
 
+  // 3. Documented tolerance for SQLite periodic byte checkpointing
+  // SQLite updates byte records every 1MB or 1s, so disk file may be slightly ahead of DB.
+  // We allow up to 5MB discrepancy if the disk file is smaller than saved DB value.
+  const CHECKPOINT_TOLERANCE_BYTES = 5 * 1024 * 1024
+  const savedBytes = Number(options?.savedDownloadedBytes) || 0
+  let isConsistent = true
+
+  if (savedBytes > 0 && totalBytes > 0) {
+    if (totalBytes < savedBytes - CHECKPOINT_TOLERANCE_BYTES) {
+      // Disk file is severely smaller than saved checkpoint (e.g. truncated/corrupted)
+      isConsistent = false
+    }
+  }
+
+  const isValid = validFiles.length > 0 && totalBytes > 0
+  const reconciledBytes = isValid ? Math.max(totalBytes, savedBytes) : 0
+
   return {
-    isValid: validFiles.length > 0 && totalBytes > 0,
+    isValid,
     partialBytes: totalBytes,
+    reconciledBytes,
+    isConsistent,
     files: validFiles
   }
 }

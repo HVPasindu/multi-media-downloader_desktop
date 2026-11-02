@@ -215,6 +215,9 @@ export function normalizeDownloadJob(job, speedTracker = null) {
   } else if (isResuming) {
     statusText = `Resuming (${progress}% saved)`
     displayStatus = 'resuming'
+  } else if (job.status === 'interrupted') {
+    statusText = job.error_message || 'Interrupted – Waiting for internet connection'
+    displayStatus = 'interrupted'
   } else if (isQueued) {
     statusText = 'Queued'
     displayStatus = 'queued'

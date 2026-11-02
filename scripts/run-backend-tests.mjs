@@ -65,6 +65,14 @@ const TEST_SUITES = [
   {
     name: 'Step 04.45: Link Downloader Full Backend E2E Suite (Mocked Media Tools)',
     file: 'tests/link_downloader_e2e_tests.js'
+  },
+  {
+    name: 'Phase 03: Downloads Manager & Sidebar Active Count (Step 07 & 08)',
+    file: 'tests/downloads_manager_active_count_tests.js'
+  },
+  {
+    name: 'Phase 04: Step 09 Network Recovery & Option A Restart Recovery Suite',
+    file: 'tests/download_network_recovery_tests.js'
   }
 ]
 

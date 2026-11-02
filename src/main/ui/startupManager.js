@@ -70,4 +70,3 @@ export function restartApplication(app) {
     app.quit()
   }
 }
-

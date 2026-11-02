@@ -41,4 +41,3 @@ export function updateDownloadSettings(settings) {
     body: settings
   })
 }
-

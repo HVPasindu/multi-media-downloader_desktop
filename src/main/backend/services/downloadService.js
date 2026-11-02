@@ -13,9 +13,14 @@ import {
   DOWNLOAD_ERROR_CODES,
   DEFAULT_ERROR_MESSAGES,
   classifyDownloadError,
-  formatDownloadErrorMessage
+  formatDownloadErrorMessage,
+  isTransientNetworkError
 } from './downloadErrorService.js'
-import { prepareJobTemporaryWorkspace, cleanupJobTemporaryFiles } from './downloadCleanupService.js'
+import {
+  prepareJobTemporaryWorkspace,
+  cleanupJobTemporaryFiles,
+  verifyJobPartialDownload
+} from './downloadCleanupService.js'
 import {
   validateDownloadFolder,
   verifyDownloadFolderWritable,
@@ -1532,6 +1537,55 @@ export async function executeDownloadJob(jobId, options = {}) {
       }
 
       // Preserve partial files and temporary workspace across shutdown
+      throw error
+    }
+
+    // Step 09 Section B - Handle transient network failure (Internet disconnection)
+    if (isTransientNetworkError(error)) {
+      console.warn(
+        `[download] Job ${jobId} encountered transient network failure. Transitioning to 'interrupted' without deleting partial files.`
+      )
+      try {
+        const DownloadJob = getDatabase().models.DownloadJob
+        const cleanPath =
+          execution?.downloadPath ||
+          (await getSavedDownloadPath(getDatabase().models.AppSetting)) ||
+          (await getDefaultDownloadPath())
+
+        let hasValidPartial = false
+        try {
+          const partialResult = await verifyJobPartialDownload(jobId, cleanPath, {
+            savedDownloadedBytes: claimedJob.downloaded_bytes,
+            savedProgress: claimedJob.progress
+          })
+          hasValidPartial = Boolean(partialResult.isValid && !partialResult.isUnsafe)
+        } catch {
+          hasValidPartial = false
+        }
+
+        const updatePayload = {
+          status: 'interrupted',
+          error_message: 'Internet connection was lost. Waiting for network connection to resume...'
+        }
+
+        if (!hasValidPartial) {
+          updatePayload.progress = 0
+          updatePayload.downloaded_bytes = 0
+        }
+
+        await DownloadJob.update(updatePayload, {
+          where: {
+            id: jobId
+          }
+        })
+      } catch (statusError) {
+        console.error(
+          `[download] Failed to persist interrupted state for job ${jobId}:`,
+          statusError
+        )
+      }
+
+      // Preserve partial files and temporary workspace across network loss
       throw error
     }
 

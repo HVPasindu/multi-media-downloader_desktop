@@ -63,12 +63,12 @@ src/renderer/
 
 ## 2. Responsibilities of the Four Main Pages
 
-| Page Component | Route Path | Core Responsibilities |
-|:---|:---:|:---|
-| **`DownloaderPage.jsx`** | `/` | User inputs media URLs, views the analyzed preview thumbnail and metadata, selects MP4/MP3 format, picks quality/bitrate options, sets destination folder, clicks **Download**, and inspects recent downloads. |
-| **`DownloadsPage.jsx`** | `/downloads` | Displays the active download queue with real-time percentage progress bars, download speeds, remaining time (ETA), and provides user controls for cancellation and retry. |
-| **`HistoryPage.jsx`** | `/history` | Displays past completed or failed downloads with search, format filtering, file size reporting, saved file paths, status indicators, and actions (Play, Open Folder, Retry). |
-| **`SettingsPage.jsx`** | `/settings` | Allows customization of the default download destination folder, format preferences, subfolder organization rules, and displays disk storage capacity statistics. |
+| Page Component           |  Route Path  | Core Responsibilities                                                                                                                                                                                          |
+| :----------------------- | :----------: | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`DownloaderPage.jsx`** |     `/`      | User inputs media URLs, views the analyzed preview thumbnail and metadata, selects MP4/MP3 format, picks quality/bitrate options, sets destination folder, clicks **Download**, and inspects recent downloads. |
+| **`DownloadsPage.jsx`**  | `/downloads` | Displays the active download queue with real-time percentage progress bars, download speeds, remaining time (ETA), and provides user controls for cancellation and retry.                                      |
+| **`HistoryPage.jsx`**    |  `/history`  | Displays past completed or failed downloads with search, format filtering, file size reporting, saved file paths, status indicators, and actions (Play, Open Folder, Retry).                                   |
+| **`SettingsPage.jsx`**   | `/settings`  | Allows customization of the default download destination folder, format preferences, subfolder organization rules, and displays disk storage capacity statistics.                                              |
 
 ---
 
@@ -174,12 +174,12 @@ Controllers -> Services -> SQLite / yt-dlp / FFmpeg
 
 ## 7. API Service Modules Summary
 
-| File | Purpose | Documented Endpoints |
-|:---|:---|:---|
-| **`services/api.js`** | Core IPC request transport, health check, and native Electron folder dialogs. | `GET /api/health`, native folder chooser |
-| **`services/mediaApi.js`** | Validates media URLs and extracts platform metadata and formats. | `POST /api/media/analyze` |
-| **`services/downloadsApi.js`** | Enqueues downloads, lists active jobs/history, handles cancellation, retry, and history deletion. | `POST /api/downloads`<br/>`GET /api/downloads`<br/>`GET /api/downloads/:id`<br/>`POST /api/downloads/:id/cancel`<br/>`POST /api/downloads/:id/retry`<br/>`DELETE /api/downloads/:id`<br/>`DELETE /api/downloads/history` |
-| **`services/downloadSettingsApi.js`** | Reads and partially updates download settings in SQLite. | `GET /api/settings/downloads`<br/>`PATCH /api/settings/downloads` |
+| File                                  | Purpose                                                                                           | Documented Endpoints                                                                                                                                                                                                     |
+| :------------------------------------ | :------------------------------------------------------------------------------------------------ | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`services/api.js`**                 | Core IPC request transport, health check, and native Electron folder dialogs.                     | `GET /api/health`, native folder chooser                                                                                                                                                                                 |
+| **`services/mediaApi.js`**            | Validates media URLs and extracts platform metadata and formats.                                  | `POST /api/media/analyze`                                                                                                                                                                                                |
+| **`services/downloadsApi.js`**        | Enqueues downloads, lists active jobs/history, handles cancellation, retry, and history deletion. | `POST /api/downloads`<br/>`GET /api/downloads`<br/>`GET /api/downloads/:id`<br/>`POST /api/downloads/:id/cancel`<br/>`POST /api/downloads/:id/retry`<br/>`DELETE /api/downloads/:id`<br/>`DELETE /api/downloads/history` |
+| **`services/downloadSettingsApi.js`** | Reads and partially updates download settings in SQLite.                                          | `GET /api/settings/downloads`<br/>`PATCH /api/settings/downloads`                                                                                                                                                        |
 
 ### Service Usage Example:
 
@@ -234,7 +234,7 @@ To maintain beginner-friendly, clean, and maintainable React code without third-
 ## 10. Preview Data vs. Real Backend Data Separation
 
 During development, visual preview data resides in `src/renderer/src/data/uiPreviewData.js`.
+
 - **UI Preview Data**: Purely for design review, offline testing, and initial visual rendering.
 - **Real Backend Data**: Flows through `services/*Api.js` -> `api.js` -> `window.api.request()`.
 - Future roadmap steps (05.03–05.13) will progressively replace in-memory preview objects with real backend API responses without disrupting the approved UI layout.
-

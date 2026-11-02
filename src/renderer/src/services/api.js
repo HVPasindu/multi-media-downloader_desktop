@@ -78,4 +78,3 @@ export async function getDownloadFolder() {
   }
   return await window.api.getDownloadFolder()
 }
-

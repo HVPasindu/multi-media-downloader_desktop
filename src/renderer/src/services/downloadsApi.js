@@ -171,8 +171,12 @@ export async function getActiveDownloadsCount() {
     const queuedTotal =
       queuedRes.ok && queuedRes.data?.success ? Number(queuedRes.data?.pagination?.total) || 0 : 0
 
+    const isSuccess = Boolean(
+      downloadingRes.ok && queuedRes.ok && downloadingRes.data?.success && queuedRes.data?.success
+    )
+
     return {
-      ok: Boolean(downloadingRes.ok && queuedRes.ok),
+      ok: isSuccess,
       total: downloadingTotal + queuedTotal,
       downloading: downloadingTotal,
       queued: queuedTotal

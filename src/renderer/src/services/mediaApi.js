@@ -20,4 +20,3 @@ export function analyzeMedia(url) {
     body: { url }
   })
 }
-

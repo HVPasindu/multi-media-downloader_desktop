@@ -10,7 +10,9 @@ import {
   Play,
   Square,
   Trash2,
-  Download
+  Download,
+  AlertCircle,
+  RefreshCw
 } from 'lucide-react'
 import StatCard from '../components/ui/StatCard'
 import FilterTabs from '../components/ui/FilterTabs'
@@ -21,12 +23,15 @@ import { useDownloadsManager } from '../hooks/useDownloadsManager'
 
 /**
  * Cleanly extracts secondary contextual subtitle from statusText without duplicating
- * the main status name (e.g. "Downloading (2m 45s left)" -> "2m 45s left").
+ * the main status name (e.g. "Downloading (2m 45s left)" -> "2m 45s left"
+ * or "Interrupted – Waiting for internet connection" -> "Waiting for internet connection").
  */
 function getStatusSubtitle(statusText, status) {
   if (!statusText) return null
-  const match = statusText.match(/\(([^)]+)\)/)
-  if (match) return match[1]
+  const parenMatch = statusText.match(/\(([^)]+)\)/)
+  if (parenMatch) return parenMatch[1]
+  const dashMatch = statusText.match(/[–-]\s*(.+)$/)
+  if (dashMatch) return dashMatch[1]
   if (statusText.toLowerCase() === (status || '').toLowerCase()) return null
   return statusText
 }
@@ -44,11 +49,14 @@ export default function DownloadsPage() {
   const [searchQuery, setSearchQuery] = useState('')
 
   // Step 07: Centralized Downloads Manager state & resilient lifecycle coordination
-  const { downloadsList, setDownloadsList, isLoading } = useDownloadsManager({ limit: 50 })
+  const { downloadsList, setDownloadsList, isLoading, error, retry } = useDownloadsManager({
+    limit: 50
+  })
 
   // Dynamically calculate counts directly from real SQLite-backed records
   const downloadingCount = downloadsList.filter((item) => item.status === 'downloading').length
   const queuedCount = downloadsList.filter((item) => item.status === 'queued').length
+  const interruptedCount = downloadsList.filter((item) => item.status === 'interrupted').length
   const completedCount = downloadsList.filter((item) => item.status === 'completed').length
   const failedCount = downloadsList.filter(
     (item) => item.status === 'failed' || item.status === 'cancelled'
@@ -60,6 +68,7 @@ export default function DownloadsPage() {
     return downloadsList.filter((item) => {
       if (activeTab === 'downloading' && item.status !== 'downloading') return false
       if (activeTab === 'queued' && item.status !== 'queued') return false
+      if (activeTab === 'interrupted' && item.status !== 'interrupted') return false
       if (activeTab === 'completed' && item.status !== 'completed') return false
       if (activeTab === 'failed' && item.status !== 'failed' && item.status !== 'cancelled')
         return false
@@ -86,6 +95,9 @@ export default function DownloadsPage() {
     { id: 'all', label: 'All', count: totalCount },
     { id: 'downloading', label: 'Downloading', count: downloadingCount },
     { id: 'queued', label: 'Queued', count: queuedCount },
+    ...(interruptedCount > 0
+      ? [{ id: 'interrupted', label: 'Interrupted', count: interruptedCount }]
+      : []),
     { id: 'completed', label: 'Completed', count: completedCount },
     { id: 'failed', label: 'Failed', count: failedCount }
   ]
@@ -342,6 +354,26 @@ export default function DownloadsPage() {
                       <span className="text-xs text-text-muted">
                         Fetching your active and recent downloads...
                       </span>
+                    </div>
+                  </td>
+                </tr>
+              ) : error && downloadsList.length === 0 ? (
+                <tr>
+                  <td colSpan={7} className="py-16 text-center text-text-muted">
+                    <div className="flex flex-col items-center justify-center gap-3 select-none">
+                      <AlertCircle className="w-8 h-8 text-[#FF4568]" />
+                      <span className="text-sm font-semibold text-white">
+                        Failed to load downloads
+                      </span>
+                      <span className="text-xs text-text-muted max-w-md">{error}</span>
+                      <button
+                        type="button"
+                        onClick={retry}
+                        className="mt-2 inline-flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold text-white bg-[#07152E] hover:bg-[#0B1C38] border border-primary/20 hover:border-[#19D8FF]/40 transition-all cursor-pointer shadow-md"
+                      >
+                        <RefreshCw className="w-3.5 h-3.5 text-[#19D8FF]" />
+                        <span>Retry</span>
+                      </button>
                     </div>
                   </td>
                 </tr>

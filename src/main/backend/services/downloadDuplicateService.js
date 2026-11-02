@@ -1,4 +1,3 @@
-
 import { Op } from 'sequelize'
 import { getDatabase } from '../config/database.js'
 import { SUPPORTED_MP3_BITRATES } from './downloadService.js'
@@ -163,9 +162,8 @@ export async function findActiveDuplicateDownload({
   const { DownloadJob, MediaItem } = getDatabase().models
 
   // Resolve source URL if not directly provided
-  let resolvedSourceUrl = typeof sourceUrl === 'string' && sourceUrl.trim()
-    ? sourceUrl.trim()
-    : null
+  let resolvedSourceUrl =
+    typeof sourceUrl === 'string' && sourceUrl.trim() ? sourceUrl.trim() : null
 
   if (!resolvedSourceUrl && Number.isInteger(mediaItemId) && mediaItemId > 0) {
     const targetMedia = await MediaItem.findByPk(mediaItemId)
@@ -174,9 +172,7 @@ export async function findActiveDuplicateDownload({
     }
   }
 
-  const targetMediaKey = resolvedSourceUrl
-    ? getCanonicalMediaKey(resolvedSourceUrl)
-    : null
+  const targetMediaKey = resolvedSourceUrl ? getCanonicalMediaKey(resolvedSourceUrl) : null
 
   // Search only active lifecycle states: 'queued' or 'downloading'
   const whereClause = {
@@ -201,10 +197,12 @@ export async function findActiveDuplicateDownload({
   // Retrieve active jobs matching format and settings
   const activeJobs = await DownloadJob.findAll({
     where: whereClause,
-    include: [{
-      model: MediaItem,
-      as: 'media'
-    }],
+    include: [
+      {
+        model: MediaItem,
+        as: 'media'
+      }
+    ],
     order: [['id', 'ASC']]
   })
 
@@ -279,4 +277,3 @@ export async function withDownloadCreationGuard(requestIdentity, createFn) {
     pendingDownloadRequests.delete(cleanIdentity)
   }
 }
-

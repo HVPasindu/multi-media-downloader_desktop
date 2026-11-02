@@ -1,8 +1,10 @@
+import { Op } from 'sequelize'
 import { getDatabase } from '../config/database.js'
 import { getSavedDownloadPath } from './downloadSettingsService.js'
 import { getDefaultDownloadPath } from './downloadPathService.js'
 import { cleanupJobTemporaryFiles, verifyJobPartialDownload } from './downloadCleanupService.js'
 import { enqueueDownloadJob, getQueueStatus } from './downloadQueueService.js'
+import { checkNetworkConnectivity } from './networkRecoveryService.js'
 
 // In-memory set to guarantee strict idempotency within the session
 const sessionRecoveredJobIds = new Set()
@@ -15,19 +17,22 @@ export function resetRecoveryTrackingForTesting() {
  * Step 09 (Phase 04) — Automatic Download Recovery (Option A: Resume Existing Job).
  *
  * Scans SQLite for incomplete downloads from previous application sessions.
- * 1. For interrupted 'downloading' jobs:
- *    - Verifies whether real, non-empty partial download files exist on disk.
- *    - If valid partial files exist: preserves the original Job ID, valid progress,
- *      and downloaded bytes, and transitions status to 'queued' for seamless resumption.
- *    - If partial files are missing or empty: resets progress/bytes to 0 and transitions
- *      to 'queued' to safely restart from the beginning with the SAME Job ID.
- * 2. For interrupted 'queued' jobs:
- *    - Restores them to the active scheduler in predictable FIFO order.
- * 3. Enqueues all recovered jobs in FIFO order (createdAt ASC, id ASC) into the download queue.
+ * Enforces Global FIFO recovery order (createdAt ASC, id ASC).
+ *
+ * Handles both online startup and offline startup:
+ * 1. Online:
+ *    - Verifies disk partial files for interrupted downloading/interrupted jobs.
+ *    - If valid: preserves original Job ID, valid progress, and downloaded bytes, restoring to 'queued'.
+ *    - If unverified/missing: resets progress/bytes to 0 and restores to 'queued' with the SAME Job ID.
+ *    - Enqueues all recovered jobs in global FIFO order.
+ * 2. Offline (restarted without internet):
+ *    - Preserves partial files and marks incomplete jobs as 'interrupted'.
+ *    - Does NOT mark jobs as failed; network recovery service will auto-resume them once internet reconnects.
  *
  * @param {object} [options={}]
  * @param {boolean} [options.autoEnqueue=true] - Whether to immediately submit recovered jobs to queue
  * @param {Function} [options.enqueue] - Custom enqueue callback for testing/dependency injection
+ * @param {boolean} [options.isOnline] - Explicit online override for testing
  * @returns {Promise<{ interruptedDownloads: number, interruptedQueuedJobs: number, recoveredJobIds: Array<number> }>}
  */
 export async function recoverInterruptedDownloadJobs(options = {}) {
@@ -38,6 +43,11 @@ export async function recoverInterruptedDownloadJobs(options = {}) {
   const autoEnqueue = options?.autoEnqueue ?? true
   const enqueue = typeof options?.enqueue === 'function' ? options.enqueue : enqueueDownloadJob
 
+  const isOnline =
+    typeof options?.isOnline === 'boolean'
+      ? options.isOnline
+      : await checkNetworkConnectivity({ timeoutMs: 2000 })
+
   // 1. Resolve configured download folder for verifying partial files
   let downloadPath = null
   try {
@@ -47,11 +57,13 @@ export async function recoverInterruptedDownloadJobs(options = {}) {
     downloadPath = null
   }
 
-  // 2. Query incomplete jobs within an immediate transaction to guard against concurrent startup
-  const { downloadingJobs, queuedJobs } = await sequelize.transaction(async (transaction) => {
-    const dJobs = await DownloadJob.findAll({
+  // 2. Query all incomplete jobs globally ordered by createdAt ASC, id ASC (Global FIFO)
+  const incompleteJobs = await sequelize.transaction(async (transaction) => {
+    return await DownloadJob.findAll({
       where: {
-        status: 'downloading'
+        status: {
+          [Op.in]: ['downloading', 'interrupted', 'queued']
+        }
       },
       order: [
         ['createdAt', 'ASC'],
@@ -59,22 +71,6 @@ export async function recoverInterruptedDownloadJobs(options = {}) {
       ],
       transaction
     })
-
-    const qJobs = await DownloadJob.findAll({
-      where: {
-        status: 'queued'
-      },
-      order: [
-        ['createdAt', 'ASC'],
-        ['id', 'ASC']
-      ],
-      transaction
-    })
-
-    return {
-      downloadingJobs: dJobs,
-      queuedJobs: qJobs
-    }
   })
 
   // Check currently scheduled jobs in the queue to maintain strict idempotency
@@ -85,76 +81,112 @@ export async function recoverInterruptedDownloadJobs(options = {}) {
   let recoveredQueuedCount = 0
   const recoveredJobIds = []
 
-  // 3. Process interrupted downloading jobs
-  for (const job of downloadingJobs) {
+  for (const job of incompleteJobs) {
     if (sessionRecoveredJobIds.has(job.id) || alreadyScheduled.has(job.id)) {
       continue
     }
 
     sessionRecoveredJobIds.add(job.id)
 
-    let hasValidPartial = false
+    // Handle offline startup
+    if (!isOnline) {
+      if (job.status === 'downloading') {
+        let hasValidPartial = false
+        if (downloadPath) {
+          try {
+            const partialResult = await verifyJobPartialDownload(job.id, downloadPath, {
+              savedDownloadedBytes: job.downloaded_bytes,
+              savedProgress: job.progress
+            })
+            hasValidPartial = Boolean(partialResult.isValid && !partialResult.isUnsafe)
+          } catch {
+            hasValidPartial = false
+          }
+        }
 
-    if (downloadPath) {
-      try {
-        const partialResult = await verifyJobPartialDownload(job.id, downloadPath)
-        hasValidPartial = Boolean(partialResult.isValid && !partialResult.isUnsafe)
-      } catch {
-        hasValidPartial = false
+        const updatePayload = {
+          status: 'interrupted',
+          error_message: 'Internet connection is unavailable. Waiting for network connection...'
+        }
+        if (!hasValidPartial) {
+          updatePayload.progress = 0
+          updatePayload.downloaded_bytes = 0
+        }
+
+        await job.update(updatePayload)
+        recoveredDownloadsCount++
+      } else if (job.status === 'interrupted') {
+        recoveredDownloadsCount++
+      } else if (job.status === 'queued') {
+        recoveredQueuedCount++
       }
+      continue
     }
 
-    if (hasValidPartial) {
-      // Option A: Preserve valid progress snapshot and downloaded bytes
-      await job.update({
-        status: 'queued',
-        error_message: null
-      })
-      console.log(
-        `[recovery] Resumable job ${job.id} preserved (progress: ${job.progress}%, bytes: ${job.downloaded_bytes})`
-      )
-    } else {
-      // No valid partial download: safely clean any 0-byte or corrupted fragments and restart from 0
+    // Online recovery flow:
+    if (job.status === 'downloading' || job.status === 'interrupted') {
+      let hasValidPartial = false
+      let reconciledBytes = job.downloaded_bytes || 0
+
       if (downloadPath) {
         try {
-          await cleanupJobTemporaryFiles(job.id, downloadPath)
+          const partialResult = await verifyJobPartialDownload(job.id, downloadPath, {
+            savedDownloadedBytes: job.downloaded_bytes,
+            savedProgress: job.progress
+          })
+          hasValidPartial = Boolean(partialResult.isValid && !partialResult.isUnsafe)
+          if (hasValidPartial && partialResult.reconciledBytes > 0) {
+            reconciledBytes = partialResult.reconciledBytes
+          }
         } catch {
-          // Ignore fallback cleanup errors
+          hasValidPartial = false
         }
       }
 
+      if (hasValidPartial) {
+        // Option A: Preserve valid progress and downloaded bytes
+        await job.update({
+          status: 'queued',
+          downloaded_bytes: reconciledBytes,
+          error_message: null
+        })
+        console.log(
+          `[recovery] Resumable job ${job.id} preserved (progress: ${job.progress}%, bytes: ${reconciledBytes})`
+        )
+      } else {
+        // No valid partial download: safely clean unusable fragments and restart from 0 with same Job ID
+        if (downloadPath) {
+          try {
+            await cleanupJobTemporaryFiles(job.id, downloadPath)
+          } catch {
+            // Ignore fallback cleanup errors
+          }
+        }
+
+        await job.update({
+          status: 'queued',
+          progress: 0,
+          downloaded_bytes: 0,
+          error_message: null
+        })
+        console.log(`[recovery] Unverified job ${job.id} reset to zero for fresh restart`)
+      }
+
+      recoveredDownloadsCount++
+      recoveredJobIds.push(job.id)
+    } else if (job.status === 'queued') {
       await job.update({
         status: 'queued',
-        progress: 0,
-        downloaded_bytes: 0,
         error_message: null
       })
-      console.log(`[recovery] Unverified job ${job.id} reset to zero for fresh restart`)
-    }
 
-    recoveredDownloadsCount++
-    recoveredJobIds.push(job.id)
+      recoveredQueuedCount++
+      recoveredJobIds.push(job.id)
+    }
   }
 
-  // 4. Process interrupted queued jobs (only if not already scheduled or recovered)
-  for (const job of queuedJobs) {
-    if (sessionRecoveredJobIds.has(job.id) || alreadyScheduled.has(job.id)) {
-      continue
-    }
-
-    sessionRecoveredJobIds.add(job.id)
-
-    await job.update({
-      status: 'queued',
-      error_message: null
-    })
-
-    recoveredQueuedCount++
-    recoveredJobIds.push(job.id)
-  }
-
-  // 5. Submit recovered jobs to download queue in FIFO order
-  if (autoEnqueue && recoveredJobIds.length > 0) {
+  // 3. Submit recovered jobs to download queue in global FIFO order
+  if (isOnline && autoEnqueue && recoveredJobIds.length > 0) {
     for (const jobId of recoveredJobIds) {
       try {
         enqueue(jobId)
