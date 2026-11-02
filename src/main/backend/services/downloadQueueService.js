@@ -1,4 +1,3 @@
-
 import { executeDownloadJob, cancelRunningDownload } from './downloadService.js'
 import { getDatabase } from '../config/database.js'
 
@@ -14,8 +13,27 @@ const scheduledJobIds = new Set()
 // Number of jobs currently executing
 let activeDownloadCount = 0
 
+// Step 09.G - Prevent new queue dispatches during application shutdown
+let isShuttingDown = false
+
+export function stopQueueForShutdown() {
+  isShuttingDown = true
+}
+
+export function resetQueueForTesting() {
+  isShuttingDown = false
+  waitingJobIds.length = 0
+  scheduledJobIds.clear()
+  activeDownloadCount = 0
+}
+
 function processDownloadQueue() {
+  if (isShuttingDown) {
+    return
+  }
+
   while (
+    !isShuttingDown &&
     activeDownloadCount < MAX_CONCURRENT_DOWNLOADS &&
     waitingJobIds.length > 0
   ) {
@@ -32,10 +50,12 @@ function processDownloadQueue() {
           return
         }
 
-        console.error(
-          `Queued Download Job ${jobId} failed:`,
-          error
-        )
+        if (error?.name === 'DownloadInterruptedError') {
+          console.log(`[queue] Download Job ${jobId} was interrupted by shutdown`)
+          return
+        }
+
+        console.error(`Queued Download Job ${jobId} failed:`, error)
       })
       .finally(() => {
         // Always release the execution slot
@@ -45,7 +65,9 @@ function processDownloadQueue() {
         scheduledJobIds.delete(jobId)
 
         // Start the next waiting job if possible
-        processDownloadQueue()
+        if (!isShuttingDown) {
+          processDownloadQueue()
+        }
       })
   }
 }
@@ -53,6 +75,11 @@ function processDownloadQueue() {
 export function enqueueDownloadJob(jobId) {
   if (!Number.isSafeInteger(jobId) || jobId <= 0) {
     throw new Error('A valid Download Job ID is required')
+  }
+
+  // Step 09.G - Prevent queueing when shutdown is active
+  if (isShuttingDown) {
+    return false
   }
 
   // Do not schedule the same job ID twice
@@ -245,4 +272,3 @@ export function getQueueStatus() {
     scheduledJobIds: [...scheduledJobIds]
   }
 }
-

@@ -3,7 +3,7 @@ import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { Download, ListCollapse, History, Settings, Sparkles } from 'lucide-react'
 import officialLogo from '../../assets/branding/official-cloud-logo-transparent.png'
 import SidebarDecoration from './SidebarDecoration'
-import { DOWNLOADS_MANAGER_LIST } from '../../data/uiPreviewData'
+import { useActiveDownloadsCount } from '../../hooks/useActiveDownloadsCount'
 
 /**
  * Main application layout matching the attached dark navy & electric cyan UI design.
@@ -21,11 +21,8 @@ export default function MainLayout({ onOpenSplashPreview = null }) {
     }
   }, [location.pathname])
 
-  // Derive active downloads badge count dynamically from preview dataset
-  // Counts items currently in downloading or finalizing state
-  const activePreviewCount = DOWNLOADS_MANAGER_LIST.filter(
-    (item) => item.status === 'downloading' || item.status === 'finalizing'
-  ).length
+  // Step 08: Retrieve real active download count (downloading + queued) directly from backend API
+  const activeDownloadsCount = useActiveDownloadsCount()
 
   const navItems = [
     { to: '/', label: 'Downloader', icon: Download },
@@ -33,7 +30,7 @@ export default function MainLayout({ onOpenSplashPreview = null }) {
       to: '/downloads',
       label: 'Downloads',
       icon: ListCollapse,
-      badge: activePreviewCount > 0 ? String(activePreviewCount) : null
+      badge: activeDownloadsCount > 0 ? String(activeDownloadsCount) : null
     },
     { to: '/history', label: 'History', icon: History },
     { to: '/settings', label: 'Settings', icon: Settings }

@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useRef } from 'react'
+import { useState, useMemo } from 'react'
 import {
   Search,
   SlidersHorizontal,
@@ -17,8 +17,7 @@ import FilterTabs from '../components/ui/FilterTabs'
 import MediaThumbnail from '../components/ui/MediaThumbnail'
 import PlatformBadge from '../components/ui/PlatformBadge'
 import StatusBadge from '../components/ui/StatusBadge'
-import { listDownloads } from '../services/downloadsApi'
-import { normalizeDownloadJob } from '../utils/downloadPresentation'
+import { useDownloadsManager } from '../hooks/useDownloadsManager'
 
 /**
  * Cleanly extracts secondary contextual subtitle from statusText without duplicating
@@ -43,69 +42,9 @@ function getStatusSubtitle(statusText, status) {
 export default function DownloadsPage() {
   const [activeTab, setActiveTab] = useState('all')
   const [searchQuery, setSearchQuery] = useState('')
-  const [downloadsList, setDownloadsList] = useState([])
-  const [isLoading, setIsLoading] = useState(true)
 
-  const speedTrackerRef = useRef(new Map())
-  const isPollingRef = useRef(false)
-  const hasActiveRef = useRef(false)
-
-  // Step 05.10: Controlled live polling using secure IPC bridge (listDownloads)
-  useEffect(() => {
-    let isMounted = true
-    let timerId = null
-
-    async function fetchJobs() {
-      if (isPollingRef.current) return
-      isPollingRef.current = true
-
-      try {
-        const response = await listDownloads({ limit: 50 })
-        if (
-          isMounted &&
-          response.ok &&
-          response.data?.success &&
-          Array.isArray(response.data.data)
-        ) {
-          const normalized = response.data.data
-            .map((job) => normalizeDownloadJob(job, speedTrackerRef.current))
-            .filter(Boolean)
-          hasActiveRef.current = normalized.some(
-            (item) => item.status === 'downloading' || item.status === 'queued'
-          )
-          setDownloadsList(normalized)
-        }
-      } catch (err) {
-        console.warn('Downloads polling error:', err)
-      } finally {
-        isPollingRef.current = false
-        if (isMounted) {
-          setIsLoading(false)
-        }
-      }
-    }
-
-    // Initial immediate fetch
-    fetchJobs()
-
-    // Dynamic adaptive interval: 2s when active jobs exist, 8s when idle
-    function scheduleNext() {
-      const interval = hasActiveRef.current ? 2000 : 8000
-      timerId = setTimeout(async () => {
-        if (isMounted) {
-          await fetchJobs()
-          scheduleNext()
-        }
-      }, interval)
-    }
-
-    scheduleNext()
-
-    return () => {
-      isMounted = false
-      if (timerId) clearTimeout(timerId)
-    }
-  }, [])
+  // Step 07: Centralized Downloads Manager state & resilient lifecycle coordination
+  const { downloadsList, setDownloadsList, isLoading } = useDownloadsManager({ limit: 50 })
 
   // Dynamically calculate counts directly from real SQLite-backed records
   const downloadingCount = downloadsList.filter((item) => item.status === 'downloading').length
@@ -345,8 +284,11 @@ export default function DownloadsPage() {
                     {/* Status Column with animated spinner, gear, or hourglass */}
                     <td className="py-3.5 px-4">
                       <StatusBadge
-                        status={item.status}
-                        subtitle={getStatusSubtitle(item.statusText, item.status)}
+                        status={item.displayStatus || item.status}
+                        subtitle={getStatusSubtitle(
+                          item.statusText,
+                          item.displayStatus || item.status
+                        )}
                       />
                     </td>
 
@@ -391,16 +333,26 @@ export default function DownloadsPage() {
                 )
               })}
 
-              {downloadsList.length === 0 ? (
+              {isLoading ? (
+                <tr>
+                  <td colSpan={7} className="py-16 text-center text-text-muted">
+                    <div className="flex flex-col items-center justify-center gap-3 select-none">
+                      <Loader2 className="w-8 h-8 text-[#19D8FF] animate-spin" />
+                      <span className="text-sm font-semibold text-white">Loading downloads...</span>
+                      <span className="text-xs text-text-muted">
+                        Fetching your active and recent downloads...
+                      </span>
+                    </div>
+                  </td>
+                </tr>
+              ) : downloadsList.length === 0 ? (
                 <tr>
                   <td colSpan={7} className="py-16 text-center text-text-muted">
                     <div className="flex flex-col items-center justify-center gap-2 select-none">
                       <Download className="w-8 h-8 text-text-muted/40" />
                       <span className="text-sm font-semibold text-white">No downloads found</span>
                       <span className="text-xs text-text-muted">
-                        {isLoading
-                          ? 'Loading active and completed downloads...'
-                          : 'Start downloading videos or audio from the Downloader page.'}
+                        Start downloading videos or audio from the Downloader page.
                       </span>
                     </div>
                   </td>

@@ -403,3 +403,91 @@ export async function cleanupJobTemporaryFiles(jobId, downloadPath) {
 export async function cleanupStaleJobTemporaryFiles(jobId, downloadPath) {
   return await cleanupJobTemporaryFiles(jobId, downloadPath)
 }
+
+/**
+ * Step 09.E - Inspects and verifies partial download artifacts for an interrupted job.
+ * Checks both the target download directory (for .part files) and the job-owned
+ * temporary workspace for readable, non-empty, non-symlink partial file streams.
+ *
+ * @param {number} jobId - Download job ID
+ * @param {string} downloadPath - Base download folder
+ * @returns {Promise<{ isValid: boolean, partialBytes: number, files: Array<{ path: string, size: number }> }>}
+ */
+export async function verifyJobPartialDownload(jobId, downloadPath) {
+  validateJobId(jobId)
+  validateDownloadPath(downloadPath)
+
+  const normalizedDownloadPath = path.resolve(downloadPath.trim())
+  const validFiles = []
+  let totalBytes = 0
+
+  // 1. Check target downloadPath for yt-dlp .part files belonging to this job
+  try {
+    const entries = await readdir(normalizedDownloadPath)
+    const jobMarker = `[job-${jobId}]`
+
+    for (const entry of entries) {
+      if (!entry.includes(jobMarker)) continue
+      const isPart =
+        entry.endsWith('.part') ||
+        entry.endsWith('.ytdl') ||
+        /\.f\d+\.part$/i.test(entry) ||
+        entry.endsWith('.temp')
+
+      if (isPart) {
+        const fullPath = path.join(normalizedDownloadPath, entry)
+        try {
+          const fileStat = await lstat(fullPath)
+          if (fileStat.isSymbolicLink()) {
+            return { isValid: false, partialBytes: 0, files: [], isUnsafe: true }
+          }
+          if (fileStat.isFile() && fileStat.size > 0) {
+            validFiles.push({ path: fullPath, size: fileStat.size })
+            totalBytes += fileStat.size
+          }
+        } catch {
+          // File may have been removed or locked
+        }
+      }
+    }
+  } catch {
+    // Cannot read downloadPath
+  }
+
+  // 2. Check job-owned temporary workspace (.applan2-partial-downloads/job-ID)
+  try {
+    const jobTempPath = getJobTemporaryWorkspacePath(jobId, normalizedDownloadPath)
+    const tempDirStat = await lstat(jobTempPath)
+
+    if (tempDirStat.isSymbolicLink()) {
+      return { isValid: false, partialBytes: 0, files: [], isUnsafe: true }
+    }
+
+    if (tempDirStat.isDirectory()) {
+      const tempEntries = await readdir(jobTempPath)
+      for (const tempEntry of tempEntries) {
+        const fullTempPath = path.join(jobTempPath, tempEntry)
+        try {
+          const fileStat = await lstat(fullTempPath)
+          if (fileStat.isSymbolicLink()) {
+            return { isValid: false, partialBytes: 0, files: [], isUnsafe: true }
+          }
+          if (fileStat.isFile() && fileStat.size > 0) {
+            validFiles.push({ path: fullTempPath, size: fileStat.size })
+            totalBytes += fileStat.size
+          }
+        } catch {
+          // Ignore
+        }
+      }
+    }
+  } catch {
+    // Workspace does not exist or inaccessible
+  }
+
+  return {
+    isValid: validFiles.length > 0 && totalBytes > 0,
+    partialBytes: totalBytes,
+    files: validFiles
+  }
+}

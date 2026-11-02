@@ -98,6 +98,93 @@ export class DownloadCancelledError extends Error {
   }
 }
 
+// Step 09.G - Custom error to distinguish application shutdown from user cancellation
+export class DownloadInterruptedError extends Error {
+  constructor(message = 'Download was interrupted by application shutdown') {
+    super(message)
+    this.name = 'DownloadInterruptedError'
+  }
+}
+
+// Step 09.F - Detect yt-dlp resume/range incompatibility (HTTP 416 / Requested Range Not Satisfiable)
+export function isResumeIncompatibilityError(error) {
+  if (!error) return false
+  const raw = String(error?.cause?.stderr || error?.message || error?.stderr || '').toLowerCase()
+
+  return (
+    raw.includes('416') ||
+    raw.includes('range not satisfiable') ||
+    raw.includes('requested range not satisfiable')
+  )
+}
+
+// Step 09.G - Gracefully interrupt a download process before forceful termination
+export async function gracefullyInterruptDownloadProcess(childProcess, timeoutMs = 3000) {
+  if (!childProcess || typeof childProcess.pid !== 'number' || childProcess.killed) {
+    return
+  }
+
+  // 1. Send platform-appropriate graceful termination signal first
+  try {
+    childProcess.kill('SIGINT')
+  } catch {
+    try {
+      childProcess.kill('SIGTERM')
+    } catch {
+      // Process might already be dead
+    }
+  }
+
+  // 2. Wait up to timeoutMs for process to exit cleanly
+  const hasExited = await Promise.race([
+    new Promise((resolve) => {
+      childProcess.once('exit', () => resolve(true))
+      childProcess.once('close', () => resolve(true))
+    }),
+    new Promise((resolve) => setTimeout(() => resolve(false), timeoutMs))
+  ])
+
+  if (hasExited) {
+    return
+  }
+
+  // 3. Fallback to forceful termination tree if it did not exit within timeoutMs
+  console.warn(
+    `[download] Process ${childProcess.pid} did not exit within ${timeoutMs}ms, terminating forcefully...`
+  )
+  await terminateDownloadProcessTree(childProcess)
+}
+
+// Step 09.G - Graceful shutdown of all active download processes
+export async function shutdownActiveDownloads({ timeoutMs = 5000 } = {}) {
+  const jobEntries = Array.from(activeDownloadProcesses.entries())
+  if (jobEntries.length === 0) {
+    return
+  }
+
+  console.log(`[download] Shutting down ${jobEntries.length} active download process(es)...`)
+
+  for (const [, processEntry] of jobEntries) {
+    processEntry.shutdownRequested = true
+  }
+
+  await Promise.allSettled(
+    jobEntries.map(async ([jobId, processEntry]) => {
+      try {
+        await gracefullyInterruptDownloadProcess(processEntry.childProcess, timeoutMs)
+      } catch (err) {
+        console.error(`[download] Error interrupting job ${jobId} during shutdown:`, err)
+      }
+    })
+  )
+
+  try {
+    await withCompletionWriteLock(async () => {})
+  } catch {
+    // Ignore
+  }
+}
+
 // Safely terminate process tree (including yt-dlp and ffmpeg subprocesses)
 async function terminateDownloadProcessTree(childProcess) {
   if (!childProcess || typeof childProcess.pid !== 'number' || childProcess.killed) {
@@ -247,6 +334,7 @@ export function buildYtDlpArgs({
     '--no-simulate',
     '--progress',
     '--newline',
+    '--continue',
 
     // Structured download progress output
     '--progress-template',
@@ -323,7 +411,8 @@ export function runYtDlp(args, onProgress = null, onOutputLine = null, options =
 
         const processEntry = {
           childProcess: child,
-          cancelRequested: false
+          cancelRequested: false,
+          shutdownRequested: false
         }
 
         if (options?.jobId) {
@@ -424,6 +513,13 @@ export function runYtDlp(args, onProgress = null, onOutputLine = null, options =
 
         // Handle failure to start yt-dlp
         child.once('error', (error) => {
+          if (processEntry.shutdownRequested) {
+            settleReject(
+              new DownloadInterruptedError('Download was interrupted by application shutdown')
+            )
+            return
+          }
+
           if (processEntry.cancelRequested) {
             settleReject(new DownloadCancelledError('Download was cancelled'))
             return
@@ -435,6 +531,13 @@ export function runYtDlp(args, onProgress = null, onOutputLine = null, options =
 
         // Handle process completion
         child.once('close', (exitCode, signal) => {
+          if (processEntry.shutdownRequested) {
+            settleReject(
+              new DownloadInterruptedError('Download was interrupted by application shutdown')
+            )
+            return
+          }
+
           if (processEntry.cancelRequested) {
             settleReject(new DownloadCancelledError('Download was cancelled'))
             return
@@ -486,20 +589,28 @@ export async function claimQueuedDownloadJob(jobId) {
 
   const DownloadJob = getDatabase().models.DownloadJob
 
-  const [updatedCount] = await DownloadJob.update(
-    {
-      status: 'downloading',
-      progress: 0,
-      downloaded_bytes: 0,
-      error_message: null
-    },
-    {
-      where: {
-        id: jobId,
-        status: 'queued'
-      }
+  const job = await DownloadJob.findByPk(jobId)
+  if (!job || job.status !== 'queued') {
+    return null
+  }
+
+  const updatePayload = {
+    status: 'downloading',
+    error_message: null
+  }
+
+  // Step 09.I - Preserve existing progress & downloaded bytes if job has existing progress (resuming job)
+  if (job.progress == null || job.progress <= 0) {
+    updatePayload.progress = 0
+    updatePayload.downloaded_bytes = 0
+  }
+
+  const [updatedCount] = await DownloadJob.update(updatePayload, {
+    where: {
+      id: jobId,
+      status: 'queued'
     }
-  )
+  })
 
   if (updatedCount !== 1) {
     return null
@@ -1099,7 +1210,7 @@ export async function saveDownloadedFile(
   return downloadFile
 }
 
-export async function executeDownloadJob(jobId) {
+export async function executeDownloadJob(jobId, options = {}) {
   // 1. Prepare download information safely
   let execution
 
@@ -1140,15 +1251,15 @@ export async function executeDownloadJob(jobId) {
 
   // 3. Prepare ordered progress database updates
   let progressWriteChain = Promise.resolve()
-  let lastScheduledProgress = 0
+  let lastScheduledProgress = claimedJob.progress || 0
   let progressWriteError = null
 
   // Both MP3 and MP4 use structured download information
   const streamTracker = createMultiStreamProgressTracker()
 
-  // Last scheduled network byte count
-  let lastScheduledBytes = 0
-  let latestObservedBytes = 0
+  // Last scheduled network byte count (initialize from restored bytes to prevent regression)
+  let lastScheduledBytes = claimedJob.downloaded_bytes || 0
+  let latestObservedBytes = claimedJob.downloaded_bytes || 0
   let lastBytesWriteAt = 0
 
   // 5. Schedule progress updates safely
@@ -1395,6 +1506,68 @@ export async function executeDownloadJob(jobId) {
   } catch (error) {
     // Complete any pending progress database writes
     await progressWriteChain
+
+    // Step 09.G - Handle application shutdown interruption
+    if (error instanceof DownloadInterruptedError) {
+      try {
+        const DownloadJob = getDatabase().models.DownloadJob
+        await DownloadJob.update(
+          {
+            status: 'queued',
+            error_message: null
+          },
+          {
+            where: {
+              id: jobId,
+              status: 'downloading'
+            }
+          }
+        )
+        console.log(`[download] Job ${jobId} safely transitioned to 'queued' for resume on restart`)
+      } catch (statusError) {
+        console.error(
+          `[download] Failed to persist queued state for interrupted job ${jobId}:`,
+          statusError
+        )
+      }
+
+      // Preserve partial files and temporary workspace across shutdown
+      throw error
+    }
+
+    // Step 09.F - Handle sources that do not support resume (HTTP 416 / Range Not Satisfiable)
+    if (isResumeIncompatibilityError(error) && !options?.isResumeRetry) {
+      console.warn(
+        `[download] Job ${jobId} failed with resume range incompatibility. Cleaning partial artifacts and retrying fresh once...`
+      )
+      try {
+        const cleanPath =
+          execution?.downloadPath ||
+          (await getSavedDownloadPath(getDatabase().models.AppSetting)) ||
+          (await getDefaultDownloadPath())
+
+        await cleanupJobTemporaryFiles(jobId, cleanPath)
+
+        const DownloadJob = getDatabase().models.DownloadJob
+        await DownloadJob.update(
+          {
+            status: 'queued',
+            progress: 0,
+            downloaded_bytes: 0,
+            error_message: null
+          },
+          {
+            where: {
+              id: jobId
+            }
+          }
+        )
+
+        return await executeDownloadJob(jobId, { isResumeRetry: true })
+      } catch (retryError) {
+        console.error(`[download] Fallback fresh retry for job ${jobId} failed:`, retryError)
+      }
+    }
 
     if (error instanceof DownloadCancelledError) {
       try {

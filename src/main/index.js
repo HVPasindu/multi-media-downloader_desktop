@@ -1,6 +1,8 @@
 import { app, shell, BrowserWindow, ipcMain, dialog } from 'electron'
 
 import { startServer, stopServer } from './backend/server.js'
+import { stopQueueForShutdown } from './backend/services/downloadQueueService.js'
+import { shutdownActiveDownloads } from './backend/services/downloadService.js'
 
 import { initializeDatabase } from './backend/config/database.js'
 import { recoverInterruptedDownloadJobs } from './backend/services/downloadRecoveryService.js'
@@ -246,15 +248,21 @@ app.on('before-quit', (event) => {
 
   async function shutdown() {
     try {
-      // Stop Express Server
+      // 1. Step 09.G - Stop queue scheduler from starting additional jobs
+      stopQueueForShutdown()
+
+      // 2. Step 09.G - Gracefully interrupt running yt-dlp child processes & flush DB writes
+      await shutdownActiveDownloads({ timeoutMs: 5000 })
+
+      // 3. Stop Express Server
       await stopServer()
 
-      // Close SQLite connection
+      // 4. Close SQLite connection only after active processes and writes have settled
       if (databaseConnection) {
         await databaseConnection.close()
       }
 
-      console.log('Application resources closed')
+      console.log('Application resources closed safely')
     } catch (error) {
       console.error('Shutdown error:', error)
     } finally {

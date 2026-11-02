@@ -183,6 +183,9 @@ export function normalizeDownloadJob(job, speedTracker = null) {
   // Progress percentage (0 - 100)
   const progress = Math.min(100, Math.max(0, Math.round(Number(job.progress) || 0)))
 
+  // Step 09.J - Distinguish resuming state for recovered downloads waiting in queue
+  const isResuming = isQueued && progress > 0
+
   // Download speed & ETA computation (only when downloading)
   let speedText = null
   let etaText = null
@@ -200,21 +203,30 @@ export function normalizeDownloadJob(job, speedTracker = null) {
     }
   }
 
-  // Build user-friendly status text
+  // Build user-friendly status text and display status
   let statusText = job.status
+  let displayStatus = job.status
   if (isDownloading) {
     const details = []
     if (speedText && speedText !== '—') details.push(speedText)
     if (etaText) details.push(etaText)
     statusText = details.length > 0 ? `Downloading (${details.join(' • ')})` : 'Downloading'
+    displayStatus = 'downloading'
+  } else if (isResuming) {
+    statusText = `Resuming (${progress}% saved)`
+    displayStatus = 'resuming'
   } else if (isQueued) {
     statusText = 'Queued'
+    displayStatus = 'queued'
   } else if (isCompleted) {
     statusText = 'Completed'
+    displayStatus = 'completed'
   } else if (isFailed) {
     statusText = job.error_message || 'Failed'
+    displayStatus = 'failed'
   } else if (isCancelled) {
     statusText = 'Cancelled'
+    displayStatus = 'cancelled'
   }
 
   return {
@@ -236,6 +248,7 @@ export function normalizeDownloadJob(job, speedTracker = null) {
     progressText,
     speedText,
     etaText,
+    displayStatus,
     status: job.status,
     statusText,
     errorMessage: job.error_message,
@@ -243,4 +256,3 @@ export function normalizeDownloadJob(job, speedTracker = null) {
     createdAt: job.createdAt
   }
 }
-

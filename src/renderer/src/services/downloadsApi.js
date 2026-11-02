@@ -21,6 +21,9 @@ export function createDownload(options) {
     path: '/api/downloads',
     method: 'POST',
     body: options
+  }).then((res) => {
+    if (res.ok) notifyDownloadStateChanged()
+    return res
   })
 }
 
@@ -80,6 +83,9 @@ export function cancelDownload(id) {
   return apiRequest({
     path: `/api/downloads/${id}/cancel`,
     method: 'POST'
+  }).then((res) => {
+    if (res.ok) notifyDownloadStateChanged()
+    return res
   })
 }
 
@@ -93,6 +99,9 @@ export function retryDownload(id) {
   return apiRequest({
     path: `/api/downloads/${id}/retry`,
     method: 'POST'
+  }).then((res) => {
+    if (res.ok) notifyDownloadStateChanged()
+    return res
   })
 }
 
@@ -126,4 +135,55 @@ export function clearDownloadHistory(options = {}) {
     method: 'DELETE',
     body: { confirm, statuses }
   })
+}
+
+/**
+ * Dispatches a lightweight DOM event to notify active views that download state changed.
+ */
+export function notifyDownloadStateChanged() {
+  if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
+    try {
+      window.dispatchEvent(new CustomEvent('applan2:download-state-changed'))
+    } catch {
+      // Ignore in non-browser testing contexts
+    }
+  }
+}
+
+/**
+ * Retrieves active download counts (downloading + queued) using existing
+ * backend GET /api/downloads pagination metadata without fabricating numbers.
+ *
+ * @returns {Promise<{ ok: boolean, total: number, downloading: number, queued: number, error?: any }>}
+ */
+export async function getActiveDownloadsCount() {
+  try {
+    const [downloadingRes, queuedRes] = await Promise.all([
+      listDownloads({ status: 'downloading', limit: 1 }),
+      listDownloads({ status: 'queued', limit: 1 })
+    ])
+
+    const downloadingTotal =
+      downloadingRes.ok && downloadingRes.data?.success
+        ? Number(downloadingRes.data?.pagination?.total) || 0
+        : 0
+
+    const queuedTotal =
+      queuedRes.ok && queuedRes.data?.success ? Number(queuedRes.data?.pagination?.total) || 0 : 0
+
+    return {
+      ok: Boolean(downloadingRes.ok && queuedRes.ok),
+      total: downloadingTotal + queuedTotal,
+      downloading: downloadingTotal,
+      queued: queuedTotal
+    }
+  } catch (err) {
+    return {
+      ok: false,
+      total: 0,
+      downloading: 0,
+      queued: 0,
+      error: err
+    }
+  }
 }
