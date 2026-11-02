@@ -136,7 +136,7 @@ export function buildDownloadRequestIdentity({
 }
 
 /**
- * Checks SQLite for an existing download job that is currently 'queued' or 'downloading'
+ * Checks SQLite for an existing download job that is currently 'queued', 'downloading', or 'interrupted'
  * for the same canonical media source and identical format/quality/bitrate settings.
  * Completed, failed, and cancelled jobs are intentionally ignored.
  *
@@ -174,10 +174,10 @@ export async function findActiveDuplicateDownload({
 
   const targetMediaKey = resolvedSourceUrl ? getCanonicalMediaKey(resolvedSourceUrl) : null
 
-  // Search only active lifecycle states: 'queued' or 'downloading'
+  // Search only active lifecycle states: 'queued', 'downloading', or 'interrupted'
   const whereClause = {
     status: {
-      [Op.in]: ['queued', 'downloading']
+      [Op.in]: ['queued', 'downloading', 'interrupted']
     },
     output_format: outputFormat
   }

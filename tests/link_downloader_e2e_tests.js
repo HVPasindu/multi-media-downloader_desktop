@@ -375,6 +375,16 @@ async function runAllE2eTests() {
     assert.equal(dupReqRes.body.duplicate, true, 'duplicate flag must be true')
     assert.equal(dupReqRes.body.data.id, dupBaseId, 'must reference the existing active job ID')
 
+    // Also test read-only check-duplicate endpoint
+    const checkDupRes = await env.request({
+      path: '/api/downloads/check-duplicate',
+      method: 'POST',
+      body: { mediaItemId, outputFormat: 'mp4', quality: '1080p' }
+    })
+    assert.equal(checkDupRes.status, 200, 'Check duplicate endpoint returns HTTP 200')
+    assert.equal(checkDupRes.body.duplicate, true, 'Check duplicate reports duplicate === true')
+    assert.equal(checkDupRes.body.data.id, dupBaseId, 'Check duplicate returns active job ID')
+
     // Request different quality (e.g. 720p) -> must be independent and create new job
     const diffQualityRes = await env.request({
       path: '/api/downloads',

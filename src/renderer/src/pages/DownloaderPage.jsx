@@ -35,6 +35,7 @@ import {
   extractMp4Qualities
 } from '../utils/mediaMetadata'
 import { extractUrlFromDataTransfer, validateMediaUrlInput } from '../utils/mediaUrlInput'
+import { useDownloadDuplicateGuard } from '../hooks/useDownloadDuplicateGuard'
 
 /**
  * Downloader Page - Fully refined to match Reference Image 1.
@@ -721,13 +722,13 @@ export default function DownloaderPage() {
             ? `Download job #${jobId} created and queued successfully!`
             : 'Download queued successfully!'
         })
-        await fetchRecentDownloads()
+        await Promise.all([fetchRecentDownloads(), refreshDuplicateStatus()])
       } else if (response.status === 200 && response.data?.duplicate) {
         setDownloadSubmitFeedback({
           type: 'info',
           message: response.data.message || 'An equivalent download is already active or in queue.'
         })
-        await fetchRecentDownloads()
+        await Promise.all([fetchRecentDownloads(), refreshDuplicateStatus()])
       } else {
         const errorMsg =
           response.data?.message ||
@@ -774,6 +775,18 @@ export default function DownloaderPage() {
   // Visual isolation states between MP4 and MP3 configurations
   const isMp4Active = selectedFormat === 'mp4' && Boolean(analyzedMedia) && mp4Available
   const isMp3Active = selectedFormat === 'mp3' && Boolean(analyzedMedia) && mp3Available
+
+  // Step 02: Duplicate Download Guard hook
+  const { isCheckingDuplicate, isDuplicate, duplicateJob, refreshDuplicateStatus } =
+    useDownloadDuplicateGuard({
+      mediaItemId: analyzedMedia?.mediaItemId,
+      selectedFormat,
+      selectedVideoQuality,
+      selectedAudioBitrate,
+      mp4Qualities,
+      highestAvailableQuality,
+      enabled: Boolean(analyzedMedia && !isAnalyzing)
+    })
 
   // Determine whether showing a Retry button is appropriate (Step 02)
   const isRetryAppropriate =
@@ -1316,6 +1329,8 @@ export default function DownloaderPage() {
               !analyzedMedia ||
               isAnalyzing ||
               isSubmittingDownload ||
+              isCheckingDuplicate ||
+              isDuplicate ||
               (selectedFormat === 'mp4' && !mp4Available) ||
               (selectedFormat === 'mp3' && !mp3Available)
             }
@@ -1325,6 +1340,30 @@ export default function DownloaderPage() {
               <>
                 <Loader2 className="w-5 h-5 animate-spin" />
                 <span>Queuing Download...</span>
+              </>
+            ) : isCheckingDuplicate ? (
+              <>
+                <Loader2 className="w-5 h-5 animate-spin" />
+                <span>Checking Existing Download...</span>
+              </>
+            ) : isDuplicate && duplicateJob ? (
+              <>
+                {duplicateJob.status === 'interrupted' ? (
+                  <AlertCircle className="w-5 h-5 stroke-[2.5]" />
+                ) : duplicateJob.status === 'queued' ? (
+                  <Clock className="w-5 h-5 stroke-[2.5]" />
+                ) : (
+                  <Download className="w-5 h-5 stroke-[2.5]" />
+                )}
+                <span>
+                  {duplicateJob.status === 'downloading'
+                    ? `Already Downloading – Job #${duplicateJob.id}`
+                    : duplicateJob.status === 'queued'
+                      ? `Already Queued – Job #${duplicateJob.id}`
+                      : duplicateJob.status === 'interrupted'
+                        ? `Interrupted – Waiting for Internet – Job #${duplicateJob.id}`
+                        : `Already Active – Job #${duplicateJob.id}`}
+                </span>
               </>
             ) : (
               <>

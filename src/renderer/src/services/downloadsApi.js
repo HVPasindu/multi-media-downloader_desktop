@@ -40,6 +40,24 @@ export function createDownload(options) {
  * @param {number} [filters.offset=0] - Records to skip
  * @returns {Promise<{ status: number, ok: boolean, data: { success: boolean, data?: Array<object> } }>}
  */
+/**
+ * Checks whether the currently selected media configuration already has an active download.
+ *
+ * @param {object} options
+ * @param {number} options.mediaItemId - ID of the analyzed MediaItem in SQLite
+ * @param {'mp4'|'mp3'} options.outputFormat - Desired format ('mp4' | 'mp3')
+ * @param {string} [options.quality] - Video resolution (e.g. '1080p') when outputFormat is 'mp4'
+ * @param {number} [options.audioBitrateKbps] - Audio bitrate (128, 192, 320) when outputFormat is 'mp3'
+ * @returns {Promise<{ status: number, ok: boolean, data: { success: boolean, duplicate: boolean, data: object|null } }>}
+ */
+export function checkDownloadDuplicate(options) {
+  return apiRequest({
+    path: '/api/downloads/check-duplicate',
+    method: 'POST',
+    body: options
+  })
+}
+
 export function listDownloads(filters = {}) {
   const params = new URLSearchParams()
 

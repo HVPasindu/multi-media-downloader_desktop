@@ -73,6 +73,10 @@ const TEST_SUITES = [
   {
     name: 'Phase 04: Step 09 Network Recovery & Option A Restart Recovery Suite',
     file: 'tests/download_network_recovery_tests.js'
+  },
+  {
+    name: 'Corrective Step 02: Duplicate Download Guard Test Suite (A–N)',
+    file: 'tests/duplicate_download_guard_tests.js'
   }
 ]
 
