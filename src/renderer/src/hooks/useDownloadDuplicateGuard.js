@@ -1,5 +1,169 @@
-import { useEffect, useRef, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import { checkDownloadDuplicate } from '../services/downloadsApi'
+
+/**
+ * Testable request-coordination helper used by useDownloadDuplicateGuard.
+ * Encapsulates request generation sequencing, stale response rejection,
+ * selection key diffing, unmount invalidation, and deadlock-free loading state transitions.
+ */
+export class DuplicateGuardCoordinator {
+  constructor({ onStateChange, onCheckingChange, checkApiFn = checkDownloadDuplicate } = {}) {
+    this.onStateChange = onStateChange || (() => {})
+    this.onCheckingChange = onCheckingChange || (() => {})
+    this.checkApiFn = checkApiFn
+
+    this.requestGeneration = 0
+    this.isMounted = true
+    this.lastSelectionKey = null
+    this.state = {
+      isCheckingDuplicate: false,
+      isDuplicate: false,
+      duplicateJob: null
+    }
+  }
+
+  getState() {
+    return { ...this.state }
+  }
+
+  mount() {
+    this.isMounted = true
+  }
+
+  unmount() {
+    this.isMounted = false
+    this.requestGeneration++
+  }
+
+  resolveQuality(format, quality, mp4Qualities, highestQuality) {
+    if (format !== 'mp4') return null
+    if (quality === 'best' || !mp4Qualities.includes(quality)) {
+      return highestQuality
+    }
+    return quality
+  }
+
+  async executeCheck(params = {}, options = {}) {
+    const isBackground = options?.isBackground === true
+
+    const {
+      enabled = true,
+      mediaItemId,
+      selectedFormat,
+      selectedVideoQuality,
+      selectedAudioBitrate,
+      mp4Qualities = [],
+      highestAvailableQuality = null
+    } = params
+
+    const resolvedQuality = this.resolveQuality(
+      selectedFormat,
+      selectedVideoQuality,
+      mp4Qualities,
+      highestAvailableQuality
+    )
+    const resolvedBitrate = selectedFormat === 'mp3' ? Number(selectedAudioBitrate) || 192 : null
+
+    // 1. Early-return: If disabled or invalid, invalidate in-flight requests and reset state
+    if (
+      !enabled ||
+      !Number.isInteger(mediaItemId) ||
+      mediaItemId <= 0 ||
+      (selectedFormat !== 'mp4' && selectedFormat !== 'mp3')
+    ) {
+      this.requestGeneration++
+      this.lastSelectionKey = null
+      this._updateState({ isDuplicate: false, duplicateJob: null })
+      this._updateChecking(false)
+      return
+    }
+
+    if (selectedFormat === 'mp4' && (!resolvedQuality || typeof resolvedQuality !== 'string')) {
+      this.requestGeneration++
+      this.lastSelectionKey = null
+      this._updateState({ isDuplicate: false, duplicateJob: null })
+      this._updateChecking(false)
+      return
+    }
+
+    if (selectedFormat === 'mp3' && ![128, 192, 320].includes(resolvedBitrate)) {
+      this.requestGeneration++
+      this.lastSelectionKey = null
+      this._updateState({ isDuplicate: false, duplicateJob: null })
+      this._updateChecking(false)
+      return
+    }
+
+    // 2. Selection key diffing: check if selection changed
+    const selectionKey = `${mediaItemId}:${selectedFormat}:${selectedFormat === 'mp4' ? resolvedQuality : resolvedBitrate}`
+    const isNewSelection = this.lastSelectionKey !== selectionKey
+    this.lastSelectionKey = selectionKey
+
+    // When selection changes, invalidate prior in-flight requests and clear old duplicate info
+    if (isNewSelection) {
+      this.requestGeneration++
+      this._updateState({ isDuplicate: false, duplicateJob: null })
+    }
+
+    const requestId = ++this.requestGeneration
+
+    // Only show checking spinner for foreground checks
+    if (!isBackground) {
+      this._updateChecking(true)
+    }
+
+    try {
+      const payload = {
+        mediaItemId,
+        outputFormat: selectedFormat,
+        ...(selectedFormat === 'mp4' ? { quality: resolvedQuality } : {}),
+        ...(selectedFormat === 'mp3' ? { audioBitrateKbps: resolvedBitrate } : {})
+      }
+
+      const response = await this.checkApiFn(payload)
+
+      // Reject stale generations or unmounted responses
+      if (requestId !== this.requestGeneration || !this.isMounted) {
+        return
+      }
+
+      const isDuplicateDetected = Boolean(
+        response?.ok && response?.data?.duplicate === true && response?.data?.data
+      )
+
+      if (isDuplicateDetected) {
+        this._updateState({ isDuplicate: true, duplicateJob: response.data.data })
+      } else {
+        this._updateState({ isDuplicate: false, duplicateJob: null })
+      }
+    } catch (err) {
+      if (requestId !== this.requestGeneration || !this.isMounted) {
+        return
+      }
+      console.warn('[duplicate-guard] Duplicate check error:', err?.message)
+    } finally {
+      // The latest settled generation always releases checking state
+      if (requestId === this.requestGeneration && this.isMounted) {
+        this._updateChecking(false)
+      }
+    }
+  }
+
+  _updateState({ isDuplicate, duplicateJob }) {
+    this.state.isDuplicate = isDuplicate
+    this.state.duplicateJob = duplicateJob
+    if (this.isMounted) {
+      this.onStateChange({ isDuplicate, duplicateJob })
+    }
+  }
+
+  _updateChecking(isChecking) {
+    this.state.isCheckingDuplicate = isChecking
+    if (this.isMounted) {
+      this.onCheckingChange(isChecking)
+    }
+  }
+}
 
 /**
  * Custom React Hook: useDownloadDuplicateGuard
@@ -14,7 +178,7 @@ import { checkDownloadDuplicate } from '../services/downloadsApi'
  * 2. 'Best' Resolution: Automatically maps selectedVideoQuality === 'best' to the highest verified
  *    resolution (e.g. '1080p') to match backend canonical request identity.
  * 3. Race & Stale Protection: Outdated asynchronous responses are discarded using an internal
- *    request-generation sequence counter (requestGenerationRef).
+ *    request-generation sequence counter (DuplicateGuardCoordinator).
  * 4. Stale State Invalidation: Selection changes (URL, quality, bitrate, format) and early returns
  *    immediately invalidate outstanding requests and clear previous duplicate state so prior
  *    selections never block new selections.
@@ -54,140 +218,51 @@ export function useDownloadDuplicateGuard({
   const [isDuplicate, setIsDuplicate] = useState(false)
   const [duplicateJob, setDuplicateJob] = useState(null)
 
-  const requestGenerationRef = useRef(0)
-  const isMountedRef = useRef(true)
-  const lastSelectionKeyRef = useRef(null)
+  const [coordinator] = useState(
+    () =>
+      new DuplicateGuardCoordinator({
+        onStateChange: ({ isDuplicate: d, duplicateJob: j }) => {
+          setIsDuplicate(d)
+          setDuplicateJob(j)
+        },
+        onCheckingChange: (checking) => {
+          setIsCheckingDuplicate(checking)
+        }
+      })
+  )
 
   // Track mount state and invalidate in-flight responses on unmount
   useEffect(() => {
-    isMountedRef.current = true
+    coordinator.mount()
     return () => {
-      isMountedRef.current = false
+      coordinator.unmount()
     }
-  }, [])
+  }, [coordinator])
 
-  // Resolve video quality: Map 'best' to highest available quality
-  let resolvedQuality = null
-  if (selectedFormat === 'mp4') {
-    resolvedQuality = selectedVideoQuality
-    if (resolvedQuality === 'best' || !mp4Qualities.includes(resolvedQuality)) {
-      resolvedQuality = highestAvailableQuality
-    }
+  const params = {
+    mediaItemId,
+    selectedFormat,
+    selectedVideoQuality,
+    selectedAudioBitrate,
+    mp4Qualities,
+    highestAvailableQuality,
+    enabled
   }
 
-  const resolvedBitrate = selectedFormat === 'mp3' ? Number(selectedAudioBitrate) || 192 : null
-
-  /**
-   * Performs the duplicate check against the backend endpoint.
-   */
   const executeCheck = useCallback(
-    async (options = {}) => {
-      const isBackground = options?.isBackground === true
-
-      // If disabled or missing required identifiers, invalidate in-flight requests and reset state
-      if (
-        !enabled ||
-        !Number.isInteger(mediaItemId) ||
-        mediaItemId <= 0 ||
-        (selectedFormat !== 'mp4' && selectedFormat !== 'mp3')
-      ) {
-        requestGenerationRef.current++
-        lastSelectionKeyRef.current = null
-        setIsDuplicate(false)
-        setDuplicateJob(null)
-        setIsCheckingDuplicate(false)
-        return
-      }
-
-      // Ensure valid format settings exist before querying
-      if (selectedFormat === 'mp4' && (!resolvedQuality || typeof resolvedQuality !== 'string')) {
-        requestGenerationRef.current++
-        lastSelectionKeyRef.current = null
-        setIsDuplicate(false)
-        setDuplicateJob(null)
-        setIsCheckingDuplicate(false)
-        return
-      }
-
-      if (selectedFormat === 'mp3' && ![128, 192, 320].includes(resolvedBitrate)) {
-        requestGenerationRef.current++
-        lastSelectionKeyRef.current = null
-        setIsDuplicate(false)
-        setDuplicateJob(null)
-        setIsCheckingDuplicate(false)
-        return
-      }
-
-      const selectionKey = `${mediaItemId}:${selectedFormat}:${selectedFormat === 'mp4' ? resolvedQuality : resolvedBitrate}`
-      const isNewSelection = lastSelectionKeyRef.current !== selectionKey
-      lastSelectionKeyRef.current = selectionKey
-
-      // When the selection changes (new media, format, quality, or bitrate):
-      // Invalidate outstanding requests and clear prior duplicate state so previous info cannot block new selection
-      if (isNewSelection) {
-        requestGenerationRef.current++
-        setIsDuplicate(false)
-        setDuplicateJob(null)
-      }
-
-      const requestId = ++requestGenerationRef.current
-
-      // Only show the initial check spinner when not polling in the background
-      if (!isBackground) {
-        setIsCheckingDuplicate(true)
-      }
-
-      try {
-        const payload = {
-          mediaItemId,
-          outputFormat: selectedFormat,
-          ...(selectedFormat === 'mp4' ? { quality: resolvedQuality } : {}),
-          ...(selectedFormat === 'mp3' ? { audioBitrateKbps: resolvedBitrate } : {})
-        }
-
-        const response = await checkDownloadDuplicate(payload)
-
-        // Ignore stale responses from earlier requests or unmounted components
-        if (requestId !== requestGenerationRef.current || !isMountedRef.current) {
-          return
-        }
-
-        if (
-          response.ok &&
-          response.data?.success &&
-          response.data?.duplicate &&
-          response.data?.data
-        ) {
-          setIsDuplicate(true)
-          setDuplicateJob(response.data.data)
-        } else {
-          setIsDuplicate(false)
-          setDuplicateJob(null)
-        }
-      } catch (err) {
-        if (requestId !== requestGenerationRef.current || !isMountedRef.current) {
-          return
-        }
-        // In case of communication error, avoid blocking user action
-        console.warn('[duplicate-guard] Duplicate check error:', err?.message)
-      } finally {
-        // The latest valid request always releases the checking state when settling,
-        // ensuring background requests (e.g. from download-state-changed) cannot leave
-        // the initial foreground loading spinner permanently stuck.
-        if (requestId === requestGenerationRef.current && isMountedRef.current) {
-          setIsCheckingDuplicate(false)
-        }
-      }
+    (options = {}) => {
+      return coordinator.executeCheck(params, options)
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [
+      coordinator,
       enabled,
       mediaItemId,
       selectedFormat,
-      resolvedQuality,
-      resolvedBitrate,
-      setIsCheckingDuplicate,
-      setIsDuplicate,
-      setDuplicateJob
+      selectedVideoQuality,
+      selectedAudioBitrate,
+      mp4Qualities,
+      highestAvailableQuality
     ]
   )
 
@@ -197,14 +272,14 @@ export function useDownloadDuplicateGuard({
   useEffect(() => {
     let cancelled = false
     Promise.resolve().then(() => {
-      if (!cancelled && isMountedRef.current) {
+      if (!cancelled && coordinator.isMounted) {
         executeCheck({ isBackground: false })
       }
     })
     return () => {
       cancelled = true
     }
-  }, [executeCheck])
+  }, [executeCheck, coordinator])
 
   /**
    * Listen to application-wide download state changes to refresh immediately.
@@ -231,7 +306,7 @@ export function useDownloadDuplicateGuard({
     if (!isDuplicate || !duplicateJob) return
 
     const intervalId = setInterval(() => {
-      if (isMountedRef.current) {
+      if (coordinator.isMounted) {
         executeCheck({ isBackground: true })
       }
     }, 2500)
@@ -239,7 +314,7 @@ export function useDownloadDuplicateGuard({
     return () => {
       clearInterval(intervalId)
     }
-  }, [isDuplicate, duplicateJob, executeCheck])
+  }, [isDuplicate, duplicateJob, executeCheck, coordinator])
 
   return {
     isCheckingDuplicate,

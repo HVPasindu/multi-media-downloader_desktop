@@ -263,6 +263,9 @@ export async function withDownloadCreationGuard(requestIdentity, createFn) {
     rejectPromise = reject
   })
 
+  // Prevent unhandled rejection warning in Node.js when no concurrent followers are waiting
+  executionPromise.catch(() => {})
+
   pendingDownloadRequests.set(cleanIdentity, executionPromise)
 
   try {

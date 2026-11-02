@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict'
 import http from 'node:http'
+import os from 'node:os'
+import path from 'node:path'
+import fs from 'node:fs/promises'
 import { createApiApp } from '../src/main/backend/app.js'
 import {
   initSessionToken,
@@ -12,8 +15,14 @@ import {
   buildDownloadRequestIdentity,
   withDownloadCreationGuard
 } from '../src/main/backend/services/downloadDuplicateService.js'
-import { getQueueStatus } from '../src/main/backend/services/downloadQueueService.js'
+import {
+  getQueueStatus,
+  resetQueueForTesting,
+  stopQueueForShutdown
+} from '../src/main/backend/services/downloadQueueService.js'
 import { createTestDatabase } from './helpers/testDatabase.js'
+import { MockChildProcess, YOUTUBE_SYNTHETIC_FIXTURE } from './helpers/e2eTestEnvironment.js'
+import { DuplicateGuardCoordinator } from '../src/renderer/src/hooks/useDownloadDuplicateGuard.js'
 
 /**
  * Helper to make HTTP requests against the ephemeral test server.
@@ -590,160 +599,15 @@ async function runDuplicateDownloadGuardTests() {
     await jobN.destroy()
 
     // ========================================================================
-    // PART 05: STEP 02.1 TARGETED FRONTEND REGRESSION TESTS (A–F)
+    // PART 02: PRODUCTION FRONTEND COORDINATOR VERIFICATION (SCENARIOS A–J)
+    // Directly testing DuplicateGuardCoordinator extracted from useDownloadDuplicateGuard
     // ========================================================================
     console.log('================================================================')
-    console.log(' STEP 02.1: TARGETED FRONTEND RACE CONDITION REGRESSION TESTS   ')
+    console.log(' PART 02: FRONTEND COORDINATOR VERIFICATION (SCENARIOS A–J)     ')
     console.log('================================================================\n')
 
-    // Simulation harness representing useDownloadDuplicateGuard state transitions
-    function createDuplicateGuardHarness({
-      mediaItemId = 1,
-      selectedFormat = 'mp4',
-      selectedVideoQuality = '1080p',
-      selectedAudioBitrate = 192,
-      mp4Qualities = ['1080p', '720p', '360p'],
-      highestAvailableQuality = '1080p',
-      enabled = true,
-      checkApiFn
-    } = {}) {
-      const state = {
-        isCheckingDuplicate: false,
-        isDuplicate: false,
-        duplicateJob: null
-      }
-
-      let requestGeneration = 0
-      let isMounted = true
-      let lastSelectionKey = null
-      let currentParams = {
-        mediaItemId,
-        selectedFormat,
-        selectedVideoQuality,
-        selectedAudioBitrate,
-        mp4Qualities,
-        highestAvailableQuality,
-        enabled
-      }
-
-      const resolveQuality = (format, quality, qualities, highest) => {
-        if (format !== 'mp4') return null
-        if (quality === 'best' || !qualities.includes(quality)) return highest
-        return quality
-      }
-
-      const executeCheck = async (options = {}) => {
-        const isBackground = options?.isBackground === true
-        const {
-          enabled: isEnabled,
-          mediaItemId: mId,
-          selectedFormat: sFormat,
-          selectedVideoQuality: sQuality,
-          selectedAudioBitrate: sBitrate,
-          mp4Qualities: mQualities,
-          highestAvailableQuality: hQuality
-        } = currentParams
-
-        const resolvedQuality = resolveQuality(sFormat, sQuality, mQualities, hQuality)
-        const resolvedBitrate = sFormat === 'mp3' ? Number(sBitrate) || 192 : null
-
-        if (
-          !isEnabled ||
-          !Number.isInteger(mId) ||
-          mId <= 0 ||
-          (sFormat !== 'mp4' && sFormat !== 'mp3')
-        ) {
-          requestGeneration++
-          lastSelectionKey = null
-          state.isDuplicate = false
-          state.duplicateJob = null
-          state.isCheckingDuplicate = false
-          return
-        }
-
-        if (sFormat === 'mp4' && (!resolvedQuality || typeof resolvedQuality !== 'string')) {
-          requestGeneration++
-          lastSelectionKey = null
-          state.isDuplicate = false
-          state.duplicateJob = null
-          state.isCheckingDuplicate = false
-          return
-        }
-
-        if (sFormat === 'mp3' && ![128, 192, 320].includes(resolvedBitrate)) {
-          requestGeneration++
-          lastSelectionKey = null
-          state.isDuplicate = false
-          state.duplicateJob = null
-          state.isCheckingDuplicate = false
-          return
-        }
-
-        const selectionKey = `${mId}:${sFormat}:${sFormat === 'mp4' ? resolvedQuality : resolvedBitrate}`
-        const isNewSelection = lastSelectionKey !== selectionKey
-        lastSelectionKey = selectionKey
-
-        if (isNewSelection) {
-          requestGeneration++
-          state.isDuplicate = false
-          state.duplicateJob = null
-        }
-
-        const requestId = ++requestGeneration
-
-        if (!isBackground) {
-          state.isCheckingDuplicate = true
-        }
-
-        try {
-          const payload = {
-            mediaItemId: mId,
-            outputFormat: sFormat,
-            ...(sFormat === 'mp4' ? { quality: resolvedQuality } : {}),
-            ...(sFormat === 'mp3' ? { audioBitrateKbps: resolvedBitrate } : {})
-          }
-
-          const response = await checkApiFn(payload)
-
-          if (requestId !== requestGeneration || !isMounted) {
-            return
-          }
-
-          if (response.ok && response.data?.duplicate && response.data?.data) {
-            state.isDuplicate = true
-            state.duplicateJob = response.data.data
-          } else {
-            state.isDuplicate = false
-            state.duplicateJob = null
-          }
-        } catch {
-          if (requestId !== requestGeneration || !isMounted) {
-            return
-          }
-        } finally {
-          if (requestId === requestGeneration && isMounted) {
-            state.isCheckingDuplicate = false
-          }
-        }
-      }
-
-      return {
-        getState: () => ({ ...state }),
-        updateParams: (newParams) => {
-          currentParams = { ...currentParams, ...newParams }
-        },
-        unmount: () => {
-          isMounted = false
-          requestGeneration++
-        },
-        executeCheck
-      }
-    }
-
-    // --- STEP 02.1 TEST A: Foreground held check superseded by background event ---
-    console.log(
-      '--- STEP 02.1 TEST A: Foreground held request superseded by background request ---'
-    )
+    // --- SCENARIO A: Foreground held check superseded by background request ---
+    console.log('--- SCENARIO A: Foreground request superseded by background request ---')
     let resolveForegroundA
     const foregroundPromiseA = new Promise((resolve) => {
       resolveForegroundA = resolve
@@ -755,10 +619,7 @@ async function runDuplicateDownloadGuardTests() {
     })
 
     let callCountA = 0
-    const harnessA = createDuplicateGuardHarness({
-      mediaItemId: 1,
-      selectedFormat: 'mp4',
-      selectedVideoQuality: '1080p',
+    const coordinatorA = new DuplicateGuardCoordinator({
       checkApiFn: async () => {
         callCountA++
         if (callCountA === 1) return await foregroundPromiseA
@@ -766,16 +627,25 @@ async function runDuplicateDownloadGuardTests() {
       }
     })
 
+    const paramsA = {
+      mediaItemId: media1.id,
+      selectedFormat: 'mp4',
+      selectedVideoQuality: '1080p',
+      mp4Qualities: ['1080p', '720p'],
+      highestAvailableQuality: '1080p',
+      enabled: true
+    }
+
     // 1. Start foreground check
-    const fgPromiseA = harnessA.executeCheck({ isBackground: false })
+    const fgPromiseA = coordinatorA.executeCheck(paramsA, { isBackground: false })
     assert.equal(
-      harnessA.getState().isCheckingDuplicate,
+      coordinatorA.getState().isCheckingDuplicate,
       true,
       'A.1: Foreground request activates isCheckingDuplicate'
     )
 
-    // 2. Trigger background check while foreground is in flight (e.g. from download-state-changed)
-    const bgPromiseA = harnessA.executeCheck({ isBackground: true })
+    // 2. Trigger background check while foreground is in flight
+    const bgPromiseA = coordinatorA.executeCheck(paramsA, { isBackground: true })
 
     // 3. Resolve both requests
     resolveForegroundA({
@@ -788,41 +658,45 @@ async function runDuplicateDownloadGuardTests() {
     })
     await Promise.all([fgPromiseA, bgPromiseA])
 
-    // 4. Checking state must be released and button not permanently disabled
+    // 4. Checking state must be released cleanly (no stuck spinner deadlock)
     assert.equal(
-      harnessA.getState().isCheckingDuplicate,
+      coordinatorA.getState().isCheckingDuplicate,
       false,
       'A.2: isCheckingDuplicate successfully released when latest background request completes'
     )
-    assert.equal(harnessA.getState().isDuplicate, true, 'A.3: Duplicate state updated')
-    assert.equal(harnessA.getState().duplicateJob.id, 101, 'A.4: Correct job ID preserved')
-    console.log(
-      '✓ STEP 02.1 TEST A passed: Superseded foreground check releases loading state cleanly\n'
-    )
+    assert.equal(coordinatorA.getState().isDuplicate, true, 'A.3: Duplicate state updated')
+    assert.equal(coordinatorA.getState().duplicateJob.id, 101, 'A.4: Correct job ID preserved')
+    console.log('✓ SCENARIO A passed: Superseded foreground check releases loading state cleanly\n')
 
-    // --- STEP 02.1 TEST B: Invalidation before request completes ---
-    console.log('--- STEP 02.1 TEST B: Invalidation before request completes ---')
+    // --- SCENARIO B: Old request response after media selection invalidation ---
+    console.log('--- SCENARIO B: Old request response after media selection invalidation ---')
     let resolveB
     const promiseB = new Promise((resolve) => {
       resolveB = resolve
     })
 
-    const harnessB = createDuplicateGuardHarness({
-      mediaItemId: 1,
-      selectedFormat: 'mp4',
-      selectedVideoQuality: '1080p',
+    const coordinatorB = new DuplicateGuardCoordinator({
       checkApiFn: async () => await promiseB
     })
 
-    const checkB = harnessB.executeCheck({ isBackground: false })
-    assert.equal(harnessB.getState().isCheckingDuplicate, true, 'B.1: Checking state active')
+    const checkB = coordinatorB.executeCheck(
+      {
+        mediaItemId: media1.id,
+        selectedFormat: 'mp4',
+        selectedVideoQuality: '1080p',
+        mp4Qualities: ['1080p'],
+        highestAvailableQuality: '1080p',
+        enabled: true
+      },
+      { isBackground: false }
+    )
+    assert.equal(coordinatorB.getState().isCheckingDuplicate, true, 'B.1: Checking state active')
 
     // Invalidate selection before request completes
-    harnessB.updateParams({ mediaItemId: null })
-    await harnessB.executeCheck()
+    await coordinatorB.executeCheck({ mediaItemId: null })
 
-    assert.equal(harnessB.getState().isCheckingDuplicate, false, 'B.2: Reset on invalidation')
-    assert.equal(harnessB.getState().isDuplicate, false, 'B.3: Duplicate reset to false')
+    assert.equal(coordinatorB.getState().isCheckingDuplicate, false, 'B.2: Reset on invalidation')
+    assert.equal(coordinatorB.getState().isDuplicate, false, 'B.3: Duplicate reset to false')
 
     // Resolve old request
     resolveB({ ok: true, data: { duplicate: true, data: { id: 999, status: 'downloading' } } })
@@ -830,15 +704,15 @@ async function runDuplicateDownloadGuardTests() {
 
     // Verify old response was rejected and could not overwrite state
     assert.equal(
-      harnessB.getState().isDuplicate,
+      coordinatorB.getState().isDuplicate,
       false,
       'B.4: Stale response cannot overwrite invalidated state'
     )
-    assert.equal(harnessB.getState().duplicateJob, null, 'B.5: duplicateJob remains null')
-    console.log('✓ STEP 02.1 TEST B passed: Invalidated request cannot modify state\n')
+    assert.equal(coordinatorB.getState().duplicateJob, null, 'B.5: duplicateJob remains null')
+    console.log('✓ SCENARIO B passed: Invalidated request cannot modify state\n')
 
-    // --- STEP 02.1 TEST C: Selection change with reverse response resolution ---
-    console.log('--- STEP 02.1 TEST C: Selection change with reverse response resolution ---')
+    // --- SCENARIO C: Rapid MP4 quality switching with reverse response arrival ---
+    console.log('--- SCENARIO C: Rapid MP4 quality switching with reverse response arrival ---')
     let resolve1080pC
     const promise1080pC = new Promise((resolve) => {
       resolve1080pC = resolve
@@ -849,10 +723,7 @@ async function runDuplicateDownloadGuardTests() {
       resolve720pC = resolve
     })
 
-    const harnessC = createDuplicateGuardHarness({
-      mediaItemId: 1,
-      selectedFormat: 'mp4',
-      selectedVideoQuality: '1080p',
+    const coordinatorC = new DuplicateGuardCoordinator({
       checkApiFn: async (payload) => {
         if (payload.quality === '1080p') return await promise1080pC
         return await promise720pC
@@ -860,15 +731,34 @@ async function runDuplicateDownloadGuardTests() {
     })
 
     // 1. Check for 1080p
-    const call1080pC = harnessC.executeCheck({ isBackground: false })
+    const call1080pC = coordinatorC.executeCheck(
+      {
+        mediaItemId: media1.id,
+        selectedFormat: 'mp4',
+        selectedVideoQuality: '1080p',
+        mp4Qualities: ['1080p', '720p'],
+        highestAvailableQuality: '1080p',
+        enabled: true
+      },
+      { isBackground: false }
+    )
 
     // 2. Change selection to 720p
-    harnessC.updateParams({ selectedVideoQuality: '720p' })
-    const call720pC = harnessC.executeCheck({ isBackground: false })
+    const call720pC = coordinatorC.executeCheck(
+      {
+        mediaItemId: media1.id,
+        selectedFormat: 'mp4',
+        selectedVideoQuality: '720p',
+        mp4Qualities: ['1080p', '720p'],
+        highestAvailableQuality: '1080p',
+        enabled: true
+      },
+      { isBackground: false }
+    )
 
-    // Previous duplicate state cleared immediately on selection change:
+    // Previous duplicate state cleared immediately on selection change
     assert.equal(
-      harnessC.getState().isDuplicate,
+      coordinatorC.getState().isDuplicate,
       false,
       'C.1: Previous duplicate state cleared immediately on quality change'
     )
@@ -877,8 +767,8 @@ async function runDuplicateDownloadGuardTests() {
     resolve720pC({ ok: true, data: { duplicate: false, data: null } })
     await call720pC
 
-    assert.equal(harnessC.getState().isCheckingDuplicate, false, 'C.2: 720p check completed')
-    assert.equal(harnessC.getState().isDuplicate, false, 'C.3: 720p is not duplicate')
+    assert.equal(coordinatorC.getState().isCheckingDuplicate, false, 'C.2: 720p check completed')
+    assert.equal(coordinatorC.getState().isDuplicate, false, 'C.3: 720p is not duplicate')
 
     // Resolve older 1080p response (which was duplicate)
     resolve1080pC({
@@ -889,153 +779,661 @@ async function runDuplicateDownloadGuardTests() {
 
     // Verify 1080p response was discarded and did not overwrite 720p state
     assert.equal(
-      harnessC.getState().isDuplicate,
+      coordinatorC.getState().isDuplicate,
       false,
       'C.4: Older 1080p response discarded; 720p remains not duplicate'
     )
-    assert.equal(harnessC.getState().duplicateJob, null, 'C.5: duplicateJob remains null for 720p')
+    assert.equal(
+      coordinatorC.getState().duplicateJob,
+      null,
+      'C.5: duplicateJob remains null for 720p'
+    )
     console.log(
-      '✓ STEP 02.1 TEST C passed: Reverse response arrival strictly respects latest selection\n'
+      '✓ SCENARIO C passed: Reverse response arrival strictly respects latest selection\n'
     )
 
-    // --- STEP 02.1 TEST D: Background polling does not activate checking spinner ---
-    console.log('--- STEP 02.1 TEST D: Background polling does not activate checking spinner ---')
-    let backgroundResolveD
-    const harnessD = createDuplicateGuardHarness({
-      mediaItemId: 1,
-      selectedFormat: 'mp4',
-      selectedVideoQuality: '1080p',
+    // --- SCENARIO D: MP3 bitrate switching ---
+    console.log('--- SCENARIO D: MP3 bitrate switching ---')
+    let resolve192kD
+    const promise192kD = new Promise((resolve) => {
+      resolve192kD = resolve
+    })
+
+    let resolve320kD
+    const promise320kD = new Promise((resolve) => {
+      resolve320kD = resolve
+    })
+
+    const coordinatorD = new DuplicateGuardCoordinator({
+      checkApiFn: async (payload) => {
+        if (payload.audioBitrateKbps === 192) return await promise192kD
+        return await promise320kD
+      }
+    })
+
+    // 1. Select MP3 192k
+    const call192kD = coordinatorD.executeCheck(
+      {
+        mediaItemId: media1.id,
+        selectedFormat: 'mp3',
+        selectedAudioBitrate: 192,
+        enabled: true
+      },
+      { isBackground: false }
+    )
+
+    // 2. Switch to 320k
+    const call320kD = coordinatorD.executeCheck(
+      {
+        mediaItemId: media1.id,
+        selectedFormat: 'mp3',
+        selectedAudioBitrate: 320,
+        enabled: true
+      },
+      { isBackground: false }
+    )
+
+    assert.equal(
+      coordinatorD.getState().isDuplicate,
+      false,
+      'D.1: Duplicate cleared immediately on bitrate switch'
+    )
+
+    // 3. Resolve 320k first (not duplicate), then 192k (duplicate)
+    resolve320kD({ ok: true, data: { duplicate: false, data: null } })
+    await call320kD
+
+    assert.equal(coordinatorD.getState().isDuplicate, false, 'D.2: 320k is not duplicate')
+
+    resolve192kD({
+      ok: true,
+      data: { duplicate: true, data: { id: 192, status: 'queued' } }
+    })
+    await call192kD
+
+    assert.equal(coordinatorD.getState().isDuplicate, false, 'D.3: Stale 192k response discarded')
+    assert.equal(coordinatorD.getState().duplicateJob, null, 'D.4: duplicateJob remains null')
+    console.log('✓ SCENARIO D passed: MP3 bitrate switching rejects stale responses\n')
+
+    // --- SCENARIO E: MP4 to MP3 and MP3 to MP4 switching ---
+    console.log('--- SCENARIO E: MP4 to MP3 and MP3 to MP4 switching ---')
+    let resolveMp4E
+    const promiseMp4E = new Promise((resolve) => {
+      resolveMp4E = resolve
+    })
+
+    let resolveMp3E
+    const promiseMp3E = new Promise((resolve) => {
+      resolveMp3E = resolve
+    })
+
+    const coordinatorE = new DuplicateGuardCoordinator({
+      checkApiFn: async (payload) => {
+        if (payload.outputFormat === 'mp4') return await promiseMp4E
+        return await promiseMp3E
+      }
+    })
+
+    // 1. User selects MP4 1080p
+    const callMp4E = coordinatorE.executeCheck(
+      {
+        mediaItemId: media1.id,
+        selectedFormat: 'mp4',
+        selectedVideoQuality: '1080p',
+        mp4Qualities: ['1080p'],
+        highestAvailableQuality: '1080p',
+        enabled: true
+      },
+      { isBackground: false }
+    )
+
+    // 2. User switches format to MP3 192k
+    const callMp3E = coordinatorE.executeCheck(
+      {
+        mediaItemId: media1.id,
+        selectedFormat: 'mp3',
+        selectedAudioBitrate: 192,
+        enabled: true
+      },
+      { isBackground: false }
+    )
+
+    assert.equal(
+      coordinatorE.getState().isDuplicate,
+      false,
+      'E.1: Format switch clears prior duplicate state'
+    )
+
+    // 3. Resolve MP3 first (not duplicate), then delayed MP4 (duplicate)
+    resolveMp3E({ ok: true, data: { duplicate: false, data: null } })
+    await callMp3E
+
+    assert.equal(coordinatorE.getState().isDuplicate, false, 'E.2: MP3 selection not duplicate')
+
+    resolveMp4E({
+      ok: true,
+      data: { duplicate: true, data: { id: 404, status: 'downloading' } }
+    })
+    await callMp4E
+
+    assert.equal(coordinatorE.getState().isDuplicate, false, 'E.3: Stale MP4 response discarded')
+
+    // 4. User switches back from MP3 to MP4
+    let resolveMp4E2
+    const promiseMp4E2 = new Promise((resolve) => {
+      resolveMp4E2 = resolve
+    })
+    coordinatorE.checkApiFn = async () => await promiseMp4E2
+
+    const callMp4E2 = coordinatorE.executeCheck(
+      {
+        mediaItemId: media1.id,
+        selectedFormat: 'mp4',
+        selectedVideoQuality: '1080p',
+        mp4Qualities: ['1080p'],
+        highestAvailableQuality: '1080p',
+        enabled: true
+      },
+      { isBackground: false }
+    )
+
+    resolveMp4E2({
+      ok: true,
+      data: { duplicate: true, data: { id: 405, status: 'downloading' } }
+    })
+    await callMp4E2
+
+    assert.equal(
+      coordinatorE.getState().isDuplicate,
+      true,
+      'E.4: Switching back to MP4 detects active duplicate'
+    )
+    assert.equal(coordinatorE.getState().duplicateJob.id, 405, 'E.5: Matching job ID preserved')
+    console.log('✓ SCENARIO E passed: Format transitions between MP4 and MP3 track accurately\n')
+
+    // --- SCENARIO F: Background polling without spinner flickering ---
+    console.log('--- SCENARIO F: Background polling without spinner flickering ---')
+    let backgroundResolveF
+    const coordinatorF = new DuplicateGuardCoordinator({
       checkApiFn: async () => {
         return new Promise((r) => {
-          backgroundResolveD = r
+          backgroundResolveF = r
         })
       }
     })
 
-    assert.equal(harnessD.getState().isCheckingDuplicate, false, 'D.1: Initially not checking')
+    assert.equal(coordinatorF.getState().isCheckingDuplicate, false, 'F.1: Initially not checking')
 
     // Trigger background poll
-    const bgPollD = harnessD.executeCheck({ isBackground: true })
-    assert.equal(
-      harnessD.getState().isCheckingDuplicate,
-      false,
-      'D.2: Spinner remains inactive during in-flight background poll'
+    const bgPollF = coordinatorF.executeCheck(
+      {
+        mediaItemId: media1.id,
+        selectedFormat: 'mp4',
+        selectedVideoQuality: '1080p',
+        mp4Qualities: ['1080p'],
+        highestAvailableQuality: '1080p',
+        enabled: true
+      },
+      { isBackground: true }
     )
 
-    backgroundResolveD({
+    assert.equal(
+      coordinatorF.getState().isCheckingDuplicate,
+      false,
+      'F.2: Spinner remains inactive during in-flight background poll'
+    )
+
+    backgroundResolveF({
       ok: true,
       data: { duplicate: true, data: { id: 202, status: 'queued' } }
     })
-    await bgPollD
+    await bgPollF
 
     assert.equal(
-      harnessD.getState().isCheckingDuplicate,
+      coordinatorF.getState().isCheckingDuplicate,
       false,
-      'D.3: Spinner remains inactive after background poll completes'
+      'F.3: Spinner remains inactive after background poll completes'
     )
-    assert.equal(harnessD.getState().isDuplicate, true, 'D.4: State updated to duplicate')
-    console.log('✓ STEP 02.1 TEST D passed: Background polling never activates loading spinner\n')
+    assert.equal(coordinatorF.getState().isDuplicate, true, 'F.4: State updated to duplicate')
+    console.log('✓ SCENARIO F passed: Background polling never activates loading spinner\n')
 
-    // --- STEP 02.1 TEST E: Duplicate state clears when job transitions to terminal state ---
-    console.log('--- STEP 02.1 TEST E: Duplicate clears after job completes, fails, or cancels ---')
-    const jobE = await DownloadJob.create({
+    // --- SCENARIO G: Component unmount while request pending ---
+    console.log('--- SCENARIO G: Component unmount while request pending ---')
+    let resolveG
+    const promiseG = new Promise((resolve) => {
+      resolveG = resolve
+    })
+
+    let stateCallbacksG = 0
+    let checkingCallbacksG = 0
+
+    const coordinatorG = new DuplicateGuardCoordinator({
+      onStateChange: () => {
+        stateCallbacksG++
+      },
+      onCheckingChange: () => {
+        checkingCallbacksG++
+      },
+      checkApiFn: async () => await promiseG
+    })
+
+    const checkG = coordinatorG.executeCheck(
+      {
+        mediaItemId: media1.id,
+        selectedFormat: 'mp4',
+        selectedVideoQuality: '1080p',
+        mp4Qualities: ['1080p'],
+        highestAvailableQuality: '1080p',
+        enabled: true
+      },
+      { isBackground: false }
+    )
+
+    assert.equal(
+      coordinatorG.getState().isCheckingDuplicate,
+      true,
+      'G.1: Foreground checking active'
+    )
+    const stateCallsBeforeUnmount = stateCallbacksG
+    const checkingCallsBeforeUnmount = checkingCallbacksG
+
+    // Component unmounts
+    coordinatorG.unmount()
+    assert.equal(coordinatorG.isMounted, false, 'G.2: Coordinator is unmounted')
+
+    // Request settles after unmount
+    resolveG({
+      ok: true,
+      data: { duplicate: true, data: { id: 777, status: 'downloading' } }
+    })
+    await checkG
+
+    // Callbacks must NOT be called after unmount
+    assert.equal(
+      stateCallbacksG,
+      stateCallsBeforeUnmount,
+      'G.3: onStateChange not called after unmount'
+    )
+    assert.equal(
+      checkingCallbacksG,
+      checkingCallsBeforeUnmount,
+      'G.4: onCheckingChange not called after unmount'
+    )
+    console.log(
+      '✓ SCENARIO G passed: Unmount safely invalidates pending requests and prevents callbacks\n'
+    )
+
+    // --- SCENARIO H: Terminal status transitions against real API ---
+    console.log('--- SCENARIO H: Terminal status transitions against real API ---')
+    const termJobH = await DownloadJob.create({
       media_id: media1.id,
       output_format: 'mp4',
       quality: '1080p',
       status: 'downloading'
     })
 
-    // Active downloading job -> duplicate
-    const resE1 = await testRequest(server, token, {
+    const resH1 = await testRequest(server, token, {
       path: '/api/downloads/check-duplicate',
       method: 'POST',
       body: { mediaItemId: media1.id, outputFormat: 'mp4', quality: '1080p' }
     })
-    assert.equal(resE1.body.duplicate, true, 'E.1: Active job is duplicate')
+    assert.equal(resH1.body.duplicate, true, 'H.1: Downloading job is duplicate')
 
-    // Transition to completed -> clears duplicate state
-    await jobE.update({ status: 'completed' })
-    const resE2 = await testRequest(server, token, {
+    await termJobH.update({ status: 'completed' })
+    const resH2 = await testRequest(server, token, {
       path: '/api/downloads/check-duplicate',
       method: 'POST',
       body: { mediaItemId: media1.id, outputFormat: 'mp4', quality: '1080p' }
     })
-    assert.equal(resE2.body.duplicate, false, 'E.2: Duplicate clears after job completed')
+    assert.equal(resH2.body.duplicate, false, 'H.2: Duplicate clears after job completed')
 
-    // Transition to failed -> clears duplicate state
-    await jobE.update({ status: 'failed' })
-    const resE3 = await testRequest(server, token, {
+    await termJobH.update({ status: 'failed' })
+    const resH3 = await testRequest(server, token, {
       path: '/api/downloads/check-duplicate',
       method: 'POST',
       body: { mediaItemId: media1.id, outputFormat: 'mp4', quality: '1080p' }
     })
-    assert.equal(resE3.body.duplicate, false, 'E.3: Duplicate clears after job failed')
+    assert.equal(resH3.body.duplicate, false, 'H.3: Duplicate clears after job failed')
 
-    // Transition to cancelled -> clears duplicate state
-    await jobE.update({ status: 'cancelled' })
-    const resE4 = await testRequest(server, token, {
+    await termJobH.update({ status: 'cancelled' })
+    const resH4 = await testRequest(server, token, {
       path: '/api/downloads/check-duplicate',
       method: 'POST',
       body: { mediaItemId: media1.id, outputFormat: 'mp4', quality: '1080p' }
     })
-    assert.equal(resE4.body.duplicate, false, 'E.4: Duplicate clears after job cancelled')
+    assert.equal(resH4.body.duplicate, false, 'H.4: Duplicate clears after job cancelled')
     console.log(
-      '✓ STEP 02.1 TEST E passed: Terminal statuses (completed/failed/cancelled) clear duplicate state\n'
+      '✓ SCENARIO H passed: Terminal statuses (completed/failed/cancelled) clear duplicate state\n'
     )
-    await jobE.destroy()
+    await termJobH.destroy()
 
-    // --- STEP 02.1 TEST F: Simultaneous real API requests cannot create duplicate jobs ---
-    console.log(
-      '--- STEP 02.1 TEST F: Simultaneous real API requests cannot create duplicate jobs ---'
-    )
-    const reqIdentityF = buildDownloadRequestIdentity({
-      sourceUrl: media1.source_url,
-      outputFormat: 'mp4',
-      quality: '1080p'
+    // --- SCENARIO I: Clearing URL while duplicate checking in progress ---
+    console.log('--- SCENARIO I: Clearing URL while duplicate checking in progress ---')
+    let resolveI
+    const promiseI = new Promise((resolve) => {
+      resolveI = resolve
     })
 
-    let realCreationCountF = 0
-    const executeSimultaneousF = () =>
-      withDownloadCreationGuard(reqIdentityF, async () => {
-        await new Promise((r) => setTimeout(r, 40))
-        realCreationCountF++
-        const createdJob = await DownloadJob.create({
-          media_id: media1.id,
-          output_format: 'mp4',
-          quality: '1080p',
-          status: 'queued'
+    const coordinatorI = new DuplicateGuardCoordinator({
+      checkApiFn: async () => await promiseI
+    })
+
+    // User entered URL, check is in progress
+    const checkI = coordinatorI.executeCheck(
+      {
+        mediaItemId: media1.id,
+        selectedFormat: 'mp4',
+        selectedVideoQuality: '1080p',
+        mp4Qualities: ['1080p'],
+        highestAvailableQuality: '1080p',
+        enabled: true
+      },
+      { isBackground: false }
+    )
+
+    assert.equal(coordinatorI.getState().isCheckingDuplicate, true, 'I.1: Checking active')
+
+    // User clears URL input (mediaItemId becomes null / enabled false)
+    await coordinatorI.executeCheck({ mediaItemId: null, enabled: false })
+
+    assert.equal(coordinatorI.getState().isCheckingDuplicate, false, 'I.2: Reset on URL cleared')
+    assert.equal(coordinatorI.getState().isDuplicate, false, 'I.3: Duplicate reset')
+
+    // Network request finishes later
+    resolveI({
+      ok: true,
+      data: { duplicate: true, data: { id: 888, status: 'queued' } }
+    })
+    await checkI
+
+    // Old response discarded
+    assert.equal(
+      coordinatorI.getState().isDuplicate,
+      false,
+      'I.4: Stale response discarded on URL clear'
+    )
+    assert.equal(coordinatorI.getState().duplicateJob, null, 'I.5: duplicateJob remains null')
+    console.log('✓ SCENARIO I passed: Clearing URL immediately invalidates pending checks\n')
+
+    // --- SCENARIO J: Re-analyzing different media URL while earlier check is pending ---
+    console.log(
+      '--- SCENARIO J: Re-analyzing different media URL while earlier check is pending ---'
+    )
+    let resolveMedia1J
+    const promiseMedia1J = new Promise((resolve) => {
+      resolveMedia1J = resolve
+    })
+
+    let resolveMedia2J
+    const promiseMedia2J = new Promise((resolve) => {
+      resolveMedia2J = resolve
+    })
+
+    const coordinatorJ = new DuplicateGuardCoordinator({
+      checkApiFn: async (payload) => {
+        if (payload.mediaItemId === media1.id) return await promiseMedia1J
+        return await promiseMedia2J
+      }
+    })
+
+    // 1. Check for Media 1
+    const callMedia1J = coordinatorJ.executeCheck(
+      {
+        mediaItemId: media1.id,
+        selectedFormat: 'mp4',
+        selectedVideoQuality: '1080p',
+        mp4Qualities: ['1080p'],
+        highestAvailableQuality: '1080p',
+        enabled: true
+      },
+      { isBackground: false }
+    )
+
+    // 2. User pastes different URL, resolving to media3
+    const callMedia2J = coordinatorJ.executeCheck(
+      {
+        mediaItemId: media3.id,
+        selectedFormat: 'mp4',
+        selectedVideoQuality: '1080p',
+        mp4Qualities: ['1080p'],
+        highestAvailableQuality: '1080p',
+        enabled: true
+      },
+      { isBackground: false }
+    )
+
+    assert.equal(coordinatorJ.getState().isDuplicate, false, 'J.1: Media switch clears duplicate')
+
+    // 3. Media 2 resolves first (not duplicate)
+    resolveMedia2J({ ok: true, data: { duplicate: false, data: null } })
+    await callMedia2J
+
+    assert.equal(coordinatorJ.getState().isCheckingDuplicate, false, 'J.2: Media 2 check complete')
+    assert.equal(coordinatorJ.getState().isDuplicate, false, 'J.3: Media 2 is not duplicate')
+
+    // 4. Media 1 resolves later (duplicate)
+    resolveMedia1J({
+      ok: true,
+      data: { duplicate: true, data: { id: 111, status: 'downloading' } }
+    })
+    await callMedia1J
+
+    assert.equal(
+      coordinatorJ.getState().isDuplicate,
+      false,
+      'J.4: Media 1 duplicate response discarded'
+    )
+    assert.equal(
+      coordinatorJ.getState().duplicateJob,
+      null,
+      'J.5: duplicateJob remains null for Media 2'
+    )
+    console.log(
+      '✓ SCENARIO J passed: Re-analyzing different URL strictly discards earlier checks\n'
+    )
+
+    // ========================================================================
+    // PART 04: REAL BACKEND API CONCURRENCY TEST (EXPRESS POST /api/downloads)
+    // ========================================================================
+    console.log('================================================================')
+    console.log(' PART 04: REAL BACKEND API CONCURRENCY INTEGRATION TEST          ')
+    console.log('================================================================\n')
+
+    const tempDownloadDir = await fs.mkdtemp(path.join(os.tmpdir(), 'duplicate-guard-dl-'))
+    const { AppSetting } = testDb.sequelize.models
+    await AppSetting.upsert({
+      key: 'download_path',
+      value: tempDownloadDir
+    })
+
+    globalThis.__mockChildProcess = {
+      spawn: () => {
+        const child = new MockChildProcess()
+        process.nextTick(() => {
+          child.stdout.write('[download] 100% of 10MiB at 2MiB/s\n')
+          child.stdout.end()
+          child.stderr.end()
+          child.emit('close', 0, null)
         })
-        return { job: createdJob, duplicate: false }
+        return child
+      },
+      execFile: (exe, args, opts, cb) => {
+        if (typeof opts === 'function') cb = opts
+        const argsList = Array.isArray(args) ? args : []
+        if (argsList.includes('--dump-single-json')) {
+          return process.nextTick(() =>
+            cb(null, { stdout: JSON.stringify(YOUTUBE_SYNTHETIC_FIXTURE), stderr: '' })
+          )
+        }
+        return process.nextTick(() => cb(null, { stdout: '', stderr: '' }))
+      }
+    }
+
+    const postDownload = (body) =>
+      testRequest(server, token, {
+        path: '/api/downloads',
+        method: 'POST',
+        body
       })
 
-    const [sim1, sim2, sim3] = await Promise.all([
-      executeSimultaneousF(),
-      executeSimultaneousF(),
-      executeSimultaneousF()
+    // 1. Send 4 simultaneous HTTP POST requests with identical media, format, and quality
+    const concPayload = {
+      mediaItemId: media1.id,
+      outputFormat: 'mp4',
+      quality: '1080p'
+    }
+
+    const [resp1, resp2, resp3, resp4] = await Promise.all([
+      postDownload(concPayload),
+      postDownload(concPayload),
+      postDownload(concPayload),
+      postDownload(concPayload)
     ])
 
-    assert.equal(realCreationCountF, 1, 'F.1: Exactly one job created among simultaneous requests')
-    assert.equal(sim1.duplicate, false, 'F.2: Leader gets duplicate: false')
-    assert.equal(sim2.duplicate, true, 'F.3: Follower 1 gets duplicate: true')
-    assert.equal(sim3.duplicate, true, 'F.4: Follower 2 gets duplicate: true')
-    assert.equal(sim2.job.id, sim1.job.id, 'F.5: Follower receives leader job ID')
-    assert.equal(sim3.job.id, sim1.job.id, 'F.6: Follower receives leader job ID')
-    console.log(
-      '✓ STEP 02.1 TEST F passed: Simultaneous requests strictly prevented from creating duplicate jobs\n'
+    const responses = [resp1, resp2, resp3, resp4]
+    const leaderRes = responses.find((r) => r.status === 201)
+    const followerResponses = responses.filter((r) => r.status === 200)
+
+    assert.ok(leaderRes, 'CONCURRENCY 1: Exactly one leader request returned HTTP 201')
+    assert.equal(
+      followerResponses.length,
+      3,
+      'CONCURRENCY 2: Exactly three follower requests returned HTTP 200'
     )
-    await sim1.job.destroy()
+
+    const leaderJobId = leaderRes.body.data.id
+    for (const fol of followerResponses) {
+      assert.equal(fol.body.duplicate, true, 'CONCURRENCY 3: Follower received duplicate === true')
+      assert.equal(
+        fol.body.data.id,
+        leaderJobId,
+        'CONCURRENCY 4: Follower received identical leader Job ID'
+      )
+    }
+
+    // 2. Database verification: exactly 1 DownloadJob record created in SQLite
+    const createdJobCount = await DownloadJob.count({
+      where: { media_id: media1.id, output_format: 'mp4', quality: '1080p' }
+    })
+    assert.equal(
+      createdJobCount,
+      1,
+      'CONCURRENCY 5: Exactly 1 DownloadJob record created in SQLite'
+    )
+
+    // 3. Queue verification: exactly 1 queue entry created for this Job ID
+    const queueState = getQueueStatus()
+    const jobQueueOccurrences = queueState.scheduledJobIds.filter((id) => id === leaderJobId)
+    assert.equal(jobQueueOccurrences.length, 1, 'CONCURRENCY 6: Exactly 1 queue entry created')
+
+    // 4. Different qualities/formats independently downloadable
+    const diffQualityRes = await postDownload({
+      mediaItemId: media1.id,
+      outputFormat: 'mp4',
+      quality: '720p'
+    })
+    assert.equal(
+      diffQualityRes.status,
+      201,
+      'CONCURRENCY 7: Distinct MP4 quality returns HTTP 201 Created'
+    )
+    assert.notEqual(
+      diffQualityRes.body.data.id,
+      leaderJobId,
+      'CONCURRENCY 8: Distinct MP4 quality gets new Job ID'
+    )
+
+    const diffFormatRes = await postDownload({
+      mediaItemId: media1.id,
+      outputFormat: 'mp3',
+      audioBitrateKbps: 192
+    })
+    assert.equal(diffFormatRes.status, 201, 'CONCURRENCY 9: MP3 format returns HTTP 201 Created')
+    assert.notEqual(
+      diffFormatRes.body.data.id,
+      leaderJobId,
+      'CONCURRENCY 10: MP3 gets distinct Job ID'
+    )
+    assert.notEqual(
+      diffFormatRes.body.data.id,
+      diffQualityRes.body.data.id,
+      'CONCURRENCY 11: MP3 gets distinct Job ID from 720p'
+    )
+
+    // 5. Failed creation releases guard lock cleanly without deadlock
+    const failedIdentity = buildDownloadRequestIdentity({
+      sourceUrl: media3.source_url,
+      outputFormat: 'mp4',
+      quality: '720p'
+    })
+
+    let caughtError = null
+    try {
+      await withDownloadCreationGuard(failedIdentity, async () => {
+        throw new Error('Simulated creation failure inside guard')
+      })
+    } catch (err) {
+      caughtError = err
+    }
+    assert.ok(caughtError, 'CONCURRENCY 12: Error thrown inside creation guard was caught')
+
+    // Subsequent request for the same identity proceeds without deadlocking
+    let subsequentExecuted = false
+    const recoveryResult = await withDownloadCreationGuard(failedIdentity, async () => {
+      subsequentExecuted = true
+      return { job: { id: 9999 }, duplicate: false }
+    })
+    assert.equal(
+      subsequentExecuted,
+      true,
+      'CONCURRENCY 13: Subsequent request executes without deadlock'
+    )
+    assert.equal(
+      recoveryResult.job.id,
+      9999,
+      'CONCURRENCY 14: Guard lock was cleanly released on failure'
+    )
+
+    // Cleanup concurrency resources
+    stopQueueForShutdown()
+    resetQueueForTesting()
+    delete globalThis.__mockChildProcess
+    try {
+      await fs.rm(tempDownloadDir, {
+        recursive: true,
+        force: true,
+        maxRetries: 5,
+        retryDelay: 100
+      })
+    } catch {
+      // Best-effort cleanup of temporary test directory on Windows
+    }
+    console.log(
+      '✓ PART 04 passed: Real Express POST /api/downloads concurrency guarantees verified\n'
+    )
 
     console.log('================================================================')
-    console.log(' ALL DUPLICATE DOWNLOAD GUARD TESTS (A–N) PASSED SUCCESSFULLY! ')
+    console.log(' ALL DUPLICATE DOWNLOAD GUARD TESTS (A–N & PART 02/04) PASSED!  ')
     console.log('================================================================\n')
   } finally {
+    stopQueueForShutdown()
+    resetQueueForTesting()
+    delete globalThis.__mockChildProcess
+    if (typeof server.closeAllConnections === 'function') {
+      server.closeAllConnections()
+    }
     await new Promise((resolve) => server.close(resolve))
     resetSessionTokenForTest()
+    await new Promise((resolve) => setTimeout(resolve, 80))
     await testDb.cleanup()
   }
 }
 
-runDuplicateDownloadGuardTests().catch((err) => {
-  console.error('\n❌ DUPLICATE DOWNLOAD GUARD TESTS FAILED:', err)
-  process.exit(1)
-})
+runDuplicateDownloadGuardTests()
+  .then(() => {
+    process.exit(0)
+  })
+  .catch((err) => {
+    console.error('\n❌ DUPLICATE DOWNLOAD GUARD TESTS FAILED:', err)
+    process.exit(1)
+  })
