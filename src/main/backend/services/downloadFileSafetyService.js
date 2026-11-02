@@ -1,5 +1,5 @@
 import path from 'node:path'
-import { stat, realpath, access, open, unlink, readdir, constants } from 'node:fs/promises'
+import { stat, lstat, realpath, access, open, unlink, readdir, constants } from 'node:fs/promises'
 import { statfs } from 'node:fs/promises'
 import { DownloadError, DOWNLOAD_ERROR_CODES } from './downloadErrorService.js'
 
@@ -409,9 +409,46 @@ export async function assertNoJobOutputFileConflict(downloadPath, jobId) {
   }
 
   const jobMarker = `[job-${jobId}]`
-  const conflict = entries.find((name) => name.includes(jobMarker))
+  const matchingEntries = entries.filter((name) => name.includes(jobMarker))
 
-  if (conflict) {
+  for (const entryName of matchingEntries) {
+    const fullEntryPath = path.join(cleanPath, entryName)
+
+    let entryStat
+    try {
+      entryStat = await lstat(fullEntryPath)
+    } catch {
+      continue
+    }
+
+    // Step 09.C - Reject symbolic links and directory junctions immediately
+    if (entryStat.isSymbolicLink()) {
+      throw new DownloadError(
+        DOWNLOAD_ERROR_CODES.OUTPUT_VERIFICATION_FAILED,
+        `Destination file conflict: Unsafe symbolic link detected for job ${jobId}.`
+      )
+    }
+
+    // Reject directories claiming the job output filename
+    if (entryStat.isDirectory()) {
+      throw new DownloadError(
+        DOWNLOAD_ERROR_CODES.OUTPUT_VERIFICATION_FAILED,
+        `Destination file conflict: A directory matching job ${jobId} already exists in the download folder.`
+      )
+    }
+
+    // A valid regular partial download file (e.g. .part, .ytdl, .temp) belonging to this job is permitted for Option A resume
+    const isPartialFile =
+      entryName.endsWith('.part') ||
+      entryName.endsWith('.ytdl') ||
+      /\.f\d+\.part$/i.test(entryName) ||
+      entryName.endsWith('.temp')
+
+    if (isPartialFile && entryStat.isFile()) {
+      continue
+    }
+
+    // Any existing completed final output file matching this job ID is a conflict
     throw new DownloadError(
       DOWNLOAD_ERROR_CODES.OUTPUT_VERIFICATION_FAILED,
       `Destination file conflict: An existing file for job ${jobId} already exists in the download folder.`

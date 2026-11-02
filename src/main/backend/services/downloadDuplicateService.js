@@ -1,4 +1,3 @@
-
 import { Op } from 'sequelize'
 import { getDatabase } from '../config/database.js'
 import { SUPPORTED_MP3_BITRATES } from './downloadService.js'
@@ -137,7 +136,7 @@ export function buildDownloadRequestIdentity({
 }
 
 /**
- * Checks SQLite for an existing download job that is currently 'queued' or 'downloading'
+ * Checks SQLite for an existing download job that is currently 'queued', 'downloading', or 'interrupted'
  * for the same canonical media source and identical format/quality/bitrate settings.
  * Completed, failed, and cancelled jobs are intentionally ignored.
  *
@@ -163,9 +162,8 @@ export async function findActiveDuplicateDownload({
   const { DownloadJob, MediaItem } = getDatabase().models
 
   // Resolve source URL if not directly provided
-  let resolvedSourceUrl = typeof sourceUrl === 'string' && sourceUrl.trim()
-    ? sourceUrl.trim()
-    : null
+  let resolvedSourceUrl =
+    typeof sourceUrl === 'string' && sourceUrl.trim() ? sourceUrl.trim() : null
 
   if (!resolvedSourceUrl && Number.isInteger(mediaItemId) && mediaItemId > 0) {
     const targetMedia = await MediaItem.findByPk(mediaItemId)
@@ -174,14 +172,12 @@ export async function findActiveDuplicateDownload({
     }
   }
 
-  const targetMediaKey = resolvedSourceUrl
-    ? getCanonicalMediaKey(resolvedSourceUrl)
-    : null
+  const targetMediaKey = resolvedSourceUrl ? getCanonicalMediaKey(resolvedSourceUrl) : null
 
-  // Search only active lifecycle states: 'queued' or 'downloading'
+  // Search only active lifecycle states: 'queued', 'downloading', or 'interrupted'
   const whereClause = {
     status: {
-      [Op.in]: ['queued', 'downloading']
+      [Op.in]: ['queued', 'downloading', 'interrupted']
     },
     output_format: outputFormat
   }
@@ -201,10 +197,12 @@ export async function findActiveDuplicateDownload({
   // Retrieve active jobs matching format and settings
   const activeJobs = await DownloadJob.findAll({
     where: whereClause,
-    include: [{
-      model: MediaItem,
-      as: 'media'
-    }],
+    include: [
+      {
+        model: MediaItem,
+        as: 'media'
+      }
+    ],
     order: [['id', 'ASC']]
   })
 
@@ -265,6 +263,9 @@ export async function withDownloadCreationGuard(requestIdentity, createFn) {
     rejectPromise = reject
   })
 
+  // Prevent unhandled rejection warning in Node.js when no concurrent followers are waiting
+  executionPromise.catch(() => {})
+
   pendingDownloadRequests.set(cleanIdentity, executionPromise)
 
   try {
@@ -279,4 +280,3 @@ export async function withDownloadCreationGuard(requestIdentity, createFn) {
     pendingDownloadRequests.delete(cleanIdentity)
   }
 }
-

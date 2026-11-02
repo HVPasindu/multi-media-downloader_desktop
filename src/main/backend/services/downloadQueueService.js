@@ -1,5 +1,5 @@
-
 import { executeDownloadJob, cancelRunningDownload } from './downloadService.js'
+import { isTransientNetworkError } from './downloadErrorService.js'
 import { getDatabase } from '../config/database.js'
 
 // Maximum number of download jobs running at once
@@ -14,8 +14,27 @@ const scheduledJobIds = new Set()
 // Number of jobs currently executing
 let activeDownloadCount = 0
 
+// Step 09.G - Prevent new queue dispatches during application shutdown
+let isShuttingDown = false
+
+export function stopQueueForShutdown() {
+  isShuttingDown = true
+}
+
+export function resetQueueForTesting() {
+  isShuttingDown = false
+  waitingJobIds.length = 0
+  scheduledJobIds.clear()
+  activeDownloadCount = 0
+}
+
 function processDownloadQueue() {
+  if (isShuttingDown) {
+    return
+  }
+
   while (
+    !isShuttingDown &&
     activeDownloadCount < MAX_CONCURRENT_DOWNLOADS &&
     waitingJobIds.length > 0
   ) {
@@ -32,10 +51,17 @@ function processDownloadQueue() {
           return
         }
 
-        console.error(
-          `Queued Download Job ${jobId} failed:`,
-          error
-        )
+        if (error?.name === 'DownloadInterruptedError') {
+          console.log(`[queue] Download Job ${jobId} was interrupted by shutdown`)
+          return
+        }
+
+        if (isTransientNetworkError(error)) {
+          console.log(`[queue] Download Job ${jobId} was interrupted by network loss`)
+          return
+        }
+
+        console.error(`Queued Download Job ${jobId} failed:`, error)
       })
       .finally(() => {
         // Always release the execution slot
@@ -45,7 +71,9 @@ function processDownloadQueue() {
         scheduledJobIds.delete(jobId)
 
         // Start the next waiting job if possible
-        processDownloadQueue()
+        if (!isShuttingDown) {
+          processDownloadQueue()
+        }
       })
   }
 }
@@ -53,6 +81,11 @@ function processDownloadQueue() {
 export function enqueueDownloadJob(jobId) {
   if (!Number.isSafeInteger(jobId) || jobId <= 0) {
     throw new Error('A valid Download Job ID is required')
+  }
+
+  // Step 09.G - Prevent queueing when shutdown is active
+  if (isShuttingDown) {
+    return false
   }
 
   // Do not schedule the same job ID twice
@@ -107,6 +140,36 @@ export async function cancelDownloadJob(jobId) {
       outcome: 'already_cancelled',
       status: 'cancelled',
       message: 'Download is already cancelled'
+    }
+  }
+
+  // Step 09.B - Handle Interrupted Job (cancellation while waiting for network)
+  if (job.status === 'interrupted') {
+    const queueIndex = waitingJobIds.indexOf(jobId)
+    if (queueIndex !== -1) {
+      waitingJobIds.splice(queueIndex, 1)
+    }
+    scheduledJobIds.delete(jobId)
+
+    const [updatedCount] = await DownloadJob.update(
+      {
+        status: 'cancelled',
+        error_message: null
+      },
+      {
+        where: {
+          id: jobId,
+          status: 'interrupted'
+        }
+      }
+    )
+
+    if (updatedCount === 1) {
+      return {
+        outcome: 'cancelled',
+        status: 'cancelled',
+        message: 'Download cancelled successfully'
+      }
     }
   }
 
@@ -245,4 +308,3 @@ export function getQueueStatus() {
     scheduledJobIds: [...scheduledJobIds]
   }
 }
-

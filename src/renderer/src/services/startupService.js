@@ -60,4 +60,3 @@ export async function restartApplication() {
 export async function verifyBackendHealth() {
   return await checkApiHealth()
 }
-

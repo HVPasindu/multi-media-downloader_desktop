@@ -19,6 +19,30 @@ export default function StatusBadge({ status, subtitle = null }) {
     )
   }
 
+  if (norm === 'resuming') {
+    return (
+      <div className="flex items-center gap-2">
+        <Loader2 className="w-4 h-4 text-[#19D8FF] animate-spin flex-shrink-0" />
+        <div className="flex flex-col">
+          <span className="text-xs font-bold text-[#19D8FF]">Resuming</span>
+          {subtitle && <span className="text-[11px] text-text-muted">{subtitle}</span>}
+        </div>
+      </div>
+    )
+  }
+
+  if (norm === 'interrupted') {
+    return (
+      <div className="flex items-center gap-2">
+        <Hourglass className="w-4 h-4 text-amber-400 flex-shrink-0" />
+        <div className="flex flex-col">
+          <span className="text-xs font-bold text-amber-400">Interrupted</span>
+          {subtitle && <span className="text-[11px] text-text-muted">{subtitle}</span>}
+        </div>
+      </div>
+    )
+  }
+
   if (norm === 'finalizing') {
     return (
       <div className="flex items-center gap-2">

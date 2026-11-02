@@ -434,3 +434,95 @@ export function formatDownloadErrorMessage(error, context = {}) {
   }
   return `[${classified.code}] ${classified.message}`
 }
+
+/**
+ * Step 09 Section B - Detects whether an error or stderr output represents a transient
+ * network disconnection/timeout that should trigger automatic recovery rather than permanent failure.
+ *
+ * Excludes intentional cancellations, HTTP 429 rate-limiting, authentication/login errors,
+ * PO token issues, private/deleted media, format unavailable, and filesystem permissions.
+ *
+ * @param {Error|string|object} error
+ * @param {object} [context={}]
+ * @returns {boolean}
+ */
+export function isTransientNetworkError(error, context = {}) {
+  if (!error) return false
+  if (
+    error?.name === 'DownloadCancelledError' ||
+    error?.name === 'DownloadInterruptedError' ||
+    error?.isCancelled === true ||
+    context?.isCancelled === true
+  ) {
+    return false
+  }
+
+  // Diagnostic text check (strictly exclude rate limits, auth, or explicit unavailables)
+  const rawTexts = [
+    typeof error === 'string' ? error : error?.message,
+    error?.cause?.message,
+    error?.cause?.stderr,
+    error?.stderr,
+    context?.stderr
+  ]
+  const text = rawTexts
+    .filter((t) => typeof t === 'string')
+    .join(' ')
+    .toLowerCase()
+
+  if (
+    text.includes('429') ||
+    text.includes('too many requests') ||
+    text.includes('rate-limited') ||
+    text.includes('rate limited') ||
+    text.includes('sign in') ||
+    text.includes('login required') ||
+    text.includes('403 forbidden') ||
+    text.includes('401') ||
+    text.includes('po token') ||
+    text.includes('private video') ||
+    text.includes('format is not available') ||
+    text.includes('permission denied')
+  ) {
+    return false
+  }
+
+  // Inspect classified code
+  const classified = classifyDownloadError(error, context)
+  if (
+    classified.code === DOWNLOAD_ERROR_CODES.NETWORK_ERROR ||
+    classified.code === DOWNLOAD_ERROR_CODES.NETWORK_TIMEOUT
+  ) {
+    return true
+  }
+
+  // Inspect system error codes
+  const systemCode = String(
+    error?.code || error?.cause?.code || error?.original?.code || context?.code || ''
+  ).toUpperCase()
+
+  if (
+    [
+      'ECONNRESET',
+      'ENOTFOUND',
+      'ETIMEDOUT',
+      'ENETUNREACH',
+      'EHOSTUNREACH',
+      'EPIPE',
+      'EAI_AGAIN'
+    ].includes(systemCode)
+  ) {
+    return true
+  }
+
+  return (
+    text.includes('network is unreachable') ||
+    text.includes('connection reset by peer') ||
+    text.includes('connection timed out') ||
+    text.includes('getaddrinfo failed') ||
+    text.includes('failed to resolve') ||
+    text.includes('the read operation timed out') ||
+    text.includes('remote end closed connection') ||
+    text.includes('incompleteread')
+  )
+}

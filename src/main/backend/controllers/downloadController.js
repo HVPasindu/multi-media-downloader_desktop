@@ -66,6 +66,25 @@ export async function createDownloadJobController(req, res, next) {
       })
     }
 
+    // Check for existing active duplicate ('queued', 'downloading', or 'interrupted')
+    // before external network validation/analysis so interrupted jobs are recognized even if offline
+    const initialDuplicate = await findActiveDuplicateDownload({
+      sourceUrl: media.source_url,
+      mediaItemId,
+      outputFormat,
+      quality: outputFormat === 'mp4' ? quality : null,
+      audioBitrateKbps: outputFormat === 'mp3' ? audioBitrateKbps : null
+    })
+
+    if (initialDuplicate) {
+      return res.status(200).json({
+        success: true,
+        data: initialDuplicate.toJSON(),
+        duplicate: true,
+        message: 'An equivalent download is already queued or running'
+      })
+    }
+
     // Step 04.40 - Revalidate stored media source URL before scheduling download
     try {
       await validateMediaUrl(media.source_url)
@@ -81,13 +100,42 @@ export async function createDownloadJobController(req, res, next) {
       // Reuse the existing analyzer
       const analysis = await analyzeMedia(media.source_url)
 
-      const availableQualities = analysis.videoQualities
+      // Derive verified MP4 qualities strictly from verified MP4 formats (never generic videoQualities)
+      let availableQualities = []
+      if (
+        Array.isArray(analysis?.availableFormats?.mp4Qualities) &&
+        analysis.availableFormats.mp4Qualities.length > 0
+      ) {
+        availableQualities = analysis.availableFormats.mp4Qualities
+      } else if (
+        Array.isArray(analysis?.availableFormats?.mp4Formats) &&
+        analysis.availableFormats.mp4Formats.length > 0
+      ) {
+        availableQualities = [
+          ...new Set(
+            analysis.availableFormats.mp4Formats
+              .map((format) => {
+                if (typeof format?.quality === 'string' && format.quality.trim()) {
+                  return format.quality.trim()
+                }
+                if (Number.isInteger(format?.height) && format.height > 0) {
+                  return `${format.height}p`
+                }
+                return null
+              })
+              .filter(Boolean)
+          )
+        ]
+      }
 
-      // Reject unavailable video resolutions
+      // Reject unavailable video resolutions or media without verified MP4 streams
       if (!availableQualities.includes(quality)) {
         return res.status(400).json({
           success: false,
-          message: `Requested video quality ${quality} is not available`,
+          message:
+            availableQualities.length > 0
+              ? `Requested video quality ${quality} is not available`
+              : 'No verified MP4 formats are available for this media',
           availableQualities
         })
       }
@@ -168,6 +216,95 @@ export async function createDownloadJobController(req, res, next) {
       })
     }
 
+    next(error)
+  }
+}
+
+/**
+ * Read-only duplicate check endpoint (POST /api/downloads/check-duplicate).
+ * Allows the frontend to check whether the currently selected media configuration
+ * already has an active download ('queued', 'downloading', or 'interrupted').
+ *
+ * Never creates a DownloadJob, never enqueues a download, never alters job statuses,
+ * and does not perform external network analysis.
+ */
+export async function checkDownloadDuplicateController(req, res, next) {
+  try {
+    const { mediaItemId, outputFormat, quality, audioBitrateKbps } = req.body ?? {}
+
+    // 1. Validate mediaItemId
+    if (!Number.isInteger(mediaItemId) || mediaItemId <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid download job details'
+      })
+    }
+
+    // 2. Validate outputFormat
+    if (!['mp4', 'mp3'].includes(outputFormat)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid download job details'
+      })
+    }
+
+    // 3. Validate MP4 quality or MP3 bitrate
+    if (outputFormat === 'mp4') {
+      if (typeof quality !== 'string' || !/^\d+p$/.test(quality)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid download job details'
+        })
+      }
+    } else if (outputFormat === 'mp3') {
+      if (!SUPPORTED_MP3_BITRATES.includes(audioBitrateKbps)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid download job details'
+        })
+      }
+    }
+
+    // 4. Retrieve existing MediaItem
+    const MediaItem = getDatabase().models.MediaItem
+    const media = await MediaItem.findByPk(mediaItemId)
+
+    if (!media) {
+      return res.status(404).json({
+        success: false,
+        message: 'Media Item not found'
+      })
+    }
+
+    // 5. Check for active duplicate ('queued', 'downloading', or 'interrupted')
+    const activeDuplicate = await findActiveDuplicateDownload({
+      sourceUrl: media.source_url,
+      mediaItemId,
+      outputFormat,
+      quality: outputFormat === 'mp4' ? quality : null,
+      audioBitrateKbps: outputFormat === 'mp3' ? audioBitrateKbps : null
+    })
+
+    if (activeDuplicate) {
+      return res.status(200).json({
+        success: true,
+        duplicate: true,
+        data: {
+          id: activeDuplicate.id,
+          status: activeDuplicate.status,
+          output_format: activeDuplicate.output_format,
+          quality: activeDuplicate.quality,
+          audio_bitrate_kbps: activeDuplicate.audio_bitrate_kbps
+        }
+      })
+    }
+
+    return res.status(200).json({
+      success: true,
+      duplicate: false,
+      data: null
+    })
+  } catch (error) {
     next(error)
   }
 }
