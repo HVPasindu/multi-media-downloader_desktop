@@ -81,16 +81,42 @@ export async function createDownloadJobController(req, res, next) {
       // Reuse the existing analyzer
       const analysis = await analyzeMedia(media.source_url)
 
-      const availableQualities =
-        analysis.availableFormats?.mp4Qualities?.length > 0
-          ? analysis.availableFormats.mp4Qualities
-          : analysis.videoQualities || []
+      // Derive verified MP4 qualities strictly from verified MP4 formats (never generic videoQualities)
+      let availableQualities = []
+      if (
+        Array.isArray(analysis?.availableFormats?.mp4Qualities) &&
+        analysis.availableFormats.mp4Qualities.length > 0
+      ) {
+        availableQualities = analysis.availableFormats.mp4Qualities
+      } else if (
+        Array.isArray(analysis?.availableFormats?.mp4Formats) &&
+        analysis.availableFormats.mp4Formats.length > 0
+      ) {
+        availableQualities = [
+          ...new Set(
+            analysis.availableFormats.mp4Formats
+              .map((format) => {
+                if (typeof format?.quality === 'string' && format.quality.trim()) {
+                  return format.quality.trim()
+                }
+                if (Number.isInteger(format?.height) && format.height > 0) {
+                  return `${format.height}p`
+                }
+                return null
+              })
+              .filter(Boolean)
+          )
+        ]
+      }
 
-      // Reject unavailable video resolutions
+      // Reject unavailable video resolutions or media without verified MP4 streams
       if (!availableQualities.includes(quality)) {
         return res.status(400).json({
           success: false,
-          message: `Requested video quality ${quality} is not available`,
+          message:
+            availableQualities.length > 0
+              ? `Requested video quality ${quality} is not available`
+              : 'No verified MP4 formats are available for this media',
           availableQualities
         })
       }

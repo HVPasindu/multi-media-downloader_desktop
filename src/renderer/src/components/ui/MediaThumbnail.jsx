@@ -44,7 +44,15 @@ function isPrivateIpv4(ip) {
  * @returns {boolean}
  */
 function isPrivateOrLocalHost(hostname) {
-  const clean = hostname.toLowerCase().trim()
+  if (typeof hostname !== 'string') return true
+  let clean = hostname.toLowerCase().trim()
+
+  // Remove trailing DNS dots (e.g. 'localhost.' -> 'localhost', 'example.com.' -> 'example.com')
+  while (clean.endsWith('.')) {
+    clean = clean.slice(0, -1)
+  }
+
+  if (!clean) return true
 
   // Local and internal domain patterns
   if (

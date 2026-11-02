@@ -10,7 +10,13 @@ const retryRequestsInProgress = new Set()
 // Track active retry jobs: Map(originalJobId => activeRetryJobId)
 const activeRetryJobs = new Map()
 
-export async function retryDownloadJob(originalJobId) {
+export function clearRetryJobTracking() {
+  retryRequestsInProgress.clear()
+  activeRetryJobs.clear()
+}
+
+export async function retryDownloadJob(originalJobId, options = {}) {
+  const enqueue = typeof options?.enqueue === 'function' ? options.enqueue : enqueueDownloadJob
   if (!Number.isSafeInteger(originalJobId) || originalJobId <= 0) {
     throw new Error('A valid Download Job ID is required')
   }
@@ -111,9 +117,9 @@ export async function retryDownloadJob(originalJobId) {
       audioBitrateKbps: originalJob.audio_bitrate_kbps
     })
 
-    // 7. Submit the new job to the existing queue
+    // 7. Submit the new job to the queue
     try {
-      enqueueDownloadJob(newJob.id)
+      enqueue(newJob.id)
     } catch (queueError) {
       console.error(`Failed to enqueue retry job ${newJob.id}:`, queueError)
 

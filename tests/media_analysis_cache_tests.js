@@ -209,6 +209,49 @@ async function runAnalysisCacheTests() {
       '✓ Test 5 Passed: clearMediaAnalysisCache() successfully reset the in-memory cache.'
     )
 
+    // ------------------------------------------------------------------------
+    // Test 6: Deterministic Cache TTL Expiration (10-minute TTL)
+    // ------------------------------------------------------------------------
+    console.log('--- 6. Testing Deterministic Cache TTL Expiration (10-minute TTL) ---')
+    clearMediaAnalysisCache()
+    execFileCallCount = 0
+
+    const realDateNow = Date.now
+    let fakeClock = 1700000000000
+    Date.now = () => fakeClock
+
+    try {
+      // 1. Analyze for the first time
+      const firstTtlResult = await analyzeMedia(SAMPLE_YT_URL)
+      assert.equal(firstTtlResult.id, 'dQw4w9WgXcQ')
+      // 2. Confirm yt-dlp is executed once
+      assert.equal(execFileCallCount, 1, 'Initial extraction must invoke yt-dlp once')
+
+      // 3. Advance fake clock by 5 minutes (within the 10-minute TTL)
+      fakeClock += 5 * 60 * 1000
+      // 4. Confirm cached result is reused without re-executing yt-dlp
+      const cachedTtlResult = await analyzeMedia(SAMPLE_YT_URL)
+      assert.equal(cachedTtlResult.id, 'dQw4w9WgXcQ')
+      assert.equal(
+        execFileCallCount,
+        1,
+        'Analysis within TTL must hit cache without invoking yt-dlp'
+      )
+
+      // 5. Advance fake clock past the 10-minute TTL (+6 minutes -> 11 mins total)
+      fakeClock += 6 * 60 * 1000
+      // 6. Analyze the same URL again
+      const expiredTtlResult = await analyzeMedia(SAMPLE_YT_URL)
+      assert.equal(expiredTtlResult.id, 'dQw4w9WgXcQ')
+      // 7. Confirm a new metadata extraction happens
+      assert.equal(execFileCallCount, 2, 'Analysis after TTL expiration must invoke yt-dlp again')
+      console.log(
+        '✓ Test 6 Passed: Cache TTL expired deterministically and triggered fresh extraction.'
+      )
+    } finally {
+      Date.now = realDateNow
+    }
+
     console.log('\n================================================================')
     console.log(' ALL STEP 01 ANALYSIS CACHE TESTS PASSED SUCCESSFULLY (100% PASS)')
     console.log('================================================================\n')
