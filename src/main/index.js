@@ -1,6 +1,12 @@
 import { app, shell, BrowserWindow, ipcMain, dialog } from 'electron'
 
 import { startServer, stopServer } from './backend/server.js'
+import { stopQueueForShutdown } from './backend/services/downloadQueueService.js'
+import { shutdownActiveDownloads } from './backend/services/downloadService.js'
+import {
+  startNetworkMonitoring,
+  stopNetworkMonitoring
+} from './backend/services/networkRecoveryService.js'
 
 import { initializeDatabase } from './backend/config/database.js'
 import { recoverInterruptedDownloadJobs } from './backend/services/downloadRecoveryService.js'
@@ -14,6 +20,12 @@ import {
   verifyDownloadFolderWritable
 } from './backend/services/downloadFileSafetyService.js'
 import { getSessionToken } from './backend/services/localApiSecurityService.js'
+import {
+  setStartupWindow,
+  getStartupStatus,
+  updateStartupStatus,
+  restartApplication
+} from './ui/startupManager.js'
 
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
@@ -25,16 +37,22 @@ let shutdownStarted = false
 function createWindow() {
   // Create the browser window.
   const mainWindow = new BrowserWindow({
-    width: 900,
-    height: 670,
+    width: 1200,
+    height: 780,
+    minWidth: 960,
+    minHeight: 640,
     show: false,
     autoHideMenuBar: true,
+    backgroundColor: '#040B1C',
+    title: 'Multi Media Downloader',
     ...(process.platform === 'linux' ? { icon } : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false
     }
   })
+
+  setStartupWindow(mainWindow)
 
   mainWindow.on('ready-to-show', () => {
     mainWindow.show()
@@ -71,8 +89,21 @@ app.whenReady().then(async () => {
   // IPC test
   ipcMain.on('ping', () => console.log('pong'))
 
+  // Create application window early so the branded Splash Screen displays during startup
+  createWindow()
+
+  // Register startup IPC handlers
+  ipcMain.handle('startup:get-status', () => {
+    return getStartupStatus()
+  })
+
+  ipcMain.handle('startup:restart-app', () => {
+    return restartApplication(app)
+  })
+
   try {
     // 1. Initialize SQLite Database
+    updateStartupStatus('initializing_database', 'Initializing SQLite database & migrations...')
     const { sequelize, databasePath } = await initializeDatabase()
 
     // 2. Store Sequelize connection for shutdown
@@ -81,14 +112,19 @@ app.whenReady().then(async () => {
     console.log('Database path:', databasePath)
 
     // 3. Recover incomplete jobs from the previous application session
+    updateStartupStatus('recovering_downloads', 'Checking previous download sessions...')
     const recoveryResult = await recoverInterruptedDownloadJobs()
 
     console.log('Download restart recovery completed:', recoveryResult)
 
     // 4. Start Express Backend
+    updateStartupStatus('starting_backend', 'Starting local Express API server...')
     const { baseUrl } = await startServer()
 
     console.log('Backend URL:', baseUrl)
+
+    // Step 09 Section B - Start background network connectivity monitoring for auto-recovery
+    startNetworkMonitoring()
 
     // Allow the frontend to choose a download folder
     ipcMain.handle('downloads:choose-folder', async (event) => {
@@ -188,16 +224,18 @@ app.whenReady().then(async () => {
         data
       }
     })
+
+    // 5. Signal backend initialization complete
+    updateStartupStatus('ready', 'Application backend is ready')
   } catch (error) {
     console.error('Application startup failed:', error)
-
+    updateStartupStatus(
+      'error',
+      'Application startup failed',
+      error instanceof Error ? error.message : String(error)
+    )
     dialog.showErrorBox('Startup Error', error instanceof Error ? error.message : String(error))
-
-    app.quit()
-    return
   }
-
-  createWindow()
 
   app.on('activate', function () {
     // On macOS it's common to re-create a window in the app when the
@@ -217,15 +255,22 @@ app.on('before-quit', (event) => {
 
   async function shutdown() {
     try {
-      // Stop Express Server
+      // 1. Step 09.G - Stop queue scheduler and network monitoring
+      stopNetworkMonitoring()
+      stopQueueForShutdown()
+
+      // 2. Step 09.G - Gracefully interrupt running yt-dlp child processes & flush DB writes
+      await shutdownActiveDownloads({ timeoutMs: 5000 })
+
+      // 3. Stop Express Server
       await stopServer()
 
-      // Close SQLite connection
+      // 4. Close SQLite connection only after active processes and writes have settled
       if (databaseConnection) {
         await databaseConnection.close()
       }
 
-      console.log('Application resources closed')
+      console.log('Application resources closed safely')
     } catch (error) {
       console.error('Shutdown error:', error)
     } finally {

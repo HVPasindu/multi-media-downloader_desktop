@@ -2,6 +2,7 @@ import { Router } from 'express'
 
 import {
   createDownloadJobController,
+  checkDownloadDuplicateController,
   getDownloadJobController,
   listDownloadJobsController,
   cancelDownloadJobController,
@@ -14,6 +15,9 @@ const router = Router()
 
 // Create and start a download
 router.post('/', createDownloadJobController)
+
+// Check whether selected download configuration is already active (read-only)
+router.post('/check-duplicate', checkDownloadDuplicateController)
 
 // Get recent download history
 router.get('/', listDownloadJobsController)

@@ -16,8 +16,32 @@ export async function analyzeMediaController(req, res, next) {
       })
     }
 
-    // Step 1: Extract metadata using yt-dlp
-    const media = await analyzeMedia(validatedUrl.sourceUrl)
+    // Step 1: Extract metadata using yt-dlp (with caching, deduplication & cooldown)
+    let media
+    try {
+      media = await analyzeMedia(validatedUrl.sourceUrl)
+    } catch (analysisError) {
+      const code = analysisError.code || 'ANALYSIS_FAILED'
+      const message =
+        analysisError.userMessage || analysisError.message || 'Failed to analyze media link'
+      const retryAfterSeconds = analysisError.retryAfterSeconds || null
+
+      if (code === 'YOUTUBE_RATE_LIMITED') {
+        return res.status(429).json({
+          success: false,
+          code,
+          message,
+          retryAfterSeconds: retryAfterSeconds || 60
+        })
+      }
+
+      return res.status(400).json({
+        success: false,
+        code,
+        message,
+        retryAfterSeconds
+      })
+    }
 
     // Step 2: Save or update media in SQLite
     const savedMedia = await saveMediaItem(media)

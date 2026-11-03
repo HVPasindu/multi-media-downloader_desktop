@@ -1,3 +1,4 @@
+import fs from 'node:fs'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 
@@ -29,5 +30,24 @@ export async function resolve(specifier, context, nextResolve) {
     }
   }
 
+  if ((specifier.startsWith('./') || specifier.startsWith('../')) && context.parentURL) {
+    try {
+      const parentDir = path.dirname(
+        new URL(context.parentURL).pathname.replace(/^\/([A-Za-z]:)/, '')
+      )
+      const candidatePath = path.resolve(parentDir, specifier)
+      if (!path.extname(candidatePath)) {
+        if (fs.existsSync(candidatePath + '.js')) {
+          return {
+            format: 'module',
+            shortCircuit: true,
+            url: pathToFileURL(candidatePath + '.js').href
+          }
+        }
+      }
+    } catch (err) {
+      void err
+    }
+  }
   return nextResolve(specifier, context)
 }

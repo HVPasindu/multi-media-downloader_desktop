@@ -375,6 +375,16 @@ async function runAllE2eTests() {
     assert.equal(dupReqRes.body.duplicate, true, 'duplicate flag must be true')
     assert.equal(dupReqRes.body.data.id, dupBaseId, 'must reference the existing active job ID')
 
+    // Also test read-only check-duplicate endpoint
+    const checkDupRes = await env.request({
+      path: '/api/downloads/check-duplicate',
+      method: 'POST',
+      body: { mediaItemId, outputFormat: 'mp4', quality: '1080p' }
+    })
+    assert.equal(checkDupRes.status, 200, 'Check duplicate endpoint returns HTTP 200')
+    assert.equal(checkDupRes.body.duplicate, true, 'Check duplicate reports duplicate === true')
+    assert.equal(checkDupRes.body.data.id, dupBaseId, 'Check duplicate returns active job ID')
+
     // Request different quality (e.g. 720p) -> must be independent and create new job
     const diffQualityRes = await env.request({
       path: '/api/downloads',
@@ -603,8 +613,8 @@ async function runAllE2eTests() {
       downloaded_bytes: 0
     })
 
-    // Execute real restart recovery
-    const recoveryResult = await recoverInterruptedDownloadJobs()
+    // Execute real restart recovery (Option A: recovers to queued)
+    const recoveryResult = await recoverInterruptedDownloadJobs({ autoEnqueue: false })
     const totalRecovered =
       recoveryResult.interruptedDownloads + recoveryResult.interruptedQueuedJobs
     assert.equal(totalRecovered, 2, 'Must recover exactly 2 interrupted jobs')
@@ -613,16 +623,23 @@ async function runAllE2eTests() {
 
     const rec1 = await DownloadJob.findByPk(interruptedJob1.id)
     const rec2 = await DownloadJob.findByPk(interruptedJob2.id)
-    assert.equal(rec1.status, 'failed', 'Interrupted downloading job recovered to failed')
-    assert.equal(rec2.status, 'failed', 'Interrupted queued job recovered to failed')
-    assert.ok(rec1.error_message.includes('interrupted'))
+    assert.equal(
+      rec1.status,
+      'queued',
+      'Interrupted downloading job recovered to queued (Option A)'
+    )
+    assert.equal(rec2.status, 'queued', 'Interrupted queued job restored to queued (Option A)')
+    assert.equal(rec1.id, interruptedJob1.id, 'Preserves original Job ID 1')
+    assert.equal(rec2.id, interruptedJob2.id, 'Preserves original Job ID 2')
+    assert.equal(rec1.error_message, null, 'Error message cleared on recovery')
+    assert.equal(rec2.error_message, null, 'Error message cleared on recovery')
 
     // Idempotent recovery
-    const secondRecovery = await recoverInterruptedDownloadJobs()
+    const secondRecovery = await recoverInterruptedDownloadJobs({ autoEnqueue: false })
     const secondTotal = secondRecovery.interruptedDownloads + secondRecovery.interruptedQueuedJobs
     assert.equal(secondTotal, 0, 'Second recovery run is idempotent (0 recovered)')
 
-    console.log('✓ Group K: Restart recovery verified.\n')
+    console.log('✓ Group K: Option A restart recovery verified.\n')
 
     // ========================================================================
     // GROUP L — API RESPONSE CONTRACTS CONFIRMATION

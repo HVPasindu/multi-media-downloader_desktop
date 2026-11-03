@@ -14,6 +14,10 @@ export default [
       react: {
         version: 'detect'
       }
+    },
+    rules: {
+      'react/prop-types': 'off',
+      'react/no-unknown-property': 'off'
     }
   },
   {

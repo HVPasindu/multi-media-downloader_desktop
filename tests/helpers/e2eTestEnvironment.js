@@ -258,7 +258,7 @@ export async function createE2eEnvironment(prefix = 'applan2-e2e-') {
 
         // Simulated yt-dlp failure
         if (simulatedFailureRules.ytDlpFailJobs?.includes(jobId)) {
-          child.stderr.write('ERROR: [youtube] Connection reset by peer\n')
+          child.stderr.write('ERROR: [youtube] Video unavailable: This video is not available\n')
           child.stderr.end()
           child.stdout.end()
           child.emit('close', 1, null)

@@ -55,8 +55,28 @@ const TEST_SUITES = [
     file: 'tests/windows_packaging_tests.js'
   },
   {
+    name: 'Step 01: Media Analysis In-Memory Cache & Deduplication',
+    file: 'tests/media_analysis_cache_tests.js'
+  },
+  {
+    name: 'Step 02: Error Classification, PO Token & Cooldown Enforcement',
+    file: 'tests/media_analysis_error_tests.js'
+  },
+  {
     name: 'Step 04.45: Link Downloader Full Backend E2E Suite (Mocked Media Tools)',
     file: 'tests/link_downloader_e2e_tests.js'
+  },
+  {
+    name: 'Phase 03: Downloads Manager & Sidebar Active Count (Step 07 & 08)',
+    file: 'tests/downloads_manager_active_count_tests.js'
+  },
+  {
+    name: 'Phase 04: Step 09 Network Recovery & Option A Restart Recovery Suite',
+    file: 'tests/download_network_recovery_tests.js'
+  },
+  {
+    name: 'Corrective Step 02: Duplicate Download Guard Test Suite (A–N)',
+    file: 'tests/duplicate_download_guard_tests.js'
   }
 ]
 

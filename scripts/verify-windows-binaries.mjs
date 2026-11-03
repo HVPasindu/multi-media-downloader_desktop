@@ -127,9 +127,6 @@ export function verifyStagedBinaries(binDir = null) {
         continue
       }
 
-
-      
-
       console.log(
         `[PASS] ${item.name} (${(stats.size / (1024 * 1024)).toFixed(2)} MB) -> ${firstLine}`
       )

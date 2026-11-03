@@ -5,7 +5,10 @@ import {
   getQueueStatus
 } from '../src/main/backend/services/downloadQueueService.js'
 import { createDownloadJob } from '../src/main/backend/services/downloadService.js'
-import { retryDownloadJob } from '../src/main/backend/services/downloadRetryService.js'
+import {
+  retryDownloadJob,
+  clearRetryJobTracking
+} from '../src/main/backend/services/downloadRetryService.js'
 import {
   findActiveDuplicateDownload,
   getCanonicalMediaKey
@@ -167,6 +170,12 @@ async function runDownloadQueueTests() {
     // ------------------------------------------------------------------------
     console.log('--- 4. Testing Job Retry Lifecycle ---')
 
+    const enqueuedJobIds = []
+    const mockEnqueue = (jobId) => {
+      enqueuedJobIds.push(jobId)
+      return true
+    }
+
     // Create a failed job
     const failedJob = await createDownloadJob({
       mediaItemId: media.id,
@@ -179,9 +188,10 @@ async function runDownloadQueueTests() {
     )
 
     // 4.1: Retry failed job
-    const retryResult = await retryDownloadJob(failedJob.id)
+    const retryResult = await retryDownloadJob(failedJob.id, { enqueue: mockEnqueue })
     assert.equal(retryResult.outcome, 'created', '4.1: Retry created successfully')
     assert.ok(retryResult.retryJobId !== failedJob.id, '4.1: Retry creates a NEW Job ID')
+    assert.ok(enqueuedJobIds.includes(retryResult.retryJobId), '4.1: Retry job was enqueued')
 
     // Verify original failed job is preserved unchanged
     const originalCheck = await DownloadJob.findByPk(failedJob.id)
@@ -194,20 +204,20 @@ async function runDownloadQueueTests() {
     assert.equal(newJob.output_format, 'mp4')
     assert.equal(newJob.quality, '480p')
 
-    // Cancel retry job to clean it from queue
-    await cancelDownloadJob(retryResult.retryJobId)
-
     // 4.2: Retry cancelled job
-    const retryCancelledResult = await retryDownloadJob(activeMp4Job.id)
+    const retryCancelledResult = await retryDownloadJob(activeMp4Job.id, { enqueue: mockEnqueue })
     assert.equal(retryCancelledResult.outcome, 'created', '4.2: Cancelled job can be retried')
-    await cancelDownloadJob(retryCancelledResult.retryJobId)
+    assert.ok(
+      enqueuedJobIds.includes(retryCancelledResult.retryJobId),
+      '4.2: Retry job was enqueued'
+    )
 
     // 4.3: Retry completed job is rejected
-    const retryCompletedResult = await retryDownloadJob(compJob.id)
+    const retryCompletedResult = await retryDownloadJob(compJob.id, { enqueue: mockEnqueue })
     assert.equal(retryCompletedResult.outcome, 'not_retryable', '4.3: Completed job retry rejected')
 
     // 4.4: Retry non-existent job
-    const retryMissingResult = await retryDownloadJob(999999)
+    const retryMissingResult = await retryDownloadJob(999999, { enqueue: mockEnqueue })
     assert.equal(retryMissingResult.outcome, 'not_found', '4.4: Missing job returns not_found')
 
     // 4.5: Retry job with unsafe stored URL is rejected
@@ -226,7 +236,7 @@ async function runDownloadQueueTests() {
       downloaded_bytes: 0
     })
 
-    const retryUnsafeResult = await retryDownloadJob(unsafeJob.id)
+    const retryUnsafeResult = await retryDownloadJob(unsafeJob.id, { enqueue: mockEnqueue })
     assert.equal(
       retryUnsafeResult.outcome,
       'unsafe_url',
@@ -241,6 +251,7 @@ async function runDownloadQueueTests() {
     console.log(' ALL DOWNLOAD QUEUE & RETRY TESTS PASSED SUCCESSFULLY (100%)    ')
     console.log('================================================================\n')
   } finally {
+    clearRetryJobTracking()
     await testDb.cleanup()
   }
 }

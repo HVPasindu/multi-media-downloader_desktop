@@ -14,4 +14,3 @@ router.get('/downloads', getDownloadSettingsController)
 router.patch('/downloads', updateDownloadSettingsController)
 
 export default router
-

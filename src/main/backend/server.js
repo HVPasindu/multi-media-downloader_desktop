@@ -1,4 +1,3 @@
-
 import { createServer } from 'node:http'
 import { createApiApp } from './app.js'
 
@@ -47,9 +46,7 @@ export async function startServer() {
     console.error('HTTP Server Error:', error)
   })
 
-  console.log(
-    `Express API running at http://${HOST}:${PORT}`
-  )
+  console.log(`Express API running at http://${HOST}:${PORT}`)
 
   return {
     baseUrl: `http://${HOST}:${PORT}`

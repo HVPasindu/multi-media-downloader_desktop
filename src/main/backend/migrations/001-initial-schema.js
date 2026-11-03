@@ -7,11 +7,11 @@ const timestamp = () => ({
 })
 
 export async function up({ context: queryInterface }) {
-  await queryInterface.sequelize.transaction(
-    async (transaction) => {
-
-      // 1. MEDIA ITEMS
-      await queryInterface.createTable('media_items', {
+  await queryInterface.sequelize.transaction(async (transaction) => {
+    // 1. MEDIA ITEMS
+    await queryInterface.createTable(
+      'media_items',
+      {
         id: {
           type: DataTypes.INTEGER,
           primaryKey: true,
@@ -39,10 +39,14 @@ export async function up({ context: queryInterface }) {
         },
         created_at: timestamp(),
         updated_at: timestamp()
-      }, { transaction })
+      },
+      { transaction }
+    )
 
-      // 2. DOWNLOAD JOBS
-      await queryInterface.createTable('download_jobs', {
+    // 2. DOWNLOAD JOBS
+    await queryInterface.createTable(
+      'download_jobs',
+      {
         id: {
           type: DataTypes.INTEGER,
           primaryKey: true,
@@ -96,10 +100,14 @@ export async function up({ context: queryInterface }) {
         },
         created_at: timestamp(),
         updated_at: timestamp()
-      }, { transaction })
+      },
+      { transaction }
+    )
 
-      // 3. DOWNLOAD FILES
-      await queryInterface.createTable('download_files', {
+    // 3. DOWNLOAD FILES
+    await queryInterface.createTable(
+      'download_files',
+      {
         id: {
           type: DataTypes.INTEGER,
           primaryKey: true,
@@ -134,10 +142,14 @@ export async function up({ context: queryInterface }) {
         },
         created_at: timestamp(),
         updated_at: timestamp()
-      }, { transaction })
+      },
+      { transaction }
+    )
 
-      // 4. APP SETTINGS
-      await queryInterface.createTable('app_settings', {
+    // 4. APP SETTINGS
+    await queryInterface.createTable(
+      'app_settings',
+      {
         id: {
           type: DataTypes.INTEGER,
           primaryKey: true,
@@ -154,33 +166,20 @@ export async function up({ context: queryInterface }) {
         },
         created_at: timestamp(),
         updated_at: timestamp()
-      }, { transaction })
-    }
-  )
+      },
+      { transaction }
+    )
+  })
 }
 
 export async function down({ context: queryInterface }) {
-  await queryInterface.sequelize.transaction(
-    async (transaction) => {
-      await queryInterface.dropTable(
-        'download_files',
-        { transaction }
-      )
+  await queryInterface.sequelize.transaction(async (transaction) => {
+    await queryInterface.dropTable('download_files', { transaction })
 
-      await queryInterface.dropTable(
-        'download_jobs',
-        { transaction }
-      )
+    await queryInterface.dropTable('download_jobs', { transaction })
 
-      await queryInterface.dropTable(
-        'media_items',
-        { transaction }
-      )
+    await queryInterface.dropTable('media_items', { transaction })
 
-      await queryInterface.dropTable(
-        'app_settings',
-        { transaction }
-      )
-    }
-  )
+    await queryInterface.dropTable('app_settings', { transaction })
+  })
 }

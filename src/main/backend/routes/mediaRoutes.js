@@ -1,4 +1,3 @@
-
 import express from 'express'
 import { analyzeMediaController } from '../controllers/mediaAnalyzerController.js'
 
