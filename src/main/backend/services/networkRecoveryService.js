@@ -234,12 +234,30 @@ export async function resumeInterruptedNetworkJobs(options = {}) {
         )
       } else {
         // Unverified partial file: safely clean any corrupted artifacts and restart from 0 with SAME Job ID
+        let cleanupFailed = false
+        let cleanupErrorMsg = null
         if (downloadPath) {
           try {
-            await cleanupJobTemporaryFiles(job.id, downloadPath)
-          } catch {
-            // Ignore fallback cleanup errors
+            const cleanResult = await cleanupJobTemporaryFiles(job.id, downloadPath)
+            if (cleanResult && cleanResult.success === false) {
+              cleanupFailed = true
+              cleanupErrorMsg = cleanResult.error || 'Failed to cleanup temporary files'
+            }
+          } catch (cleanErr) {
+            cleanupFailed = true
+            cleanupErrorMsg = cleanErr.message
           }
+        }
+
+        if (cleanupFailed) {
+          await job.update({
+            status: 'failed',
+            error_message: `Network recovery cleanup failed: ${cleanupErrorMsg}`
+          })
+          console.warn(
+            `[network-recovery] Job ${job.id} cleanup failed: ${cleanupErrorMsg}. Marked as failed.`
+          )
+          continue
         }
 
         await job.update({

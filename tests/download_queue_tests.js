@@ -2,7 +2,11 @@ import assert from 'node:assert/strict'
 import {
   enqueueDownloadJob,
   cancelDownloadJob,
-  getQueueStatus
+  getQueueStatus,
+  setExecutorForTesting,
+  resetExecutorForTesting,
+  stopQueueForShutdown,
+  resetQueueForTesting
 } from '../src/main/backend/services/downloadQueueService.js'
 import { createDownloadJob } from '../src/main/backend/services/downloadService.js'
 import {
@@ -247,10 +251,374 @@ async function runDownloadQueueTests() {
       '✓ Section 4: Retry creates distinct jobs, preserves originals, and enforces security.\n'
     )
 
+    // ------------------------------------------------------------------------
+    // 5. Real Concurrency Test (MAX_CONCURRENT_DOWNLOADS = 2, FIFO, Lifecycle)
+    // ------------------------------------------------------------------------
+    console.log('--- 5. Testing Real Concurrency (Max 2), FIFO & Queue Lifecycle ---')
+
+    resetQueueForTesting()
+
+    // 5.1 Controlled 3 Jobs: A, B, C
+    // Initial state: A downloading, B downloading, C queued.
+    // When A finishes, C starts. Concurrency never exceeds 2.
+    const jobA = await createDownloadJob({
+      mediaItemId: media.id,
+      outputFormat: 'mp4',
+      quality: '360p'
+    })
+    const jobB = await createDownloadJob({
+      mediaItemId: media.id,
+      outputFormat: 'mp4',
+      quality: '480p'
+    })
+    const jobC = await createDownloadJob({
+      mediaItemId: media.id,
+      outputFormat: 'mp4',
+      quality: '720p'
+    })
+
+    let activeRunningCount = 0
+    let maxObservedActiveCount = 0
+    const startedOrder = []
+    const completionOrder = []
+
+    let resolveJobA, resolveJobB, resolveJobC
+    const promiseA = new Promise((res) => {
+      resolveJobA = res
+    })
+    const promiseB = new Promise((res) => {
+      resolveJobB = res
+    })
+    const promiseC = new Promise((res) => {
+      resolveJobC = res
+    })
+
+    const controlledExecutor = async (jobId) => {
+      activeRunningCount++
+      if (activeRunningCount > maxObservedActiveCount) {
+        maxObservedActiveCount = activeRunningCount
+      }
+      startedOrder.push(jobId)
+
+      if (jobId === jobA.id) {
+        await promiseA
+      } else if (jobId === jobB.id) {
+        await promiseB
+      } else if (jobId === jobC.id) {
+        await promiseC
+      }
+      activeRunningCount--
+      completionOrder.push(jobId)
+    }
+
+    setExecutorForTesting(controlledExecutor)
+
+    // Enqueue A, B, C
+    const enqA = enqueueDownloadJob(jobA.id)
+    const enqB = enqueueDownloadJob(jobB.id)
+    const enqC = enqueueDownloadJob(jobC.id)
+
+    assert.equal(enqA, true, '5.1: Job A enqueued')
+    assert.equal(enqB, true, '5.1: Job B enqueued')
+    assert.equal(enqC, true, '5.1: Job C enqueued')
+
+    // Allow synchronous event loop microtasks to start A and B
+    await new Promise((res) => setTimeout(res, 50))
+
+    const statusInitial = getQueueStatus()
+    assert.equal(statusInitial.activeCount, 2, '5.1: Exactly 2 jobs are actively executing')
+    assert.equal(statusInitial.waitingCount, 1, '5.1: Exactly 1 job is waiting in queue')
+    assert.deepEqual(statusInitial.waitingJobIds, [jobC.id], '5.1: Job C is waiting in queue')
+    assert.equal(
+      startedOrder.includes(jobC.id),
+      false,
+      '5.1: Job C has NOT started while A and B are active'
+    )
+    assert.ok(maxObservedActiveCount <= 2, '5.1: Active count never exceeds 2')
+
+    // Finish Job A -> Job C should start
+    resolveJobA()
+    await new Promise((res) => setTimeout(res, 50))
+
+    assert.equal(startedOrder.includes(jobC.id), true, '5.1: Job C started after Job A finished')
+    assert.deepEqual(
+      startedOrder,
+      [jobA.id, jobB.id, jobC.id],
+      '5.1: Strict FIFO start order [A, B, C]'
+    )
+    assert.ok(maxObservedActiveCount <= 2, '5.1: Concurrency strictly capped at 2')
+
+    // Finish Job B and Job C
+    resolveJobB()
+    resolveJobC()
+    await new Promise((res) => setTimeout(res, 50))
+
+    const statusFinal = getQueueStatus()
+    assert.equal(statusFinal.activeCount, 0, '5.1: All jobs finished, active count is 0')
+    assert.equal(statusFinal.waitingCount, 0, '5.1: Queue is empty')
+    assert.equal(maxObservedActiveCount, 2, '5.1: Max observed active count was exactly 2')
+
+    console.log(
+      '✓ 5.1: 3 controlled jobs (A, B active, C queued -> A finishes -> C starts, FIFO preserved, max active <= 2).'
+    )
+
+    // 5.2 Simultaneous submissions (3 jobs submitted in same microtask)
+    resetQueueForTesting()
+    maxObservedActiveCount = 0
+    activeRunningCount = 0
+    const jobD = await createDownloadJob({
+      mediaItemId: media.id,
+      outputFormat: 'mp4',
+      quality: '1080p'
+    })
+    const jobE = await createDownloadJob({
+      mediaItemId: media.id,
+      outputFormat: 'mp4',
+      quality: '1440p'
+    })
+    const jobF = await createDownloadJob({
+      mediaItemId: media.id,
+      outputFormat: 'mp4',
+      quality: '2160p'
+    })
+
+    let resolveAllD, resolveAllE, resolveAllF
+    const pD = new Promise((r) => {
+      resolveAllD = r
+    })
+    const pE = new Promise((r) => {
+      resolveAllE = r
+    })
+    const pF = new Promise((r) => {
+      resolveAllF = r
+    })
+
+    setExecutorForTesting(async (jobId) => {
+      activeRunningCount++
+      if (activeRunningCount > maxObservedActiveCount) maxObservedActiveCount = activeRunningCount
+      if (jobId === jobD.id) await pD
+      if (jobId === jobE.id) await pE
+      if (jobId === jobF.id) await pF
+      activeRunningCount--
+    })
+
+    enqueueDownloadJob(jobD.id)
+    enqueueDownloadJob(jobE.id)
+    enqueueDownloadJob(jobF.id)
+
+    await new Promise((res) => setTimeout(res, 50))
+    const statusSimul = getQueueStatus()
+    assert.equal(statusSimul.activeCount, 2, '5.2: Simultaneous submissions: active count is 2')
+    assert.equal(statusSimul.waitingCount, 1, '5.2: Simultaneous submissions: 1 waiting')
+    assert.equal(maxObservedActiveCount, 2, '5.2: Max observed active count <= 2')
+    resolveAllD()
+    resolveAllE()
+    resolveAllF()
+    await new Promise((res) => setTimeout(res, 50))
+    console.log('✓ 5.2: Simultaneous submissions handled correctly.')
+
+    // 5.3 Rapid submissions (5 jobs submitted in loop)
+    resetQueueForTesting()
+    maxObservedActiveCount = 0
+    activeRunningCount = 0
+    const rapidResolvers = []
+    const rapidJobIds = []
+    for (let i = 0; i < 5; i++) {
+      const rJob = await createDownloadJob({
+        mediaItemId: media.id,
+        outputFormat: 'mp4',
+        quality: `${240 + i * 100}p`
+      })
+      rapidJobIds.push(rJob.id)
+    }
+
+    setExecutorForTesting(async () => {
+      activeRunningCount++
+      if (activeRunningCount > maxObservedActiveCount) maxObservedActiveCount = activeRunningCount
+      await new Promise((r) => rapidResolvers.push(r))
+      activeRunningCount--
+    })
+
+    for (const rId of rapidJobIds) {
+      enqueueDownloadJob(rId)
+    }
+    await new Promise((res) => setTimeout(res, 50))
+    const rapidStatus = getQueueStatus()
+    assert.equal(rapidStatus.activeCount, 2, '5.3: Rapid submissions: active count is 2')
+    assert.equal(rapidStatus.waitingCount, 3, '5.3: Rapid submissions: 3 waiting in queue')
+    assert.ok(maxObservedActiveCount <= 2, '5.3: Concurrency limit never exceeded')
+
+    // Drain all rapid jobs
+    while (rapidResolvers.length > 0) {
+      rapidResolvers.shift()()
+      await new Promise((res) => setTimeout(res, 20))
+    }
+    await new Promise((res) => setTimeout(res, 50))
+    assert.equal(getQueueStatus().activeCount, 0, '5.3: All rapid jobs drained')
+    console.log('✓ 5.3: Rapid submissions properly throttled and queued.')
+
+    // 5.4 Active job cancellation frees slot for next waiting job
+    resetQueueForTesting()
+    const cancelActiveJob = await createDownloadJob({
+      mediaItemId: media.id,
+      outputFormat: 'mp4',
+      quality: '360p'
+    })
+    const waitingJobAfterCancel = await createDownloadJob({
+      mediaItemId: media.id,
+      outputFormat: 'mp4',
+      quality: '480p'
+    })
+    let resolveCancel
+    const cancelProm = new Promise((r) => {
+      resolveCancel = r
+    })
+    let nextJobStarted = false
+
+    setExecutorForTesting(async (jobId) => {
+      if (jobId === cancelActiveJob.id) {
+        await cancelProm
+      } else if (jobId === waitingJobAfterCancel.id) {
+        nextJobStarted = true
+      }
+    })
+
+    enqueueDownloadJob(cancelActiveJob.id)
+    enqueueDownloadJob(waitingJobAfterCancel.id)
+    await new Promise((res) => setTimeout(res, 50))
+
+    // Cancel active job (simulating process termination and .finally cleanup)
+    resolveCancel()
+    await new Promise((res) => setTimeout(res, 50))
+    assert.equal(
+      getQueueStatus().scheduledJobIds.includes(cancelActiveJob.id),
+      false,
+      '5.4: Cancelled job removed from schedule'
+    )
+    assert.equal(
+      nextJobStarted,
+      true,
+      '5.4: Next waiting job started after previous job completed/cancelled'
+    )
+    console.log('✓ 5.4: Job cancellation handled safely.')
+
+    // 5.5 Failure of active job does not stall the queue
+    resetQueueForTesting()
+    const failJobA = await createDownloadJob({
+      mediaItemId: media.id,
+      outputFormat: 'mp4',
+      quality: '360p'
+    })
+    const nextJobAfterFail = await createDownloadJob({
+      mediaItemId: media.id,
+      outputFormat: 'mp4',
+      quality: '720p'
+    })
+    let nextJobExecuted = false
+
+    setExecutorForTesting(async (jobId) => {
+      if (jobId === failJobA.id) {
+        throw new Error('Simulated failure during execution')
+      }
+      if (jobId === nextJobAfterFail.id) {
+        nextJobExecuted = true
+      }
+    })
+
+    enqueueDownloadJob(failJobA.id)
+    enqueueDownloadJob(nextJobAfterFail.id)
+    await new Promise((res) => setTimeout(res, 50))
+
+    assert.equal(
+      nextJobExecuted,
+      true,
+      '5.5: Next waiting job executed after failure of previous job'
+    )
+    assert.equal(getQueueStatus().activeCount, 0, '5.5: Queue returned to idle')
+    console.log('✓ 5.5: Job failure gracefully unblocks queue.')
+
+    // 5.6 Recovered job re-enqueued respects limit and FIFO
+    resetQueueForTesting()
+    const recoveredJob = await createDownloadJob({
+      mediaItemId: media.id,
+      outputFormat: 'mp4',
+      quality: '480p'
+    })
+    await DownloadJob.update({ status: 'interrupted' }, { where: { id: recoveredJob.id } })
+    let recoveredExecuted = false
+    setExecutorForTesting(async (jobId) => {
+      if (jobId === recoveredJob.id) recoveredExecuted = true
+    })
+
+    const enqRec = enqueueDownloadJob(recoveredJob.id)
+    assert.equal(enqRec, true, '5.6: Recovered job re-enqueued')
+    await new Promise((res) => setTimeout(res, 50))
+    assert.equal(recoveredExecuted, true, '5.6: Recovered job executed')
+    console.log('✓ 5.6: Recovered job re-enqueued and executed within concurrency limit.')
+
+    // 5.7 Duplicate job submitted while in queue returns false
+    resetQueueForTesting()
+    const dupTestJob = await createDownloadJob({
+      mediaItemId: media.id,
+      outputFormat: 'mp4',
+      quality: '720p'
+    })
+    let resolveDup
+    const dupProm = new Promise((r) => {
+      resolveDup = r
+    })
+    setExecutorForTesting(async () => {
+      await dupProm
+    })
+
+    assert.equal(enqueueDownloadJob(dupTestJob.id), true, '5.7: First enqueue succeeds')
+    assert.equal(enqueueDownloadJob(dupTestJob.id), false, '5.7: Duplicate enqueue returns false')
+    resolveDup()
+    await new Promise((res) => setTimeout(res, 50))
+    console.log('✓ 5.7: Duplicate submission while in queue rejected (idempotent).')
+
+    // 5.8 Application shutdown during queue activity
+    resetQueueForTesting()
+    const shutdownJob1 = await createDownloadJob({
+      mediaItemId: media.id,
+      outputFormat: 'mp4',
+      quality: '360p'
+    })
+    const shutdownJob2 = await createDownloadJob({
+      mediaItemId: media.id,
+      outputFormat: 'mp4',
+      quality: '480p'
+    })
+    let resolveShutdownJob
+    const shutdownProm = new Promise((res) => {
+      resolveShutdownJob = res
+    })
+    setExecutorForTesting(async () => {
+      await shutdownProm
+    })
+
+    enqueueDownloadJob(shutdownJob1.id)
+    stopQueueForShutdown()
+    assert.equal(
+      enqueueDownloadJob(shutdownJob2.id),
+      false,
+      '5.8: Enqueue during shutdown returns false'
+    )
+    resolveShutdownJob()
+    await new Promise((res) => setTimeout(res, 50))
+    resetQueueForTesting()
+    console.log('✓ 5.8: Shutdown stops queue processing and rejects new submissions.')
+
+    console.log(
+      '✓ Section 5: Real concurrency (max 2), FIFO order, and queue lifecycle verified.\n'
+    )
+
     console.log('================================================================')
     console.log(' ALL DOWNLOAD QUEUE & RETRY TESTS PASSED SUCCESSFULLY (100%)    ')
     console.log('================================================================\n')
   } finally {
+    resetExecutorForTesting()
+    resetQueueForTesting()
     clearRetryJobTracking()
     await testDb.cleanup()
   }

@@ -1576,13 +1576,26 @@ export async function executeDownloadJob(jobId, options = {}) {
         if (hasValidPartial) {
           updatePayload.downloaded_bytes = reconciledBytes
         } else {
+          let cleanupFailed = false
+          let cleanupErrorMsg = null
           try {
-            await cleanupJobTemporaryFiles(jobId, cleanPath)
-          } catch {
-            // Ignore fallback cleanup errors
+            const cleanResult = await cleanupJobTemporaryFiles(jobId, cleanPath)
+            if (cleanResult && cleanResult.success === false) {
+              cleanupFailed = true
+              cleanupErrorMsg = cleanResult.error || 'Failed to cleanup temporary files'
+            }
+          } catch (cleanErr) {
+            cleanupFailed = true
+            cleanupErrorMsg = cleanErr.message
           }
-          updatePayload.progress = 0
-          updatePayload.downloaded_bytes = 0
+
+          if (cleanupFailed) {
+            updatePayload.status = 'failed'
+            updatePayload.error_message = `Network interruption cleanup failed: ${cleanupErrorMsg}`
+          } else {
+            updatePayload.progress = 0
+            updatePayload.downloaded_bytes = 0
+          }
         }
 
         await DownloadJob.update(updatePayload, {
@@ -1612,9 +1625,35 @@ export async function executeDownloadJob(jobId, options = {}) {
           (await getSavedDownloadPath(getDatabase().models.AppSetting)) ||
           (await getDefaultDownloadPath())
 
-        await cleanupJobTemporaryFiles(jobId, cleanPath)
+        let cleanupFailed = false
+        let cleanupErrorMsg = null
+        try {
+          const cleanResult = await cleanupJobTemporaryFiles(jobId, cleanPath)
+          if (cleanResult && cleanResult.success === false) {
+            cleanupFailed = true
+            cleanupErrorMsg = cleanResult.error || 'Failed to cleanup temporary files'
+          }
+        } catch (cleanErr) {
+          cleanupFailed = true
+          cleanupErrorMsg = cleanErr.message
+        }
 
         const DownloadJob = getDatabase().models.DownloadJob
+        if (cleanupFailed) {
+          await DownloadJob.update(
+            {
+              status: 'failed',
+              error_message: `Resume range fallback cleanup failed: ${cleanupErrorMsg}`
+            },
+            {
+              where: {
+                id: jobId
+              }
+            }
+          )
+          throw new Error(`Resume range fallback cleanup failed: ${cleanupErrorMsg}`)
+        }
+
         await DownloadJob.update(
           {
             status: 'queued',

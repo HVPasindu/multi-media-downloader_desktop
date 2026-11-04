@@ -119,12 +119,26 @@ export async function recoverInterruptedDownloadJobs(options = {}) {
       if (hasValidPartial) {
         updatePayload.downloaded_bytes = reconciledBytes
       } else {
+        let cleanupFailed = false
+        let cleanupErrorMsg = null
         if (downloadPath) {
           try {
-            await cleanupJobTemporaryFiles(job.id, downloadPath)
-          } catch {
-            // Ignore fallback cleanup errors
+            const cleanResult = await cleanupJobTemporaryFiles(job.id, downloadPath)
+            if (cleanResult && cleanResult.success === false) {
+              cleanupFailed = true
+              cleanupErrorMsg = cleanResult.error || 'Failed to cleanup temporary files'
+            }
+          } catch (cleanErr) {
+            cleanupFailed = true
+            cleanupErrorMsg = cleanErr.message
           }
+        }
+        if (cleanupFailed) {
+          await job.update({
+            status: 'failed',
+            error_message: `Recovery cleanup failed: ${cleanupErrorMsg}`
+          })
+          continue
         }
         updatePayload.progress = 0
         updatePayload.downloaded_bytes = 0
@@ -173,12 +187,30 @@ export async function recoverInterruptedDownloadJobs(options = {}) {
         )
       } else {
         // No valid partial download: safely clean unusable fragments and restart from 0 with same Job ID
+        let cleanupFailed = false
+        let cleanupErrorMsg = null
         if (downloadPath) {
           try {
-            await cleanupJobTemporaryFiles(job.id, downloadPath)
-          } catch {
-            // Ignore fallback cleanup errors
+            const cleanResult = await cleanupJobTemporaryFiles(job.id, downloadPath)
+            if (cleanResult && cleanResult.success === false) {
+              cleanupFailed = true
+              cleanupErrorMsg = cleanResult.error || 'Failed to cleanup temporary files'
+            }
+          } catch (cleanErr) {
+            cleanupFailed = true
+            cleanupErrorMsg = cleanErr.message
           }
+        }
+
+        if (cleanupFailed) {
+          await job.update({
+            status: 'failed',
+            error_message: `Recovery cleanup failed: ${cleanupErrorMsg}`
+          })
+          console.warn(
+            `[recovery] Job ${job.id} cleanup failed: ${cleanupErrorMsg}. Marked as failed.`
+          )
+          continue
         }
 
         await job.update({

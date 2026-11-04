@@ -180,7 +180,22 @@ export async function prepareJobTemporaryWorkspace(jobId, downloadPath) {
 // 1. Root-level job partial files in downloadPath matching [job-ID] and partial extensions (.part, .ytdl, .temp, .f<id>.part)
 // 2. Job-owned temporary workspace directory in downloadPath/.applan2-partial-downloads/job-ID
 // Strictly preserves completed media files (.mp4, .mp3, etc.) and files of other active/unrelated jobs.
+// Test override handler hook for simulated cleanup outcomes
+let overrideCleanupHandler = null
+
+export function setCleanupHandlerForTesting(handler) {
+  overrideCleanupHandler = handler
+}
+
+export function resetCleanupHandlerForTesting() {
+  overrideCleanupHandler = null
+}
+
 export async function cleanupJobTemporaryFiles(jobId, downloadPath) {
+  if (typeof overrideCleanupHandler === 'function') {
+    return await overrideCleanupHandler(jobId, downloadPath)
+  }
+
   validateJobId(jobId)
   validateDownloadPath(downloadPath)
 
