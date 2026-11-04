@@ -2,7 +2,11 @@ import { Op } from 'sequelize'
 import { getDatabase } from '../config/database.js'
 import { getSavedDownloadPath } from './downloadSettingsService.js'
 import { getDefaultDownloadPath } from './downloadPathService.js'
-import { cleanupJobTemporaryFiles, verifyJobPartialDownload } from './downloadCleanupService.js'
+import {
+  cleanupJobTemporaryFiles,
+  verifyJobPartialDownload,
+  isPartialDownloadResumable
+} from './downloadCleanupService.js'
 import { enqueueDownloadJob, getQueueStatus } from './downloadQueueService.js'
 import { checkNetworkConnectivity } from './networkRecoveryService.js'
 
@@ -91,7 +95,7 @@ export async function recoverInterruptedDownloadJobs(options = {}) {
     // Handle offline startup
     if (!isOnline) {
       let hasValidPartial = false
-      let reconciledBytes = job.downloaded_bytes || 0
+      let reconciledBytes = 0
 
       if (downloadPath) {
         try {
@@ -99,8 +103,8 @@ export async function recoverInterruptedDownloadJobs(options = {}) {
             savedDownloadedBytes: job.downloaded_bytes,
             savedProgress: job.progress
           })
-          hasValidPartial = Boolean(partialResult.isValid && !partialResult.isUnsafe)
-          if (hasValidPartial && partialResult.reconciledBytes > 0) {
+          hasValidPartial = isPartialDownloadResumable(partialResult)
+          if (hasValidPartial) {
             reconciledBytes = partialResult.reconciledBytes
           }
         } catch {
@@ -115,6 +119,13 @@ export async function recoverInterruptedDownloadJobs(options = {}) {
       if (hasValidPartial) {
         updatePayload.downloaded_bytes = reconciledBytes
       } else {
+        if (downloadPath) {
+          try {
+            await cleanupJobTemporaryFiles(job.id, downloadPath)
+          } catch {
+            // Ignore fallback cleanup errors
+          }
+        }
         updatePayload.progress = 0
         updatePayload.downloaded_bytes = 0
       }
@@ -133,7 +144,7 @@ export async function recoverInterruptedDownloadJobs(options = {}) {
     // Online recovery flow:
     if (job.status === 'downloading' || job.status === 'interrupted') {
       let hasValidPartial = false
-      let reconciledBytes = job.downloaded_bytes || 0
+      let reconciledBytes = 0
 
       if (downloadPath) {
         try {
@@ -141,8 +152,8 @@ export async function recoverInterruptedDownloadJobs(options = {}) {
             savedDownloadedBytes: job.downloaded_bytes,
             savedProgress: job.progress
           })
-          hasValidPartial = Boolean(partialResult.isValid && !partialResult.isUnsafe)
-          if (hasValidPartial && partialResult.reconciledBytes > 0) {
+          hasValidPartial = isPartialDownloadResumable(partialResult)
+          if (hasValidPartial) {
             reconciledBytes = partialResult.reconciledBytes
           }
         } catch {

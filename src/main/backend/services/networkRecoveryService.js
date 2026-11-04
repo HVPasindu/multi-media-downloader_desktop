@@ -2,7 +2,11 @@ import https from 'node:https'
 import { getDatabase } from '../config/database.js'
 import { getSavedDownloadPath } from './downloadSettingsService.js'
 import { getDefaultDownloadPath } from './downloadPathService.js'
-import { verifyJobPartialDownload, cleanupJobTemporaryFiles } from './downloadCleanupService.js'
+import {
+  verifyJobPartialDownload,
+  cleanupJobTemporaryFiles,
+  isPartialDownloadResumable
+} from './downloadCleanupService.js'
 import { enqueueDownloadJob, getQueueStatus } from './downloadQueueService.js'
 
 let monitoringTimer = null
@@ -201,7 +205,7 @@ export async function resumeInterruptedNetworkJobs(options = {}) {
       }
 
       let hasValidPartial = false
-      let reconciledBytes = job.downloaded_bytes || 0
+      let reconciledBytes = 0
 
       if (downloadPath) {
         try {
@@ -209,8 +213,8 @@ export async function resumeInterruptedNetworkJobs(options = {}) {
             savedDownloadedBytes: job.downloaded_bytes,
             savedProgress: job.progress
           })
-          hasValidPartial = Boolean(partialResult.isValid && !partialResult.isUnsafe)
-          if (hasValidPartial && partialResult.reconciledBytes > 0) {
+          hasValidPartial = isPartialDownloadResumable(partialResult)
+          if (hasValidPartial) {
             reconciledBytes = partialResult.reconciledBytes
           }
         } catch {

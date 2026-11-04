@@ -405,6 +405,30 @@ export async function cleanupStaleJobTemporaryFiles(jobId, downloadPath) {
 }
 
 /**
+ * Step 09 Section E / Corrective Validation - Centralized decision helper for partial download recovery.
+ * Validates that the partial download verification result satisfies all recovery criteria:
+ * - isValid === true (valid readable partial file(s) present)
+ * - isConsistent === true (checkpoint byte count within documented tolerance)
+ * - isUnsafe !== true (no symlinks, junctions, or traversal outside download workspace)
+ * - reconciledBytes > 0 (verified non-zero actual byte count on disk)
+ *
+ * @param {object} partialResult
+ * @returns {boolean}
+ */
+export function isPartialDownloadResumable(partialResult) {
+  if (!partialResult || typeof partialResult !== 'object') {
+    return false
+  }
+  return Boolean(
+    partialResult.isValid === true &&
+    partialResult.isConsistent === true &&
+    partialResult.isUnsafe !== true &&
+    typeof partialResult.reconciledBytes === 'number' &&
+    partialResult.reconciledBytes > 0
+  )
+}
+
+/**
  * Step 09.E / Step 09.A - Inspects and verifies partial download artifacts for an interrupted job.
  * Checks both the target download directory (for .part files) and the job-owned
  * temporary workspace for readable, non-empty, non-symlink partial file streams.
@@ -451,7 +475,8 @@ export async function verifyJobPartialDownload(jobId, downloadPath, options = {}
               reconciledBytes: 0,
               isConsistent: false,
               files: [],
-              isUnsafe: true
+              isUnsafe: true,
+              isResumable: false
             }
           }
           // Ensure realpath stays inside download directory
@@ -463,7 +488,8 @@ export async function verifyJobPartialDownload(jobId, downloadPath, options = {}
               reconciledBytes: 0,
               isConsistent: false,
               files: [],
-              isUnsafe: true
+              isUnsafe: true,
+              isResumable: false
             }
           }
           if (fileStat.isFile() && fileStat.size > 0) {
@@ -491,7 +517,8 @@ export async function verifyJobPartialDownload(jobId, downloadPath, options = {}
         reconciledBytes: 0,
         isConsistent: false,
         files: [],
-        isUnsafe: true
+        isUnsafe: true,
+        isResumable: false
       }
     }
 
@@ -504,7 +531,8 @@ export async function verifyJobPartialDownload(jobId, downloadPath, options = {}
           reconciledBytes: 0,
           isConsistent: false,
           files: [],
-          isUnsafe: true
+          isUnsafe: true,
+          isResumable: false
         }
       }
 
@@ -520,7 +548,8 @@ export async function verifyJobPartialDownload(jobId, downloadPath, options = {}
               reconciledBytes: 0,
               isConsistent: false,
               files: [],
-              isUnsafe: true
+              isUnsafe: true,
+              isResumable: false
             }
           }
           const realFile = await realpath(fullTempPath)
@@ -531,7 +560,8 @@ export async function verifyJobPartialDownload(jobId, downloadPath, options = {}
               reconciledBytes: 0,
               isConsistent: false,
               files: [],
-              isUnsafe: true
+              isUnsafe: true,
+              isResumable: false
             }
           }
           if (fileStat.isFile() && fileStat.size > 0) {
@@ -554,21 +584,26 @@ export async function verifyJobPartialDownload(jobId, downloadPath, options = {}
   const savedBytes = Number(options?.savedDownloadedBytes) || 0
   let isConsistent = true
 
-  if (savedBytes > 0 && totalBytes > 0) {
-    if (totalBytes < savedBytes - CHECKPOINT_TOLERANCE_BYTES) {
-      // Disk file is severely smaller than saved checkpoint (e.g. truncated/corrupted)
+  if (savedBytes > 0) {
+    if (totalBytes === 0 || totalBytes < savedBytes - CHECKPOINT_TOLERANCE_BYTES) {
+      // Disk file is missing or severely smaller than saved checkpoint (e.g. truncated/corrupted)
       isConsistent = false
     }
   }
 
   const isValid = validFiles.length > 0 && totalBytes > 0
-  const reconciledBytes = isValid ? Math.max(totalBytes, savedBytes) : 0
+  const isResumable = Boolean(isValid && isConsistent && totalBytes > 0)
+  // Progress reconciliation: Reconcile persisted progress to verified actual file size on disk,
+  // never fabricating bytes or reporting unverified checkpoint values.
+  const reconciledBytes = isResumable ? totalBytes : 0
 
   return {
     isValid,
     partialBytes: totalBytes,
     reconciledBytes,
     isConsistent,
+    isUnsafe: false,
+    isResumable,
     files: validFiles
   }
 }

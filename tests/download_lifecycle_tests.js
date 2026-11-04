@@ -74,7 +74,7 @@ async function runDownloadLifecycleTests() {
       testDownloadDir,
       `test-video [dQw4w9WgXcQ] [1080p] [job-${resumableJob.id}].mp4.part`
     )
-    await writeFile(partFilePath, Buffer.alloc(1024 * 1024, 0xaa))
+    await writeFile(partFilePath, Buffer.alloc(12000000, 0xaa))
 
     // Seed Job 2: downloading job WITHOUT partial file (missing file)
     const freshRestartJob = await createDownloadJob({

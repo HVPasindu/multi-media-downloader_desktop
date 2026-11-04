@@ -19,7 +19,8 @@ import {
 import {
   prepareJobTemporaryWorkspace,
   cleanupJobTemporaryFiles,
-  verifyJobPartialDownload
+  verifyJobPartialDownload,
+  isPartialDownloadResumable
 } from './downloadCleanupService.js'
 import {
   validateDownloadFolder,
@@ -1553,12 +1554,16 @@ export async function executeDownloadJob(jobId, options = {}) {
           (await getDefaultDownloadPath())
 
         let hasValidPartial = false
+        let reconciledBytes = 0
         try {
           const partialResult = await verifyJobPartialDownload(jobId, cleanPath, {
             savedDownloadedBytes: claimedJob.downloaded_bytes,
             savedProgress: claimedJob.progress
           })
-          hasValidPartial = Boolean(partialResult.isValid && !partialResult.isUnsafe)
+          hasValidPartial = isPartialDownloadResumable(partialResult)
+          if (hasValidPartial) {
+            reconciledBytes = partialResult.reconciledBytes
+          }
         } catch {
           hasValidPartial = false
         }
@@ -1568,7 +1573,14 @@ export async function executeDownloadJob(jobId, options = {}) {
           error_message: 'Internet connection was lost. Waiting for network connection to resume...'
         }
 
-        if (!hasValidPartial) {
+        if (hasValidPartial) {
+          updatePayload.downloaded_bytes = reconciledBytes
+        } else {
+          try {
+            await cleanupJobTemporaryFiles(jobId, cleanPath)
+          } catch {
+            // Ignore fallback cleanup errors
+          }
           updatePayload.progress = 0
           updatePayload.downloaded_bytes = 0
         }
