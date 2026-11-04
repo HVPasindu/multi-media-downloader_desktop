@@ -410,6 +410,172 @@ async function runFilesystemSafetyTests() {
 
     console.log('✓ Section 7: Issue 01 symlink & junction preparation tests (1-10) passed.\n')
 
+    // ------------------------------------------------------------------------
+    // 8. Step 01: Root-Level & Job-Specific Temporary Partial Artifact Cleanup (Tests 8.1 - 8.9)
+    // ------------------------------------------------------------------------
+    console.log(
+      '--- 8. Testing Root-Level & Workspace Partial File Cleanup (Step 01 Tests 8.1 - 8.9) ---'
+    )
+
+    // 8.1: Job-specific temporary workspace partial file cleanup
+    const ws201 = await prepareJobTemporaryWorkspace(201, tempTestDir)
+    const wsPartFile = path.join(ws201, 'fragment.part')
+    await fs.writeFile(wsPartFile, 'WORKSPACE_FRAGMENT_DATA')
+    const cleanRes201 = await cleanupJobTemporaryFiles(201, tempTestDir)
+    assert.equal(cleanRes201.success, true, '8.1: Cleanup succeeds for job workspace')
+    assert.equal(cleanRes201.workspaceCleaned, true, '8.1: Workspace cleaned flag is true')
+    assert.equal(fsSync.existsSync(ws201), false, '8.1: Job workspace directory deleted')
+
+    // 8.2: Root-level partial file cleanup (yt-dlp .part, .ytdl, .temp, .f<id>.part)
+    const rootPart1 = path.join(tempTestDir, 'video [job-202].mp4.part')
+    const rootPart2 = path.join(tempTestDir, 'video [job-202].f137.part')
+    const rootPart3 = path.join(tempTestDir, 'video [job-202].ytdl')
+    const rootPart4 = path.join(tempTestDir, 'video [job-202].temp')
+    await fs.writeFile(rootPart1, 'ROOT_PART_1')
+    await fs.writeFile(rootPart2, 'ROOT_PART_2')
+    await fs.writeFile(rootPart3, 'ROOT_PART_3')
+    await fs.writeFile(rootPart4, 'ROOT_PART_4')
+
+    const cleanRes202 = await cleanupJobTemporaryFiles(202, tempTestDir)
+    assert.equal(cleanRes202.success, true, '8.2: Cleanup succeeds for root partial files')
+    assert.equal(cleanRes202.cleaned, true, '8.2: Cleaned flag is true')
+    assert.equal(cleanRes202.cleanedFiles.length, 4, '8.2: Exactly 4 root partial files cleaned')
+    assert.equal(fsSync.existsSync(rootPart1), false, '8.2: rootPart1 deleted')
+    assert.equal(fsSync.existsSync(rootPart2), false, '8.2: rootPart2 deleted')
+    assert.equal(fsSync.existsSync(rootPart3), false, '8.2: rootPart3 deleted')
+    assert.equal(fsSync.existsSync(rootPart4), false, '8.2: rootPart4 deleted')
+
+    // 8.3: Unrelated .part file preservation
+    const unrelatedPart = path.join(tempTestDir, 'unrelated_stream.mp4.part')
+    await fs.writeFile(unrelatedPart, 'UNRELATED_PARTIAL_DATA')
+    await cleanupJobTemporaryFiles(202, tempTestDir)
+    assert.equal(
+      fsSync.existsSync(unrelatedPart),
+      true,
+      '8.3: Unrelated .part file strictly preserved'
+    )
+    await fs.unlink(unrelatedPart)
+
+    // 8.4: Completed media file preservation (.mp4, .mp3 without partial extension)
+    const completedMp4 = path.join(tempTestDir, 'Final Video [job-205].mp4')
+    const completedMp3 = path.join(tempTestDir, 'Final Audio [job-205].mp3')
+    const stalePart205 = path.join(tempTestDir, 'Final Video [job-205].mp4.part')
+    await fs.writeFile(completedMp4, 'COMPLETED_MP4_CONTENT')
+    await fs.writeFile(completedMp3, 'COMPLETED_MP3_CONTENT')
+    await fs.writeFile(stalePart205, 'STALE_PART_DATA')
+
+    const cleanRes205 = await cleanupJobTemporaryFiles(205, tempTestDir)
+    assert.equal(cleanRes205.success, true, '8.4: Cleanup succeeds')
+    assert.equal(fsSync.existsSync(stalePart205), false, '8.4: Stale .part file removed')
+    assert.equal(
+      fsSync.existsSync(completedMp4),
+      true,
+      '8.4: Completed MP4 file strictly preserved'
+    )
+    assert.equal(
+      fsSync.existsSync(completedMp3),
+      true,
+      '8.4: Completed MP3 file strictly preserved'
+    )
+    assert.equal(
+      await fs.readFile(completedMp4, 'utf8'),
+      'COMPLETED_MP4_CONTENT',
+      '8.4: MP4 content intact'
+    )
+    assert.equal(
+      await fs.readFile(completedMp3, 'utf8'),
+      'COMPLETED_MP3_CONTENT',
+      '8.4: MP3 content intact'
+    )
+    await fs.unlink(completedMp4)
+    await fs.unlink(completedMp3)
+
+    // 8.5: Other active job file preservation
+    const otherJobPart = path.join(tempTestDir, 'active_stream [job-301].mp4.part')
+    await fs.writeFile(otherJobPart, 'JOB_301_DATA')
+    await cleanupJobTemporaryFiles(302, tempTestDir)
+    assert.equal(
+      fsSync.existsSync(otherJobPart),
+      true,
+      '8.5: Other job (301) partial file preserved when cleaning 302'
+    )
+    await fs.unlink(otherJobPart)
+
+    // 8.6: Symlink rejection (fail-closed safety for root partial files)
+    const externalTargetDir = await fs.mkdtemp(path.join(os.tmpdir(), 'applan2-outside-part-'))
+    const externalSecretFile = path.join(externalTargetDir, 'sensitive_doc.txt')
+    await fs.writeFile(externalSecretFile, 'SENSITIVE_EXTERNAL_DATA')
+
+    const symlinkPartFile = path.join(tempTestDir, 'malicious_link [job-303].mp4.part')
+    try {
+      await fs.symlink(externalSecretFile, symlinkPartFile)
+      const cleanSymlinkRes = await cleanupJobTemporaryFiles(303, tempTestDir)
+      assert.equal(cleanSymlinkRes.success, false, '8.6: Cleanup rejects symlinked partial file')
+      assert.ok(
+        cleanSymlinkRes.error.includes('symbolic link'),
+        '8.6: Error indicates symlink detected'
+      )
+      assert.equal(
+        fsSync.existsSync(externalSecretFile),
+        true,
+        '8.6: Target external file completely untouched'
+      )
+      assert.equal(
+        await fs.readFile(externalSecretFile, 'utf8'),
+        'SENSITIVE_EXTERNAL_DATA',
+        '8.6: External content unaltered'
+      )
+      await fs.unlink(symlinkPartFile)
+    } catch (symlinkErr) {
+      if (symlinkErr.code === 'EPERM') {
+        console.log('8.6: Symlink test skipped in non-privileged Windows shell')
+      } else {
+        throw symlinkErr
+      }
+    } finally {
+      await fs.rm(externalTargetDir, { recursive: true, force: true })
+    }
+
+    // 8.7: Path traversal protection
+    await assert.rejects(
+      async () => cleanupJobTemporaryFiles(-5, tempTestDir),
+      /A valid Download Job ID is required/,
+      '8.7: Negative Job ID rejected'
+    )
+    await assert.rejects(
+      async () => cleanupJobTemporaryFiles(100, '../escaped_path'),
+      /Download path must be an absolute filesystem path/,
+      '8.7: Relative path rejected'
+    )
+
+    // 8.8: Missing file handling
+    const missingCleanup = await cleanupJobTemporaryFiles(99999, tempTestDir)
+    assert.equal(missingCleanup.success, true, '8.8: Missing files handled safely')
+    assert.equal(missingCleanup.cleaned, false, '8.8: Cleaned is false for missing job')
+    assert.equal(
+      missingCleanup.reason,
+      'directory_not_found',
+      '8.8: Reason indicates directory_not_found'
+    )
+
+    // 8.9: Combined root + workspace cleanup
+    const ws305 = await prepareJobTemporaryWorkspace(305, tempTestDir)
+    await fs.writeFile(path.join(ws305, 'intermediate.part'), 'WS_DATA')
+    const rootPart305 = path.join(tempTestDir, 'clip [job-305].mp4.part')
+    await fs.writeFile(rootPart305, 'ROOT_DATA')
+
+    const cleanBoth = await cleanupJobTemporaryFiles(305, tempTestDir)
+    assert.equal(cleanBoth.success, true, '8.9: Both root and workspace cleaned successfully')
+    assert.equal(cleanBoth.cleaned, true, '8.9: Cleaned flag true')
+    assert.equal(cleanBoth.workspaceCleaned, true, '8.9: Workspace cleaned flag true')
+    assert.equal(cleanBoth.cleanedFiles.length, 1, '8.9: Exactly 1 root file cleaned')
+    assert.equal(fsSync.existsSync(rootPart305), false, '8.9: Root part file deleted')
+    assert.equal(fsSync.existsSync(ws305), false, '8.9: Workspace folder deleted')
+
+    console.log(
+      '✓ Section 8: Step 01 root-level & workspace partial file cleanup (Tests 8.1 - 8.9) passed.\n'
+    )
+
     console.log('====================================================================')
     console.log(' ALL FILESYSTEM SAFETY TESTS PASSED SUCCESSFULLY (100% PASS)        ')
     console.log('====================================================================\n')

@@ -1,5 +1,5 @@
 import path from 'node:path'
-import { mkdir, rm, lstat, readdir, rmdir, realpath } from 'node:fs/promises'
+import { mkdir, rm, lstat, readdir, rmdir, realpath, unlink } from 'node:fs/promises'
 
 // Dedicated hidden subfolder for job-isolated partial and intermediate files
 export const PARTIAL_DOWNLOADS_DIR_NAME = '.applan2-partial-downloads'
@@ -11,10 +11,13 @@ function validateJobId(jobId) {
   }
 }
 
-// Validate that a download path is a valid non-empty string
+// Validate that a download path is a valid non-empty absolute string
 function validateDownloadPath(downloadPath) {
   if (typeof downloadPath !== 'string' || !downloadPath.trim()) {
     throw new Error('A valid download folder path is required')
+  }
+  if (!path.isAbsolute(downloadPath.trim())) {
+    throw new Error('Download path must be an absolute filesystem path')
   }
 }
 
@@ -173,10 +176,15 @@ export async function prepareJobTemporaryWorkspace(jobId, downloadPath) {
   return jobTempPath
 }
 
-// Safely remove only the job-owned temporary workspace directory and its fragments
+// Safely remove all job-owned temporary partial download artifacts:
+// 1. Root-level job partial files in downloadPath matching [job-ID] and partial extensions (.part, .ytdl, .temp, .f<id>.part)
+// 2. Job-owned temporary workspace directory in downloadPath/.applan2-partial-downloads/job-ID
+// Strictly preserves completed media files (.mp4, .mp3, etc.) and files of other active/unrelated jobs.
 export async function cleanupJobTemporaryFiles(jobId, downloadPath) {
-  let jobTempPath
+  validateJobId(jobId)
+  validateDownloadPath(downloadPath)
 
+  let jobTempPath
   try {
     jobTempPath = getJobTemporaryWorkspacePath(jobId, downloadPath)
   } catch (validationError) {
@@ -184,6 +192,8 @@ export async function cleanupJobTemporaryFiles(jobId, downloadPath) {
     return {
       success: false,
       cleaned: false,
+      cleanedFiles: [],
+      workspaceCleaned: false,
       error: validationError.message
     }
   }
@@ -191,6 +201,8 @@ export async function cleanupJobTemporaryFiles(jobId, downloadPath) {
   const normalizedDownloadPath = path.resolve(downloadPath.trim())
   const basePartialDir = path.resolve(normalizedDownloadPath, PARTIAL_DOWNLOADS_DIR_NAME)
   const expectedJobDirName = `job-${jobId}`
+  const cleanedFiles = []
+  let workspaceCleaned = false
 
   try {
     // 1. Verify filesystem identity of the download folder root
@@ -201,45 +213,207 @@ export async function cleanupJobTemporaryFiles(jobId, downloadPath) {
       return {
         success: false,
         cleaned: false,
+        cleanedFiles: [],
+        workspaceCleaned: false,
         error: `Download folder does not exist or cannot be accessed: ${pathErr.message}`
       }
     }
 
-    // 2. Verify filesystem identity of the base partial downloads directory
+    // Fail-closed safety: ensure root download directory itself is not a symlink or junction
+    let rootStat
+    try {
+      rootStat = await lstat(normalizedDownloadPath)
+      if (rootStat.isSymbolicLink()) {
+        console.warn(
+          `[cleanup] Download directory is a symbolic link or junction. Rejecting cleanup for job ${jobId}.`
+        )
+        return {
+          success: false,
+          cleaned: false,
+          cleanedFiles: [],
+          workspaceCleaned: false,
+          error: 'Unsafe download folder: root directory is a symbolic link or junction'
+        }
+      }
+    } catch (statErr) {
+      return {
+        success: false,
+        cleaned: false,
+        cleanedFiles: [],
+        workspaceCleaned: false,
+        error: `Failed to inspect download folder: ${statErr.message}`
+      }
+    }
+
+    // 2. Scan and clean root-level partial files belonging strictly to this job
+    const jobMarker = `[job-${jobId}]`
+    try {
+      const entries = await readdir(realDownloadPath)
+      for (const entry of entries) {
+        // Must contain exact job marker
+        if (!entry.includes(jobMarker)) {
+          continue
+        }
+
+        // Must have a recognized partial download extension (never delete completed media files)
+        const isPart =
+          entry.endsWith('.part') ||
+          entry.endsWith('.ytdl') ||
+          /\.f\d+\.part$/i.test(entry) ||
+          entry.endsWith('.temp')
+
+        if (!isPart) {
+          continue
+        }
+
+        const fullPath = path.join(realDownloadPath, entry)
+
+        // Path traversal guard
+        const relPath = path.relative(realDownloadPath, fullPath)
+        if (
+          !relPath ||
+          relPath === '..' ||
+          relPath.startsWith(`..${path.sep}`) ||
+          path.isAbsolute(relPath)
+        ) {
+          console.warn(`[cleanup] Root partial file escapes download folder: ${fullPath}`)
+          return {
+            success: false,
+            cleaned: cleanedFiles.length > 0,
+            cleanedFiles,
+            workspaceCleaned: false,
+            error: 'Unsafe partial file: path escapes download folder boundary'
+          }
+        }
+
+        let fileStat
+        try {
+          fileStat = await lstat(fullPath)
+        } catch (statErr) {
+          if (statErr.code === 'ENOENT') {
+            continue // Already removed
+          }
+          return {
+            success: false,
+            cleaned: cleanedFiles.length > 0,
+            cleanedFiles,
+            workspaceCleaned: false,
+            error: `Failed to inspect root partial file: ${statErr.message}`
+          }
+        }
+
+        // Symlink / junction safety: FAIL CLOSED immediately
+        if (fileStat.isSymbolicLink()) {
+          console.warn(
+            `[cleanup] Root partial file for job ${jobId} is a symbolic link or junction. Rejecting cleanup.`
+          )
+          return {
+            success: false,
+            cleaned: cleanedFiles.length > 0,
+            cleanedFiles,
+            workspaceCleaned: false,
+            error: 'Unsafe partial file: symbolic link or junction detected'
+          }
+        }
+
+        if (!fileStat.isFile()) {
+          continue
+        }
+
+        // Canonical realpath containment check
+        let realFilePath
+        try {
+          realFilePath = await realpath(fullPath)
+        } catch (realErr) {
+          return {
+            success: false,
+            cleaned: cleanedFiles.length > 0,
+            cleanedFiles,
+            workspaceCleaned: false,
+            error: `Failed to resolve realpath for partial file: ${realErr.message}`
+          }
+        }
+
+        if (!realFilePath.toLowerCase().startsWith(realDownloadPath.toLowerCase())) {
+          console.warn(
+            `[cleanup] Root partial file realpath escapes download folder: ${realFilePath}`
+          )
+          return {
+            success: false,
+            cleaned: cleanedFiles.length > 0,
+            cleanedFiles,
+            workspaceCleaned: false,
+            error: 'Unsafe partial file: canonical path escapes download folder boundary'
+          }
+        }
+
+        try {
+          await unlink(fullPath)
+          cleanedFiles.push(fullPath)
+        } catch (delErr) {
+          console.warn(`[cleanup] Failed to delete root partial file ${fullPath}:`, delErr.message)
+          return {
+            success: false,
+            cleaned: cleanedFiles.length > 0,
+            cleanedFiles,
+            workspaceCleaned: false,
+            error: `Failed to delete partial file: ${delErr.message}`
+          }
+        }
+      }
+    } catch (readErr) {
+      if (readErr.code !== 'ENOENT') {
+        return {
+          success: false,
+          cleaned: cleanedFiles.length > 0,
+          cleanedFiles,
+          workspaceCleaned: false,
+          error: `Failed to read download directory: ${readErr.message}`
+        }
+      }
+    }
+
+    // 3. Verify and clean job-owned temporary workspace in .applan2-partial-downloads
     let baseStat
     try {
       baseStat = await lstat(basePartialDir)
     } catch (baseStatErr) {
       if (baseStatErr.code === 'ENOENT') {
+        const cleaned = cleanedFiles.length > 0
         return {
           success: true,
-          cleaned: false,
-          reason: 'directory_not_found'
+          cleaned,
+          cleanedFiles,
+          workspaceCleaned: false,
+          reason: cleaned ? undefined : 'directory_not_found',
+          path: jobTempPath
         }
       }
       throw baseStatErr
     }
 
-    // Symbolic link safety: If base partial directory is a symlink or junction, FAIL CLOSED immediately
     if (baseStat.isSymbolicLink()) {
       console.warn(
         `[cleanup] Base partial directory is a symbolic link or junction. Rejecting cleanup for job ${jobId}.`
       )
       return {
         success: false,
-        cleaned: false,
+        cleaned: cleanedFiles.length > 0,
+        cleanedFiles,
+        workspaceCleaned: false,
         error: 'Unsafe temporary parent: base partial directory is a symbolic link or junction'
       }
     }
 
-    // Canonical realpath containment check for base partial directory
     let realBasePartialDir
     try {
       realBasePartialDir = await realpath(basePartialDir)
     } catch (baseRealErr) {
       return {
         success: false,
-        cleaned: false,
+        cleaned: cleanedFiles.length > 0,
+        cleanedFiles,
+        workspaceCleaned: false,
         error: `Failed to resolve realpath for base partial directory: ${baseRealErr.message}`
       }
     }
@@ -256,61 +430,68 @@ export async function cleanupJobTemporaryFiles(jobId, downloadPath) {
       )
       return {
         success: false,
-        cleaned: false,
+        cleaned: cleanedFiles.length > 0,
+        cleanedFiles,
+        workspaceCleaned: false,
         error: 'Unsafe temporary parent: base directory escapes download folder boundary'
       }
     }
 
-    // 3. Verify filesystem identity of the job temporary workspace
     let statInfo
     try {
       statInfo = await lstat(jobTempPath)
     } catch (statError) {
       if (statError.code === 'ENOENT') {
+        const cleaned = cleanedFiles.length > 0
         return {
           success: true,
-          cleaned: false,
-          reason: 'directory_not_found'
+          cleaned,
+          cleanedFiles,
+          workspaceCleaned: false,
+          reason: cleaned ? undefined : 'directory_not_found',
+          path: jobTempPath
         }
       }
       throw statError
     }
 
-    // Symbolic link safety: If the job workspace is a symlink or junction, do NOT recursively delete
     if (statInfo.isSymbolicLink()) {
       console.warn(
         `[cleanup] Workspace for job ${jobId} is a symbolic link or junction. Rejecting recursive deletion.`
       )
       return {
         success: false,
-        cleaned: false,
+        cleaned: cleanedFiles.length > 0,
+        cleanedFiles,
+        workspaceCleaned: false,
         error: 'Unsafe workspace: symbolic link or junction detected'
       }
     }
 
-    // Must be a directory
     if (!statInfo.isDirectory()) {
       console.warn(`[cleanup] Workspace for job ${jobId} is not a directory.`)
       return {
         success: false,
-        cleaned: false,
+        cleaned: cleanedFiles.length > 0,
+        cleanedFiles,
+        workspaceCleaned: false,
         error: 'Unsafe workspace: target is not a directory'
       }
     }
 
-    // Canonical realpath containment check for job workspace
     let realJobTempPath
     try {
       realJobTempPath = await realpath(jobTempPath)
     } catch (jobRealErr) {
       return {
         success: false,
-        cleaned: false,
+        cleaned: cleanedFiles.length > 0,
+        cleanedFiles,
+        workspaceCleaned: false,
         error: `Failed to resolve realpath for job workspace: ${jobRealErr.message}`
       }
     }
 
-    // Ensure realJobTempPath is strictly inside realBasePartialDir
     const relJob = path.relative(realBasePartialDir, realJobTempPath)
     if (
       !relJob ||
@@ -321,33 +502,36 @@ export async function cleanupJobTemporaryFiles(jobId, downloadPath) {
       console.warn(`[cleanup] Job workspace escapes base partial directory: ${realJobTempPath}`)
       return {
         success: false,
-        cleaned: false,
+        cleaned: cleanedFiles.length > 0,
+        cleanedFiles,
+        workspaceCleaned: false,
         error: 'Unsafe workspace: workspace escapes base partial directory'
       }
     }
 
-    // Verify directory basename matches expected job dir name
     if (path.basename(realJobTempPath) !== expectedJobDirName) {
       console.warn(
         `[cleanup] Real workspace name ${path.basename(realJobTempPath)} does not match ${expectedJobDirName}`
       )
       return {
         success: false,
-        cleaned: false,
+        cleaned: cleanedFiles.length > 0,
+        cleanedFiles,
+        workspaceCleaned: false,
         error: 'Unsafe workspace: directory name does not match job ID'
       }
     }
 
-    // Guard: Never delete download root or base partial directory
     if (realJobTempPath === realDownloadPath || realJobTempPath === realBasePartialDir) {
       return {
         success: false,
-        cleaned: false,
+        cleaned: cleanedFiles.length > 0,
+        cleanedFiles,
+        workspaceCleaned: false,
         error: 'Unsafe workspace: target matches download root or partial directory root'
       }
     }
 
-    // Re-verify filesystem state immediately prior to recursive deletion
     const preDeleteStat = await lstat(jobTempPath)
     if (preDeleteStat.isSymbolicLink()) {
       console.warn(
@@ -355,20 +539,22 @@ export async function cleanupJobTemporaryFiles(jobId, downloadPath) {
       )
       return {
         success: false,
-        cleaned: false,
+        cleaned: cleanedFiles.length > 0,
+        cleanedFiles,
+        workspaceCleaned: false,
         error: 'Unsafe workspace: symlink detected immediately prior to deletion'
       }
     }
 
-    // Recursively delete the job-owned temporary workspace
     await rm(jobTempPath, {
       recursive: true,
       force: true,
       maxRetries: 3,
       retryDelay: 200
     })
+    workspaceCleaned = true
 
-    // Optionally prune the parent partial directory if completely empty and not a symlink
+    // Prune base partial directory if empty
     try {
       const baseStatCheck = await lstat(basePartialDir)
       if (!baseStatCheck.isSymbolicLink()) {
@@ -378,28 +564,33 @@ export async function cleanupJobTemporaryFiles(jobId, downloadPath) {
         }
       }
     } catch {
-      // Ignore if base directory is locked or contains other active jobs
+      // Ignore
     }
 
+    const cleaned = cleanedFiles.length > 0 || workspaceCleaned
     return {
       success: true,
-      cleaned: true,
+      cleaned,
+      cleanedFiles,
+      workspaceCleaned,
+      reason: cleaned ? undefined : 'directory_not_found',
       path: jobTempPath
     }
   } catch (cleanupError) {
     console.warn(
-      `[cleanup] Failed to clean temporary workspace for job ${jobId}:`,
+      `[cleanup] Failed to clean temporary files for job ${jobId}:`,
       cleanupError.message
     )
     return {
       success: false,
-      cleaned: false,
+      cleaned: cleanedFiles.length > 0 || workspaceCleaned,
+      cleanedFiles,
+      workspaceCleaned,
       error: cleanupError.message
     }
   }
 }
 
-// Startup recovery helper to safely clean up leftover temporary directories for stale jobs
 export async function cleanupStaleJobTemporaryFiles(jobId, downloadPath) {
   return await cleanupJobTemporaryFiles(jobId, downloadPath)
 }
@@ -582,11 +773,22 @@ export async function verifyJobPartialDownload(jobId, downloadPath, options = {}
   // We allow up to 5MB discrepancy if the disk file is smaller than saved DB value.
   const CHECKPOINT_TOLERANCE_BYTES = 5 * 1024 * 1024
   const savedBytes = Number(options?.savedDownloadedBytes) || 0
+  const savedProgress = Number(options?.savedProgress) || 0
   let isConsistent = true
 
   if (savedBytes > 0) {
     if (totalBytes === 0 || totalBytes < savedBytes - CHECKPOINT_TOLERANCE_BYTES) {
       // Disk file is missing or severely smaller than saved checkpoint (e.g. truncated/corrupted)
+      isConsistent = false
+    }
+  } else if (
+    savedBytes === 0 &&
+    savedProgress === 0 &&
+    options?.savedDownloadedBytes !== undefined
+  ) {
+    // When SQLite explicitly records 0 saved bytes and 0 progress (e.g. fresh job or post-rejection reset),
+    // any existing partial file on disk is an uncheckpointed stale artifact and cannot be safely resumed.
+    if (totalBytes > 0) {
       isConsistent = false
     }
   }
