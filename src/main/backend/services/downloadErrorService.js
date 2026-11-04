@@ -523,6 +523,8 @@ export function isTransientNetworkError(error, context = {}) {
     text.includes('failed to resolve') ||
     text.includes('the read operation timed out') ||
     text.includes('remote end closed connection') ||
-    text.includes('incompleteread')
+    text.includes('incompleteread') ||
+    text.includes('giving up after') ||
+    text.includes('bytes read')
   )
 }

@@ -1,7 +1,7 @@
 import { getDatabase } from '../config/database.js'
 import { spawn, execFile } from 'node:child_process'
 import { getSavedDownloadPath } from './downloadSettingsService.js'
-import { getDefaultDownloadPath } from './downloadPathService.js'
+import { getDefaultDownloadPath, resolveValidatedDownloadPath } from './downloadPathService.js'
 import { stat, lstat } from 'node:fs/promises'
 import { basename, extname } from 'node:path'
 import { Op, Transaction } from 'sequelize'
@@ -1226,10 +1226,12 @@ export async function executeDownloadJob(jobId, options = {}) {
     // Clean up any partially created temporary workspace if preparation failed
     try {
       const fallbackPath =
-        (await getSavedDownloadPath(getDatabase().models.AppSetting)) ||
-        (await getDefaultDownloadPath())
+        execution?.downloadPath ||
+        (await resolveValidatedDownloadPath(getDatabase().models.AppSetting))
 
-      await cleanupJobTemporaryFiles(jobId, fallbackPath)
+      if (fallbackPath) {
+        await cleanupJobTemporaryFiles(jobId, fallbackPath)
+      }
     } catch {
       // Ignore fallback cleanup errors during preparation failure
     }
@@ -1547,18 +1549,28 @@ export async function executeDownloadJob(jobId, options = {}) {
         `[download] Job ${jobId} encountered transient network failure. Transitioning to 'interrupted' without deleting partial files.`
       )
       try {
+        try {
+          scheduleDownloadedBytes(latestObservedBytes, true)
+          await progressWriteChain
+        } catch {
+          // ignore flush error
+        }
+
         const DownloadJob = getDatabase().models.DownloadJob
         const cleanPath =
           execution?.downloadPath ||
-          (await getSavedDownloadPath(getDatabase().models.AppSetting)) ||
-          (await getDefaultDownloadPath())
+          (await resolveValidatedDownloadPath(getDatabase().models.AppSetting))
+
+        const latestJob = (await DownloadJob.findByPk(jobId)) || claimedJob
+        const currentBytes = Math.max(latestJob.downloaded_bytes || 0, latestObservedBytes || 0)
+        const currentProgress = latestJob.progress || 0
 
         let hasValidPartial = false
         let reconciledBytes = 0
         try {
           const partialResult = await verifyJobPartialDownload(jobId, cleanPath, {
-            savedDownloadedBytes: claimedJob.downloaded_bytes,
-            savedProgress: claimedJob.progress
+            savedDownloadedBytes: currentBytes,
+            savedProgress: currentProgress
           })
           hasValidPartial = isPartialDownloadResumable(partialResult)
           if (hasValidPartial) {
@@ -1578,15 +1590,20 @@ export async function executeDownloadJob(jobId, options = {}) {
         } else {
           let cleanupFailed = false
           let cleanupErrorMsg = null
-          try {
-            const cleanResult = await cleanupJobTemporaryFiles(jobId, cleanPath)
-            if (cleanResult && cleanResult.success === false) {
-              cleanupFailed = true
-              cleanupErrorMsg = cleanResult.error || 'Failed to cleanup temporary files'
-            }
-          } catch (cleanErr) {
+          if (!cleanPath) {
             cleanupFailed = true
-            cleanupErrorMsg = cleanErr.message
+            cleanupErrorMsg = 'Unable to resolve valid download folder path'
+          } else {
+            try {
+              const cleanResult = await cleanupJobTemporaryFiles(jobId, cleanPath)
+              if (cleanResult && cleanResult.success === false) {
+                cleanupFailed = true
+                cleanupErrorMsg = cleanResult.error || 'Failed to cleanup temporary files'
+              }
+            } catch (cleanErr) {
+              cleanupFailed = true
+              cleanupErrorMsg = cleanErr.message
+            }
           }
 
           if (cleanupFailed) {
@@ -1622,20 +1639,24 @@ export async function executeDownloadJob(jobId, options = {}) {
       try {
         const cleanPath =
           execution?.downloadPath ||
-          (await getSavedDownloadPath(getDatabase().models.AppSetting)) ||
-          (await getDefaultDownloadPath())
+          (await resolveValidatedDownloadPath(getDatabase().models.AppSetting))
 
         let cleanupFailed = false
         let cleanupErrorMsg = null
-        try {
-          const cleanResult = await cleanupJobTemporaryFiles(jobId, cleanPath)
-          if (cleanResult && cleanResult.success === false) {
-            cleanupFailed = true
-            cleanupErrorMsg = cleanResult.error || 'Failed to cleanup temporary files'
-          }
-        } catch (cleanErr) {
+        if (!cleanPath) {
           cleanupFailed = true
-          cleanupErrorMsg = cleanErr.message
+          cleanupErrorMsg = 'Unable to resolve valid download folder path'
+        } else {
+          try {
+            const cleanResult = await cleanupJobTemporaryFiles(jobId, cleanPath)
+            if (cleanResult && cleanResult.success === false) {
+              cleanupFailed = true
+              cleanupErrorMsg = cleanResult.error || 'Failed to cleanup temporary files'
+            }
+          } catch (cleanErr) {
+            cleanupFailed = true
+            cleanupErrorMsg = cleanErr.message
+          }
         }
 
         const DownloadJob = getDatabase().models.DownloadJob
@@ -1689,10 +1710,11 @@ export async function executeDownloadJob(jobId, options = {}) {
       try {
         const cleanPath =
           execution?.downloadPath ||
-          (await getSavedDownloadPath(getDatabase().models.AppSetting)) ||
-          (await getDefaultDownloadPath())
+          (await resolveValidatedDownloadPath(getDatabase().models.AppSetting))
 
-        await cleanupJobTemporaryFiles(jobId, cleanPath)
+        if (cleanPath) {
+          await cleanupJobTemporaryFiles(jobId, cleanPath)
+        }
       } catch (cleanupError) {
         console.warn(
           `[download] Failed to clean temporary workspace for cancelled job ${jobId}:`,
@@ -1717,10 +1739,11 @@ export async function executeDownloadJob(jobId, options = {}) {
     try {
       const cleanPath =
         execution?.downloadPath ||
-        (await getSavedDownloadPath(getDatabase().models.AppSetting)) ||
-        (await getDefaultDownloadPath())
+        (await resolveValidatedDownloadPath(getDatabase().models.AppSetting))
 
-      await cleanupJobTemporaryFiles(jobId, cleanPath)
+      if (cleanPath) {
+        await cleanupJobTemporaryFiles(jobId, cleanPath)
+      }
     } catch (cleanupError) {
       console.warn(
         `[download] Failed to clean temporary workspace for failed job ${jobId}:`,

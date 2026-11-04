@@ -140,7 +140,20 @@ export function classifyAnalysisError(error, platform) {
   }
 }
 
+let testAnalyzer = null
+
+export function setAnalyzerForTesting(analyzer) {
+  testAnalyzer = analyzer
+}
+
+export function resetAnalyzerForTesting() {
+  testAnalyzer = null
+}
+
 export async function analyzeMedia(sourceUrl) {
+  if (testAnalyzer) {
+    return await testAnalyzer(sourceUrl)
+  }
   const platform = detectPlatform(sourceUrl)
 
   if (!platform) {

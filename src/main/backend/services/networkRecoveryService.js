@@ -1,7 +1,6 @@
 import https from 'node:https'
 import { getDatabase } from '../config/database.js'
-import { getSavedDownloadPath } from './downloadSettingsService.js'
-import { getDefaultDownloadPath } from './downloadPathService.js'
+import { resolveValidatedDownloadPath } from './downloadPathService.js'
 import {
   verifyJobPartialDownload,
   cleanupJobTemporaryFiles,
@@ -56,31 +55,22 @@ function probeHttpsEndpoint(endpointUrl, timeoutMs = 3000) {
       req = https.get(
         endpointUrl,
         {
-          timeout: timeoutMs,
           headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) MultiMediaDownloader/1.0'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
           }
         },
         (res) => {
-          // Drain response to ensure socket is returned/freed
-          res.resume()
           if (!settled) {
             settled = true
             cleanup()
-            const isSuccess = Boolean(res.statusCode >= 200 && res.statusCode < 400)
+            // Drain data to free socket resources cleanly
+            res.resume()
+            const isSuccess =
+              typeof res.statusCode === 'number' && res.statusCode >= 200 && res.statusCode < 400
             resolve(isSuccess)
           }
         }
       )
-
-      req.on('timeout', () => {
-        if (!settled) {
-          settled = true
-          cleanup()
-          req.destroy()
-          resolve(false)
-        }
-      })
 
       req.on('error', () => {
         if (!settled) {
@@ -100,63 +90,67 @@ function probeHttpsEndpoint(endpointUrl, timeoutMs = 3000) {
 }
 
 /**
- * Step 09 Section B - Bounded network connectivity checker.
- * Uses Node.js built-in HTTPS to test genuine external connectivity against
- * fixed, trusted endpoints with a fallback, reasonable timeout, and complete socket cleanup.
+ * Checks live internet connectivity using genuine HTTPS requests.
+ * Uses primary Google generate_204 endpoint and falls back to Cloudflare trace endpoint.
  *
  * @param {object} [options={}]
  * @param {number} [options.timeoutMs=3000]
  * @returns {Promise<boolean>}
  */
-export async function checkNetworkConnectivity({ timeoutMs = 3000 } = {}) {
+export async function checkNetworkConnectivity(options = {}) {
   if (typeof customConnectivityChecker === 'function') {
     return await customConnectivityChecker()
   }
 
-  // 1. Primary endpoint check (Google generate_204)
-  const primaryOk = await probeHttpsEndpoint(PRIMARY_CONNECTIVITY_ENDPOINT, timeoutMs)
-  if (primaryOk) {
+  const timeoutMs = options.timeoutMs || 3000
+
+  // 1. Check primary endpoint
+  const primaryOnline = await probeHttpsEndpoint(PRIMARY_CONNECTIVITY_ENDPOINT, timeoutMs)
+  if (primaryOnline) {
     return true
   }
 
-  // 2. Fallback endpoint check (Cloudflare trace)
-  const fallbackOk = await probeHttpsEndpoint(FALLBACK_CONNECTIVITY_ENDPOINT, timeoutMs)
-  return fallbackOk
+  // 2. Check fallback endpoint
+  const fallbackOnline = await probeHttpsEndpoint(FALLBACK_CONNECTIVITY_ENDPOINT, timeoutMs)
+  return fallbackOnline
 }
 
 /**
- * Allows automated tests to simulate network disconnection and reconnection deterministically.
- * Pass null to restore real network checks.
+ * Test hook to inject simulated connectivity state.
  *
- * @param {Function|null} checkerFn
+ * @param {Function|null} checker - Async function returning boolean, or null to reset
  */
-export function setConnectivityCheckerForTesting(checkerFn) {
-  customConnectivityChecker = checkerFn
+export function setConnectivityCheckerForTesting(checker) {
+  customConnectivityChecker = checker
 }
 
 /**
- * Step 09 Section B - Finds all 'interrupted' jobs in SQLite, verifies their
- * physical partial files on disk, preserves progress and downloaded bytes,
- * restores them to 'queued' status, and enqueues them in FIFO order using the SAME Job ID.
+ * Step 09.B (Phase 04) — Resume Interrupted Network Jobs.
  *
- * Guaranteed non-overlapping execution via an internal isRecovering lock.
+ * Scans SQLite for jobs stuck in 'interrupted' status and transitions them back to 'queued'
+ * for execution by the FIFO download queue once internet connectivity is confirmed.
+ *
+ * Enforces Global FIFO ordering (createdAt ASC, id ASC).
+ * Adheres strictly to Option A: Resume Existing Job (preserves original Job ID,
+ * does not create duplicates, preserves valid partial progress).
  *
  * @param {object} [options={}]
- * @param {Function} [options.enqueue] - Custom enqueue callback for testing/dependency injection
- * @returns {Promise<{ resumedCount: number, resumedJobIds: Array<number>, jobIds: Array<number> }>}
+ * @param {Function} [options.enqueue] - Custom queue enqueue function for testing
+ * @param {boolean} [options.autoEnqueue=true]
+ * @returns {Promise<{ resumedCount: number, resumedJobIds: number[], jobIds: number[] }>}
  */
 export async function resumeInterruptedNetworkJobs(options = {}) {
   if (isRecovering) {
+    console.log('[network-recovery] Recovery cycle already in progress, skipping duplicate pass')
     return { resumedCount: 0, resumedJobIds: [], jobIds: [] }
   }
+
   isRecovering = true
 
   try {
     const isOnline = await checkNetworkConnectivity()
     if (!isOnline) {
-      console.log(
-        '[network-recovery] Internet connection still unavailable. Interrupted jobs remain safe.'
-      )
+      console.log('[network-recovery] Internet is still offline. Cannot resume downloads.')
       return { resumedCount: 0, resumedJobIds: [], jobIds: [] }
     }
 
@@ -170,8 +164,7 @@ export async function resumeInterruptedNetworkJobs(options = {}) {
 
     let downloadPath = null
     try {
-      const savedPath = await getSavedDownloadPath(AppSetting)
-      downloadPath = savedPath || (await getDefaultDownloadPath())
+      downloadPath = await resolveValidatedDownloadPath(AppSetting)
     } catch {
       downloadPath = null
     }
@@ -201,6 +194,17 @@ export async function resumeInterruptedNetworkJobs(options = {}) {
 
     for (const job of interruptedJobs) {
       if (alreadyScheduled.has(job.id)) {
+        continue
+      }
+
+      if (!downloadPath) {
+        await job.update({
+          status: 'failed',
+          error_message: 'Network recovery failed: Unable to resolve valid download folder path'
+        })
+        console.warn(
+          `[network-recovery] Job ${job.id} failed: Unable to resolve valid download folder path.`
+        )
         continue
       }
 
