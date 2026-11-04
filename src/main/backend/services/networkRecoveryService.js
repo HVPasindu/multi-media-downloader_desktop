@@ -2,7 +2,11 @@ import https from 'node:https'
 import { getDatabase } from '../config/database.js'
 import { getSavedDownloadPath } from './downloadSettingsService.js'
 import { getDefaultDownloadPath } from './downloadPathService.js'
-import { verifyJobPartialDownload, cleanupJobTemporaryFiles } from './downloadCleanupService.js'
+import {
+  verifyJobPartialDownload,
+  cleanupJobTemporaryFiles,
+  isPartialDownloadResumable
+} from './downloadCleanupService.js'
 import { enqueueDownloadJob, getQueueStatus } from './downloadQueueService.js'
 
 let monitoringTimer = null
@@ -201,7 +205,7 @@ export async function resumeInterruptedNetworkJobs(options = {}) {
       }
 
       let hasValidPartial = false
-      let reconciledBytes = job.downloaded_bytes || 0
+      let reconciledBytes = 0
 
       if (downloadPath) {
         try {
@@ -209,8 +213,8 @@ export async function resumeInterruptedNetworkJobs(options = {}) {
             savedDownloadedBytes: job.downloaded_bytes,
             savedProgress: job.progress
           })
-          hasValidPartial = Boolean(partialResult.isValid && !partialResult.isUnsafe)
-          if (hasValidPartial && partialResult.reconciledBytes > 0) {
+          hasValidPartial = isPartialDownloadResumable(partialResult)
+          if (hasValidPartial) {
             reconciledBytes = partialResult.reconciledBytes
           }
         } catch {
@@ -230,12 +234,30 @@ export async function resumeInterruptedNetworkJobs(options = {}) {
         )
       } else {
         // Unverified partial file: safely clean any corrupted artifacts and restart from 0 with SAME Job ID
+        let cleanupFailed = false
+        let cleanupErrorMsg = null
         if (downloadPath) {
           try {
-            await cleanupJobTemporaryFiles(job.id, downloadPath)
-          } catch {
-            // Ignore fallback cleanup errors
+            const cleanResult = await cleanupJobTemporaryFiles(job.id, downloadPath)
+            if (cleanResult && cleanResult.success === false) {
+              cleanupFailed = true
+              cleanupErrorMsg = cleanResult.error || 'Failed to cleanup temporary files'
+            }
+          } catch (cleanErr) {
+            cleanupFailed = true
+            cleanupErrorMsg = cleanErr.message
           }
+        }
+
+        if (cleanupFailed) {
+          await job.update({
+            status: 'failed',
+            error_message: `Network recovery cleanup failed: ${cleanupErrorMsg}`
+          })
+          console.warn(
+            `[network-recovery] Job ${job.id} cleanup failed: ${cleanupErrorMsg}. Marked as failed.`
+          )
+          continue
         }
 
         await job.update({

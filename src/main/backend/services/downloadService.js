@@ -19,7 +19,8 @@ import {
 import {
   prepareJobTemporaryWorkspace,
   cleanupJobTemporaryFiles,
-  verifyJobPartialDownload
+  verifyJobPartialDownload,
+  isPartialDownloadResumable
 } from './downloadCleanupService.js'
 import {
   validateDownloadFolder,
@@ -1553,12 +1554,16 @@ export async function executeDownloadJob(jobId, options = {}) {
           (await getDefaultDownloadPath())
 
         let hasValidPartial = false
+        let reconciledBytes = 0
         try {
           const partialResult = await verifyJobPartialDownload(jobId, cleanPath, {
             savedDownloadedBytes: claimedJob.downloaded_bytes,
             savedProgress: claimedJob.progress
           })
-          hasValidPartial = Boolean(partialResult.isValid && !partialResult.isUnsafe)
+          hasValidPartial = isPartialDownloadResumable(partialResult)
+          if (hasValidPartial) {
+            reconciledBytes = partialResult.reconciledBytes
+          }
         } catch {
           hasValidPartial = false
         }
@@ -1568,9 +1573,29 @@ export async function executeDownloadJob(jobId, options = {}) {
           error_message: 'Internet connection was lost. Waiting for network connection to resume...'
         }
 
-        if (!hasValidPartial) {
-          updatePayload.progress = 0
-          updatePayload.downloaded_bytes = 0
+        if (hasValidPartial) {
+          updatePayload.downloaded_bytes = reconciledBytes
+        } else {
+          let cleanupFailed = false
+          let cleanupErrorMsg = null
+          try {
+            const cleanResult = await cleanupJobTemporaryFiles(jobId, cleanPath)
+            if (cleanResult && cleanResult.success === false) {
+              cleanupFailed = true
+              cleanupErrorMsg = cleanResult.error || 'Failed to cleanup temporary files'
+            }
+          } catch (cleanErr) {
+            cleanupFailed = true
+            cleanupErrorMsg = cleanErr.message
+          }
+
+          if (cleanupFailed) {
+            updatePayload.status = 'failed'
+            updatePayload.error_message = `Network interruption cleanup failed: ${cleanupErrorMsg}`
+          } else {
+            updatePayload.progress = 0
+            updatePayload.downloaded_bytes = 0
+          }
         }
 
         await DownloadJob.update(updatePayload, {
@@ -1600,9 +1625,35 @@ export async function executeDownloadJob(jobId, options = {}) {
           (await getSavedDownloadPath(getDatabase().models.AppSetting)) ||
           (await getDefaultDownloadPath())
 
-        await cleanupJobTemporaryFiles(jobId, cleanPath)
+        let cleanupFailed = false
+        let cleanupErrorMsg = null
+        try {
+          const cleanResult = await cleanupJobTemporaryFiles(jobId, cleanPath)
+          if (cleanResult && cleanResult.success === false) {
+            cleanupFailed = true
+            cleanupErrorMsg = cleanResult.error || 'Failed to cleanup temporary files'
+          }
+        } catch (cleanErr) {
+          cleanupFailed = true
+          cleanupErrorMsg = cleanErr.message
+        }
 
         const DownloadJob = getDatabase().models.DownloadJob
+        if (cleanupFailed) {
+          await DownloadJob.update(
+            {
+              status: 'failed',
+              error_message: `Resume range fallback cleanup failed: ${cleanupErrorMsg}`
+            },
+            {
+              where: {
+                id: jobId
+              }
+            }
+          )
+          throw new Error(`Resume range fallback cleanup failed: ${cleanupErrorMsg}`)
+        }
+
         await DownloadJob.update(
           {
             status: 'queued',

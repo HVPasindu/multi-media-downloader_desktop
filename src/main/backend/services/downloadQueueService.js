@@ -17,6 +17,17 @@ let activeDownloadCount = 0
 // Step 09.G - Prevent new queue dispatches during application shutdown
 let isShuttingDown = false
 
+// Testing override executor hook
+let overrideExecutor = null
+
+export function setExecutorForTesting(fn) {
+  overrideExecutor = fn
+}
+
+export function resetExecutorForTesting() {
+  overrideExecutor = null
+}
+
 export function stopQueueForShutdown() {
   isShuttingDown = true
 }
@@ -26,6 +37,7 @@ export function resetQueueForTesting() {
   waitingJobIds.length = 0
   scheduledJobIds.clear()
   activeDownloadCount = 0
+  overrideExecutor = null
 }
 
 function processDownloadQueue() {
@@ -44,7 +56,7 @@ function processDownloadQueue() {
     activeDownloadCount += 1
 
     void Promise.resolve()
-      .then(() => executeDownloadJob(jobId))
+      .then(() => (overrideExecutor || executeDownloadJob)(jobId))
       .catch((error) => {
         if (error?.name === 'DownloadCancelledError') {
           console.log(`[queue] Download Job ${jobId} was cancelled`)

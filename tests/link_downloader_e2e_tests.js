@@ -614,7 +614,10 @@ async function runAllE2eTests() {
     })
 
     // Execute real restart recovery (Option A: recovers to queued)
-    const recoveryResult = await recoverInterruptedDownloadJobs({ autoEnqueue: false })
+    const recoveryResult = await recoverInterruptedDownloadJobs({
+      autoEnqueue: false,
+      isOnline: true
+    })
     const totalRecovered =
       recoveryResult.interruptedDownloads + recoveryResult.interruptedQueuedJobs
     assert.equal(totalRecovered, 2, 'Must recover exactly 2 interrupted jobs')
@@ -635,7 +638,10 @@ async function runAllE2eTests() {
     assert.equal(rec2.error_message, null, 'Error message cleared on recovery')
 
     // Idempotent recovery
-    const secondRecovery = await recoverInterruptedDownloadJobs({ autoEnqueue: false })
+    const secondRecovery = await recoverInterruptedDownloadJobs({
+      autoEnqueue: false,
+      isOnline: true
+    })
     const secondTotal = secondRecovery.interruptedDownloads + secondRecovery.interruptedQueuedJobs
     assert.equal(secondTotal, 0, 'Second recovery run is idempotent (0 recovered)')
 
