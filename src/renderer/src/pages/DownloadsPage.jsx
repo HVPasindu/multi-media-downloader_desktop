@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import {
   Search,
   SlidersHorizontal,
@@ -12,14 +12,18 @@ import {
   Trash2,
   Download,
   AlertCircle,
-  RefreshCw
+  RefreshCw,
+  RotateCcw
 } from 'lucide-react'
 import StatCard from '../components/ui/StatCard'
 import FilterTabs from '../components/ui/FilterTabs'
 import MediaThumbnail from '../components/ui/MediaThumbnail'
 import PlatformBadge from '../components/ui/PlatformBadge'
 import StatusBadge from '../components/ui/StatusBadge'
+import Pagination from '../components/common/Pagination'
 import { useDownloadsManager } from '../hooks/useDownloadsManager'
+import { retryDownload, clearDownloadHistory, listDownloads } from '../services/downloadsApi'
+import { showError, showToast, showConfirm } from '../utils/notificationService'
 
 /**
  * Cleanly extracts secondary contextual subtitle from statusText without duplicating
@@ -39,67 +43,172 @@ function getStatusSubtitle(statusText, status) {
 /**
  * Downloads Manager Page
  * Features:
- * - Search bar with filter icon
- * - 4 Metric Stat Cards (Downloading, Queued, Completed, Failed) calculated dynamically
- * - Horizontal filter tabs with live item counts & Clear Completed action
- * - Downloads Queue table with correct data bindings (progressText, formatted statusText)
+ * - Search bar with server-side query execution across all records before pagination
+ * - 4 Metric Stat Cards (Downloading, Queued, Completed, Failed) calculated from SQLite totals
+ * - Horizontal filter tabs with accurate item counts & permanent Clear Completed action
+ * - Downloads Queue table with server-side pagination (10, 20, 50 records per page, default 20)
+ * - Clean Pagination component with page jump buttons, ellipsis, and rows-per-page selector
  */
 export default function DownloadsPage() {
   const [activeTab, setActiveTab] = useState('all')
   const [searchQuery, setSearchQuery] = useState('')
+  const [pageSize, setPageSize] = useState(20)
+  const [currentPage, setCurrentPage] = useState(1)
+  const [retryingJobId, setRetryingJobId] = useState(null)
 
-  // Step 07: Centralized Downloads Manager state & resilient lifecycle coordination
-  const { downloadsList, setDownloadsList, isLoading, error, retry } = useDownloadsManager({
-    limit: 50
+  // Status mapping for server-side queries
+  const statusFilter = activeTab === 'all' || activeTab === 'failed' ? null : activeTab
+  const statusesFilter = activeTab === 'failed' ? ['failed', 'cancelled'] : null
+
+  // Auto-clamp current page if total pages decreases (e.g. after deletion or filter change)
+  const totalPages = Math.max(1, Math.ceil(totalMatchingRecords / pageSize))
+  const safeCurrentPage = totalMatchingRecords > 0 ? Math.min(currentPage, totalPages) : 1
+  const offset = (safeCurrentPage - 1) * pageSize
+
+  // Step 12: Server-side paginated & filtered Downloads Manager state
+  const {
+    downloadsList,
+    isLoading,
+    error,
+    retry,
+    total: totalMatchingRecords
+  } = useDownloadsManager({
+    limit: pageSize,
+    offset,
+    search: searchQuery,
+    status: statusFilter,
+    statuses: statusesFilter
   })
 
-  // Dynamically calculate counts directly from real SQLite-backed records
-  const downloadingCount = downloadsList.filter((item) => item.status === 'downloading').length
-  const queuedCount = downloadsList.filter((item) => item.status === 'queued').length
-  const interruptedCount = downloadsList.filter((item) => item.status === 'interrupted').length
-  const completedCount = downloadsList.filter((item) => item.status === 'completed').length
-  const failedCount = downloadsList.filter(
-    (item) => item.status === 'failed' || item.status === 'cancelled'
-  ).length
-  const totalCount = downloadsList.length
+  // Global counts for StatCards and FilterTabs (genuine SQLite totals across entire database)
+  const [globalCounts, setGlobalCounts] = useState({
+    downloading: 0,
+    queued: 0,
+    interrupted: 0,
+    completed: 0,
+    failed: 0,
+    total: 0
+  })
 
-  // Filter items based on active tab and search query
-  const filteredItems = useMemo(() => {
-    return downloadsList.filter((item) => {
-      if (activeTab === 'downloading' && item.status !== 'downloading') return false
-      if (activeTab === 'queued' && item.status !== 'queued') return false
-      if (activeTab === 'interrupted' && item.status !== 'interrupted') return false
-      if (activeTab === 'completed' && item.status !== 'completed') return false
-      if (activeTab === 'failed' && item.status !== 'failed' && item.status !== 'cancelled')
-        return false
+  const fetchGlobalCounts = useCallback(async () => {
+    try {
+      const [dlRes, qRes, intRes, compRes, failRes, allRes] = await Promise.all([
+        listDownloads({ status: 'downloading', limit: 1 }),
+        listDownloads({ status: 'queued', limit: 1 }),
+        listDownloads({ status: 'interrupted', limit: 1 }),
+        listDownloads({ status: 'completed', limit: 1 }),
+        listDownloads({ statuses: ['failed', 'cancelled'], limit: 1 }),
+        listDownloads({ limit: 1 })
+      ])
 
-      // Search query filter
-      if (searchQuery.trim() !== '') {
-        const query = searchQuery.toLowerCase()
-        const matchesTitle = (item.title || '').toLowerCase().includes(query)
-        const matchesPlatform = (item.platform || '').toLowerCase().includes(query)
-        return matchesTitle || matchesPlatform
+      setGlobalCounts({
+        downloading: Number(dlRes.data?.pagination?.total) || 0,
+        queued: Number(qRes.data?.pagination?.total) || 0,
+        interrupted: Number(intRes.data?.pagination?.total) || 0,
+        completed: Number(compRes.data?.pagination?.total) || 0,
+        failed: Number(failRes.data?.pagination?.total) || 0,
+        total: Number(allRes.data?.pagination?.total) || 0
+      })
+    } catch {
+      // Ignore count fetch errors
+    }
+  }, [])
+
+  useEffect(() => {
+    let isMounted = true
+
+    async function loadCounts() {
+      await fetchGlobalCounts()
+    }
+
+    void loadCounts()
+
+    const onStateChanged = () => {
+      if (isMounted) {
+        void fetchGlobalCounts()
       }
+    }
 
-      return true
-    })
-  }, [downloadsList, activeTab, searchQuery])
+    window.addEventListener('applan2:download-state-changed', onStateChanged)
+    return () => {
+      isMounted = false
+      window.removeEventListener('applan2:download-state-changed', onStateChanged)
+    }
+  }, [fetchGlobalCounts])
 
-  // Clear completed items notice (Destructive history actions belong to Step 05.12)
-  const handleClearCompleted = () => {
-    // Retain UI responsiveness while awaiting Step 05.12 history delete API integration
-    setDownloadsList((prev) => prev.filter((item) => item.status !== 'completed'))
+  const handleSelectTab = (tabId) => {
+    setActiveTab(tabId)
+    setCurrentPage(1)
+  }
+
+  const handleSearchChange = (e) => {
+    setSearchQuery(e.target.value)
+    setCurrentPage(1)
+  }
+
+  const handlePageSizeChange = (newSize) => {
+    setPageSize(newSize)
+    setCurrentPage(1)
+  }
+
+  const handleRetryJob = async (jobId) => {
+    try {
+      setRetryingJobId(jobId)
+      const res = await retryDownload(jobId)
+      if (res.ok && res.status === 201) {
+        showToast('Download queued for retry', 'success')
+        if (typeof retry === 'function') retry()
+      } else {
+        const errorMsg = res.data?.message || 'Failed to retry download'
+        showError('Retry Failed', errorMsg)
+      }
+    } catch (err) {
+      showError('Retry Error', err?.message || 'An unexpected error occurred while retrying.')
+    } finally {
+      setRetryingJobId(null)
+    }
+  }
+
+  // Permanently clear completed download records from SQLite history (Step 11)
+  const handleClearCompleted = async () => {
+    const confirmed = await showConfirm(
+      'Clear Completed Downloads?',
+      'This will permanently remove completed download records from history. Media files on disk will not be deleted.',
+      {
+        confirmButtonText: 'Clear Completed',
+        isDanger: true
+      }
+    )
+
+    if (!confirmed) return
+
+    try {
+      const res = await clearDownloadHistory({
+        confirm: true,
+        statuses: ['completed']
+      })
+
+      if (res.ok && res.data?.success) {
+        showToast('Completed downloads cleared from history', 'success')
+        if (typeof retry === 'function') retry()
+        fetchGlobalCounts()
+      } else {
+        showError('Clear Failed', res.data?.message || 'Failed to clear completed downloads.')
+      }
+    } catch (err) {
+      showError('Clear Failed', err?.message || 'An unexpected error occurred.')
+    }
   }
 
   const tabs = [
-    { id: 'all', label: 'All', count: totalCount },
-    { id: 'downloading', label: 'Downloading', count: downloadingCount },
-    { id: 'queued', label: 'Queued', count: queuedCount },
-    ...(interruptedCount > 0
-      ? [{ id: 'interrupted', label: 'Interrupted', count: interruptedCount }]
+    { id: 'all', label: 'All', count: globalCounts.total },
+    { id: 'downloading', label: 'Downloading', count: globalCounts.downloading },
+    { id: 'queued', label: 'Queued', count: globalCounts.queued },
+    ...(globalCounts.interrupted > 0
+      ? [{ id: 'interrupted', label: 'Interrupted', count: globalCounts.interrupted }]
       : []),
-    { id: 'completed', label: 'Completed', count: completedCount },
-    { id: 'failed', label: 'Failed', count: failedCount }
+    { id: 'completed', label: 'Completed', count: globalCounts.completed },
+    { id: 'failed', label: 'Failed', count: globalCounts.failed }
   ]
 
   return (
@@ -124,7 +233,7 @@ export default function DownloadsPage() {
             <input
               type="text"
               value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
+              onChange={handleSearchChange}
               placeholder="Search downloads..."
               className="w-full bg-[#07152E]/90 border border-primary/20 rounded-xl py-2 pl-10 pr-4 text-xs font-medium text-white placeholder:text-text-muted/50 focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/30"
             />
@@ -139,39 +248,39 @@ export default function DownloadsPage() {
         </div>
       </div>
 
-      {/* ----------------- 4 STAT CARDS ROW (Problem 07: Dynamic Counts) ----------------- */}
+      {/* ----------------- 4 STAT CARDS ROW (Dynamic SQLite Counts) ----------------- */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <StatCard
           icon={Loader2}
-          count={downloadingCount}
+          count={globalCounts.downloading}
           label="Downloading"
           accentColor="cyan"
           isActive={activeTab === 'downloading'}
-          onClick={() => setActiveTab('downloading')}
+          onClick={() => handleSelectTab('downloading')}
         />
         <StatCard
           icon={Hourglass}
-          count={queuedCount}
+          count={globalCounts.queued}
           label="Queued"
           accentColor="blue"
           isActive={activeTab === 'queued'}
-          onClick={() => setActiveTab('queued')}
+          onClick={() => handleSelectTab('queued')}
         />
         <StatCard
           icon={CheckCircle2}
-          count={completedCount}
+          count={globalCounts.completed}
           label="Completed"
           accentColor="green"
           isActive={activeTab === 'completed'}
-          onClick={() => setActiveTab('completed')}
+          onClick={() => handleSelectTab('completed')}
         />
         <StatCard
           icon={XCircle}
-          count={failedCount}
+          count={globalCounts.failed}
           label="Failed"
           accentColor="red"
           isActive={activeTab === 'failed'}
-          onClick={() => setActiveTab('failed')}
+          onClick={() => handleSelectTab('failed')}
         />
       </div>
 
@@ -179,14 +288,14 @@ export default function DownloadsPage() {
       <FilterTabs
         tabs={tabs}
         activeTab={activeTab}
-        onSelectTab={setActiveTab}
+        onSelectTab={handleSelectTab}
         rightAction={
           <button
             type="button"
             onClick={handleClearCompleted}
-            disabled={completedCount === 0}
+            disabled={globalCounts.completed === 0}
             className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold transition-all ${
-              completedCount > 0
+              globalCounts.completed > 0
                 ? 'text-text-muted hover:text-white bg-[#07152E]/80 hover:bg-[#0B1C38] border border-primary/15 cursor-pointer'
                 : 'text-text-muted/40 bg-[#07152E]/40 border border-primary/10 cursor-not-allowed'
             }`}
@@ -197,8 +306,8 @@ export default function DownloadsPage() {
         }
       />
 
-      {/* ----------------- DOWNLOADS QUEUE TABLE (Problem 01: Fixed Data Bindings) ----------------- */}
-      <div className="rounded-2xl bg-[#07152E]/90 border border-primary/15 shadow-[0_4px_24px_rgba(0,0,0,0.35)] backdrop-blur-md overflow-hidden">
+      {/* ----------------- DOWNLOADS QUEUE TABLE WITH PAGINATION ----------------- */}
+      <div className="rounded-2xl bg-[#07152E]/90 border border-primary/15 shadow-[0_4px_24px_rgba(0,0,0,0.35)] backdrop-blur-md overflow-hidden flex flex-col">
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse min-w-[840px]">
             {/* Table Header */}
@@ -216,15 +325,16 @@ export default function DownloadsPage() {
 
             {/* Table Body */}
             <tbody className="divide-y divide-primary/10 text-xs">
-              {filteredItems.map((item, idx) => {
+              {downloadsList.map((item, idx) => {
                 const isDownloading = item.status === 'downloading'
                 const isQueued = item.status === 'queued'
+                const itemIndex = offset + idx + 1
 
                 return (
                   <tr key={item.id} className="hover:bg-[#0B1C38]/40 transition-colors group">
                     {/* Index */}
                     <td className="py-3.5 px-4 text-center text-text-muted/70 font-mono text-xs">
-                      {idx + 1}
+                      {itemIndex}
                     </td>
 
                     {/* Media Thumbnail + Title + Platform */}
@@ -304,9 +414,25 @@ export default function DownloadsPage() {
                       />
                     </td>
 
-                    {/* Action Buttons (Disabled pending Step 05.11 implementation) */}
+                    {/* Action Buttons */}
                     <td className="py-3.5 px-4">
                       <div className="flex items-center justify-center gap-2">
+                        {/* Retry Button for Failed or Cancelled Jobs */}
+                        {(item.status === 'failed' || item.status === 'cancelled') && (
+                          <button
+                            type="button"
+                            onClick={() => handleRetryJob(item.id)}
+                            disabled={retryingJobId === item.id}
+                            className="px-2.5 py-1 rounded-lg bg-[#040B1C]/80 hover:bg-[#102449] border border-primary/20 hover:border-primary/40 text-text-muted hover:text-white flex items-center gap-1.5 transition-all cursor-pointer shadow-sm"
+                            title="Retry download"
+                          >
+                            <RotateCcw
+                              className={`w-3.5 h-3.5 text-[#19D8FF] ${retryingJobId === item.id ? 'animate-spin' : ''}`}
+                            />
+                            <span className="text-[11px] font-bold">Retry</span>
+                          </button>
+                        )}
+
                         {/* Play/Pause Button */}
                         {isDownloading && (
                           <button
@@ -330,15 +456,17 @@ export default function DownloadsPage() {
                           </button>
                         )}
 
-                        {/* Cancel / Stop Button */}
-                        <button
-                          type="button"
-                          disabled
-                          className="w-8 h-8 rounded-lg border bg-[#040B1C]/50 border-primary/10 text-text-muted/40 flex items-center justify-center cursor-not-allowed"
-                          title="Cancel download will be connected in Step 05.11"
-                        >
-                          <Square className="w-3 h-3 fill-current" />
-                        </button>
+                        {/* Cancel / Stop Button (only for active jobs) */}
+                        {(isDownloading || isQueued || item.status === 'interrupted') && (
+                          <button
+                            type="button"
+                            disabled
+                            className="w-8 h-8 rounded-lg border bg-[#040B1C]/50 border-primary/10 text-text-muted/40 flex items-center justify-center cursor-not-allowed"
+                            title="Cancel download will be connected in Step 05.11"
+                          >
+                            <Square className="w-3 h-3 fill-current" />
+                          </button>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -384,21 +512,30 @@ export default function DownloadsPage() {
                       <Download className="w-8 h-8 text-text-muted/40" />
                       <span className="text-sm font-semibold text-white">No downloads found</span>
                       <span className="text-xs text-text-muted">
-                        Start downloading videos or audio from the Downloader page.
+                        {searchQuery.trim()
+                          ? 'No downloads match your search query.'
+                          : activeTab !== 'all'
+                            ? 'No downloads match the selected filter.'
+                            : 'Start downloading videos or audio from the Downloader page.'}
                       </span>
                     </div>
-                  </td>
-                </tr>
-              ) : filteredItems.length === 0 ? (
-                <tr>
-                  <td colSpan={7} className="py-12 text-center text-text-muted">
-                    No downloads match the current filter.
                   </td>
                 </tr>
               ) : null}
             </tbody>
           </table>
         </div>
+
+        {/* Reusable Pagination Controls */}
+        <Pagination
+          currentPage={safeCurrentPage}
+          pageSize={pageSize}
+          totalRecords={totalMatchingRecords}
+          onPageChange={(page) => setCurrentPage(page)}
+          onPageSizeChange={handlePageSizeChange}
+          pageSizeOptions={[10, 20, 50]}
+          recordLabel="downloads"
+        />
       </div>
     </div>
   )

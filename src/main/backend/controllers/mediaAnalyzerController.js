@@ -12,6 +12,7 @@ export async function analyzeMediaController(req, res, next) {
     } catch (validationError) {
       return res.status(400).json({
         success: false,
+        code: validationError.code || 'INVALID_URL',
         message: validationError.userMessage || 'Please provide a valid supported media URL'
       })
     }

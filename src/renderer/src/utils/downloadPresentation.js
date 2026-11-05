@@ -1,4 +1,5 @@
 import { formatMediaDuration } from './mediaMetadata'
+import { getFriendlyErrorInfo } from './errorPresentation'
 
 /**
  * Formats a raw number of bytes into a human-readable string with units (e.g. 452 MB, 1.2 GB).
@@ -206,6 +207,7 @@ export function normalizeDownloadJob(job, speedTracker = null) {
   // Build user-friendly status text and display status
   let statusText = job.status
   let displayStatus = job.status
+  let errorInfo = null
   if (isDownloading) {
     const details = []
     if (speedText && speedText !== '—') details.push(speedText)
@@ -225,7 +227,9 @@ export function normalizeDownloadJob(job, speedTracker = null) {
     statusText = 'Completed'
     displayStatus = 'completed'
   } else if (isFailed) {
-    statusText = job.error_message || 'Failed'
+    errorInfo = getFriendlyErrorInfo(job.error_message)
+    const reason = errorInfo.guidance || errorInfo.message
+    statusText = errorInfo.title ? `${errorInfo.title} – ${reason}` : job.error_message || 'Failed'
     displayStatus = 'failed'
   } else if (isCancelled) {
     statusText = 'Cancelled'
@@ -246,6 +250,7 @@ export function normalizeDownloadJob(job, speedTracker = null) {
     quality: qualityLabel,
     size: fileSizeFormatted,
     fileSize: fileSizeFormatted,
+    fileBytes: job.file?.file_size || null,
     filePath: job.file?.file_path || null,
     progress,
     progressText,
@@ -255,6 +260,7 @@ export function normalizeDownloadJob(job, speedTracker = null) {
     status: job.status,
     statusText,
     errorMessage: job.error_message,
+    errorInfo,
     fileStatus: job.file_status || null,
     createdAt: job.createdAt
   }

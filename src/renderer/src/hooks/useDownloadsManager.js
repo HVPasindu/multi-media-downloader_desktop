@@ -1,24 +1,38 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { listDownloads, notifyDownloadStateChanged } from '../services/downloadsApi'
+import {
+  listDownloads,
+  notifyDownloadStateChanged,
+  getActiveDownloadsCount
+} from '../services/downloadsApi'
 import { normalizeDownloadJob } from '../utils/downloadPresentation'
+import { seedKnownFailures, notifyLiveJobFailure } from '../utils/notificationService'
 
 /**
- * Custom hook to coordinate Downloads Manager initial fetch and live polling lifecycle.
+ * Custom hook to coordinate Downloads Manager initial fetch, server-side pagination,
+ * search, multi-status filters, and adaptive polling lifecycle.
  *
- * Requirements fulfilled (Step 07):
+ * Requirements fulfilled (Step 07 & Step 12):
  * 1. Immediate initial fetch on mount.
  * 2. Proper loading state (isLoading starts true, becomes false on first response).
  * 3. Does not display empty-download state before initial fetch completes.
  * 4. StrictMode resilient: per-mount lifecycle tracking and request generation prevents hanging or race conditions.
- * 5. Discards outdated responses if component unmounted or superseded by newer request.
+ * 5. Discards outdated responses if component unmounted or superseded by newer request / page change.
  * 6. Prevents overlapping polling requests and duplicate timers.
  * 7. On initial fetch failure, provides error state and retry action instead of showing empty table.
  * 8. Preserves existing download records if a background poll temporarily errors.
- * 9. Adaptive polling: 2s when active jobs exist, 8s when idle.
+ * 9. Adaptive polling: 2s when active jobs exist anywhere globally, 8s when idle.
  * 10. Emits 'applan2:download-state-changed' so sidebar count stays synchronized.
+ * 11. Reads accurate server total records for pagination.
  */
-export function useDownloadsManager({ limit = 50 } = {}) {
+export function useDownloadsManager({
+  limit = 20,
+  offset = 0,
+  search = '',
+  status = null,
+  statuses = null
+} = {}) {
   const [downloadsList, setDownloadsList] = useState([])
+  const [total, setTotal] = useState(0)
   const [isLoading, setIsLoading] = useState(true)
   const [initialFetchDone, setInitialFetchDone] = useState(false)
   const [error, setError] = useState(null)
@@ -36,25 +50,67 @@ export function useDownloadsManager({ limit = 50 } = {}) {
       const requestId = ++requestCountRef.current
 
       try {
-        const response = await listDownloads({ limit })
+        const filters = {
+          limit,
+          offset
+        }
+        if (search && search.trim()) filters.search = search.trim()
+        if (statuses && (Array.isArray(statuses) ? statuses.length > 0 : String(statuses).trim())) {
+          filters.statuses = statuses
+        } else if (status) {
+          filters.status = status
+        }
+
+        const response = await listDownloads(filters)
         if (!isMountedCheck() || requestId !== requestCountRef.current) return
 
         if (response.ok && response.data?.success && Array.isArray(response.data.data)) {
-          const normalized = response.data.data
+          const rawJobs = response.data.data
+          const normalized = rawJobs
             .map((job) => normalizeDownloadJob(job, speedTrackerRef.current))
             .filter(Boolean)
 
-          const hasActive = normalized.some(
+          // On first successful load, seed any existing failures so they never trigger popups
+          if (!initialFetchDoneRef.current) {
+            const initialFailedIds = normalized
+              .filter((j) => j.status === 'failed' || j.status === 'cancelled')
+              .map((j) => j.id)
+            seedKnownFailures(initialFailedIds)
+          } else {
+            // Live poll: check if any job transitioned to failed and alert once
+            for (const item of normalized) {
+              if (item.status === 'failed') {
+                notifyLiveJobFailure(
+                  item.id,
+                  item.errorInfo || { title: 'Download Failed', message: item.errorMessage }
+                )
+              }
+            }
+          }
+
+          // Adaptive polling: check local page active items, fallback to global count
+          const localHasActive = normalized.some(
             (item) => item.status === 'downloading' || item.status === 'queued'
           )
-          hasActiveRef.current = hasActive
+
+          if (localHasActive) {
+            hasActiveRef.current = true
+          } else {
+            try {
+              const globalActive = await getActiveDownloadsCount()
+              hasActiveRef.current = Boolean(globalActive.ok && globalActive.total > 0)
+            } catch {
+              hasActiveRef.current = false
+            }
+          }
 
           setDownloadsList(normalized)
+          const reportedTotal = Number(response.data.pagination?.total)
+          setTotal(Number.isSafeInteger(reportedTotal) ? reportedTotal : normalized.length)
           setError(null)
           initialFetchDoneRef.current = true
           notifyDownloadStateChanged()
         } else {
-          // If response not ok or data.success is false
           if (!initialFetchDoneRef.current) {
             setError(
               response.data?.message ||
@@ -64,7 +120,6 @@ export function useDownloadsManager({ limit = 50 } = {}) {
         }
       } catch (err) {
         console.warn('[downloads] Polling fetch warning:', err)
-        // If initial fetch failed, surface error so user sees error + Retry instead of false empty state
         if (
           !initialFetchDoneRef.current &&
           isMountedCheck() &&
@@ -72,7 +127,6 @@ export function useDownloadsManager({ limit = 50 } = {}) {
         ) {
           setError('Failed to connect to local API service. Please retry.')
         }
-        // Background polling errors preserve previously loaded records
       } finally {
         if (requestId === requestCountRef.current) {
           isFetchingRef.current = false
@@ -83,7 +137,7 @@ export function useDownloadsManager({ limit = 50 } = {}) {
         }
       }
     },
-    [limit]
+    [limit, offset, search, status, statuses]
   )
 
   const retry = useCallback(() => {
@@ -100,7 +154,6 @@ export function useDownloadsManager({ limit = 50 } = {}) {
 
     const isMountedCheck = () => isMounted
 
-    // Reset any stuck in-flight flag on fresh effect mount (StrictMode protection)
     isFetchingRef.current = false
 
     async function pollLoop() {
@@ -123,7 +176,6 @@ export function useDownloadsManager({ limit = 50 } = {}) {
 
     window.addEventListener('applan2:download-state-changed', onStateChanged)
 
-    // Trigger initial fetch immediately without delay
     pollLoop()
 
     return () => {
@@ -140,6 +192,7 @@ export function useDownloadsManager({ limit = 50 } = {}) {
     initialFetchDone,
     error,
     retry,
+    total,
     speedTrackerRef
   }
 }

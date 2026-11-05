@@ -26,9 +26,10 @@ import DownloaderHeroIllustration from '../components/ui/DownloaderHeroIllustrat
 import MediaThumbnail from '../components/ui/MediaThumbnail'
 import PlatformBadge from '../components/ui/PlatformBadge'
 import { chooseDownloadFolder, getDownloadFolder } from '../services/api'
-import { createDownload, listDownloads } from '../services/downloadsApi'
+import { createDownload, listDownloads, deleteDownloadHistory } from '../services/downloadsApi'
 import { analyzeMedia } from '../services/mediaApi'
 import { normalizeDownloadJob } from '../utils/downloadPresentation'
+import { showConfirm, showToast, showError } from '../utils/notificationService'
 import {
   formatMediaDuration,
   getMediaFormatAvailability,
@@ -754,8 +755,42 @@ export default function DownloaderPage() {
     }
   }
 
-  const handleClearRecent = () => {
-    setRecentDownloads([])
+  const handleClearRecent = async () => {
+    const terminalItems = recentDownloads.filter((item) =>
+      ['completed', 'failed', 'cancelled'].includes(item.status)
+    )
+
+    if (terminalItems.length === 0) {
+      showToast('No completed or failed downloads to clear', 'info')
+      return
+    }
+
+    const confirmed = await showConfirm(
+      'Clear Recent Downloads?',
+      `Permanently remove ${terminalItems.length} completed/failed record(s) from recent history? Media files on disk will not be deleted. Active downloads will remain untouched.`,
+      {
+        confirmButtonText: 'Clear Recent',
+        isDanger: true
+      }
+    )
+
+    if (!confirmed) return
+
+    try {
+      const results = await Promise.allSettled(
+        terminalItems.map((item) => deleteDownloadHistory(item.id))
+      )
+      const deletedCount = results.filter((r) => r.status === 'fulfilled' && r.value.ok).length
+
+      if (deletedCount > 0) {
+        showToast(`Cleared ${deletedCount} record(s) from recent history`, 'success')
+        await fetchRecentDownloads()
+      } else {
+        showError('Clear Failed', 'Failed to clear recent downloads from database.')
+      }
+    } catch (err) {
+      showError('Clear Error', err?.message || 'An unexpected error occurred while clearing.')
+    }
   }
 
   // Derive explicit validation condition
