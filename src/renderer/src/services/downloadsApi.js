@@ -62,6 +62,15 @@ export function listDownloads(filters = {}) {
   const params = new URLSearchParams()
 
   if (filters.status) params.set('status', filters.status)
+  if (filters.statuses) {
+    const statusesStr = Array.isArray(filters.statuses)
+      ? filters.statuses.join(',')
+      : String(filters.statuses)
+    params.set('statuses', statusesStr)
+  }
+  if (filters.search && typeof filters.search === 'string' && filters.search.trim()) {
+    params.set('search', filters.search.trim())
+  }
   if (filters.outputFormat) params.set('outputFormat', filters.outputFormat)
   if (filters.sourceType) params.set('sourceType', filters.sourceType)
   if (filters.from) params.set('from', filters.from)
@@ -134,6 +143,9 @@ export function deleteDownloadHistory(id) {
   return apiRequest({
     path: `/api/downloads/${id}`,
     method: 'DELETE'
+  }).then((res) => {
+    if (res.ok) notifyDownloadStateChanged()
+    return res
   })
 }
 
@@ -152,6 +164,9 @@ export function clearDownloadHistory(options = {}) {
     path: '/api/downloads/history',
     method: 'DELETE',
     body: { confirm, statuses }
+  }).then((res) => {
+    if (res.ok) notifyDownloadStateChanged()
+    return res
   })
 }
 

@@ -77,6 +77,18 @@ const TEST_SUITES = [
   {
     name: 'Corrective Step 02: Duplicate Download Guard Test Suite (A–N)',
     file: 'tests/duplicate_download_guard_tests.js'
+  },
+  {
+    name: 'Phase 05: Step 10 Error Classification & User Notifications Suite',
+    file: 'tests/step10_error_presentation_tests.js'
+  },
+  {
+    name: 'Phase 05: Step 11 Clear All / Clear Completed Persistence Suite',
+    file: 'tests/step11_clear_history_persistence_tests.js'
+  },
+  {
+    name: 'Phase 05: Step 12 Downloads Manager Pagination & Search Suite',
+    file: 'tests/step12_pagination_search_tests.js'
   }
 ]
 

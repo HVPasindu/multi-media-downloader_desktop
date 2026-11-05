@@ -101,7 +101,19 @@ paths:
           required: false
           schema:
             type: string
-            enum: [queued, downloading, completed, failed, cancelled]
+            enum: [queued, downloading, interrupted, completed, failed, cancelled]
+        - name: statuses
+          in: query
+          required: false
+          description: Comma-separated list of job statuses (e.g. failed,cancelled)
+          schema:
+            type: string
+        - name: search
+          in: query
+          required: false
+          description: Search term matching title, platform, source URL, filename, or path
+          schema:
+            type: string
         - name: outputFormat
           in: query
           required: false
