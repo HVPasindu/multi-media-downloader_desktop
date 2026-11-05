@@ -8,7 +8,8 @@ import {
   cancelDownloadJobController,
   retryDownloadJobController,
   deleteDownloadHistoryController,
-  clearDownloadHistoryController
+  clearDownloadHistoryController,
+  getDownloadSummaryController
 } from '../controllers/downloadController.js'
 
 const router = Router()
@@ -18,6 +19,9 @@ router.post('/', createDownloadJobController)
 
 // Check whether selected download configuration is already active (read-only)
 router.post('/check-duplicate', checkDownloadDuplicateController)
+
+// Get aggregate download and history summary metrics
+router.get('/summary', getDownloadSummaryController)
 
 // Get recent download history
 router.get('/', listDownloadJobsController)

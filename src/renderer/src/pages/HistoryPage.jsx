@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import {
   Search,
   SlidersHorizontal,
@@ -18,11 +18,14 @@ import FilterTabs from '../components/ui/FilterTabs'
 import MediaThumbnail from '../components/ui/MediaThumbnail'
 import PlatformBadge from '../components/ui/PlatformBadge'
 import StatusBadge from '../components/ui/StatusBadge'
+import Pagination from '../components/common/Pagination'
 import {
   listDownloads,
   deleteDownloadHistory,
   clearDownloadHistory,
-  retryDownload
+  retryDownload,
+  getDownloadSummary,
+  getActiveDownloadsCount
 } from '../services/downloadsApi'
 import { normalizeDownloadJob, formatBytes } from '../utils/downloadPresentation'
 import { showConfirm, showToast, showError } from '../utils/notificationService'
@@ -69,28 +72,82 @@ function formatHistoryDate(dateStr) {
 export default function HistoryPage() {
   const [activeTab, setActiveTab] = useState('all')
   const [searchQuery, setSearchQuery] = useState('')
+  const [pageSize, setPageSize] = useState(20)
+  const [currentPage, setCurrentPage] = useState(1)
+  const [totalRecords, setTotalRecords] = useState(0)
   const [selectedIds, setSelectedIds] = useState([])
   const [historyItems, setHistoryItems] = useState([])
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState(null)
   const [retryingJobId, setRetryingJobId] = useState(null)
+  const [summary, setSummary] = useState({
+    totalFiles: 0,
+    videos: 0,
+    audio: 0,
+    completed: 0,
+    failed: 0,
+    storageBytes: 0
+  })
+
+  // Auto-clamp current page if total pages decreases
+  const totalPages = Math.max(1, Math.ceil(totalRecords / pageSize))
+  const safeCurrentPage = totalRecords > 0 ? Math.min(Math.max(currentPage, 1), totalPages) : 1
+
+  if (totalRecords > 0 && currentPage > totalPages) {
+    setCurrentPage(totalPages)
+  }
+
+  const fetchSummary = useCallback(async () => {
+    try {
+      const res = await getDownloadSummary()
+      if (res.ok && res.data?.success && res.data?.data?.history) {
+        setSummary(res.data.data.history)
+      }
+    } catch {
+      // Ignore summary fetch error
+    }
+  }, [])
 
   const fetchHistory = useCallback(async () => {
     try {
-      const res = await listDownloads({ limit: 100 })
+      const filters = {
+        limit: pageSize,
+        offset: (currentPage - 1) * pageSize
+      }
+
+      if (searchQuery.trim()) {
+        filters.search = searchQuery.trim()
+      }
+
+      if (activeTab === 'videos') {
+        filters.statuses = ['completed', 'failed', 'cancelled']
+        filters.outputFormat = 'mp4'
+      } else if (activeTab === 'audio') {
+        filters.statuses = ['completed', 'failed', 'cancelled']
+        filters.outputFormat = 'mp3'
+      } else if (activeTab === 'completed') {
+        filters.status = 'completed'
+      } else if (activeTab === 'failed') {
+        filters.statuses = ['failed', 'cancelled']
+      } else {
+        filters.statuses = ['completed', 'failed', 'cancelled']
+      }
+
+      const res = await listDownloads(filters)
       if (res.ok && res.data?.success && Array.isArray(res.data.data)) {
-        // Only terminal records in history: completed, failed, cancelled
-        const terminalRecords = res.data.data
-          .filter((job) => ['completed', 'failed', 'cancelled'].includes(job.status))
-          .map((job) => {
-            const normalized = normalizeDownloadJob(job)
-            return {
-              ...normalized,
-              savedTo: normalized.filePath || '—',
-              date: formatHistoryDate(normalized.createdAt)
-            }
-          })
+        const terminalRecords = res.data.data.map((job) => {
+          const normalized = normalizeDownloadJob(job)
+          return {
+            ...normalized,
+            savedTo: normalized.filePath || '—',
+            date: formatHistoryDate(normalized.createdAt)
+          }
+        })
         setHistoryItems(terminalRecords)
+        const reportedTotal = Number(res.data.pagination?.total)
+        setTotalRecords(
+          Number.isSafeInteger(reportedTotal) ? reportedTotal : terminalRecords.length
+        )
         setError(null)
       } else {
         setError(res.data?.message || 'Failed to load download history.')
@@ -101,71 +158,81 @@ export default function HistoryPage() {
     } finally {
       setIsLoading(false)
     }
-  }, [])
+  }, [activeTab, searchQuery, pageSize, currentPage])
 
+  // Adaptive background polling & immediate refresh on mutation events
   useEffect(() => {
     let isMounted = true
+    let timerId = null
 
-    async function loadHistory() {
-      await fetchHistory()
+    async function pollLoop() {
+      await Promise.all([fetchHistory(), fetchSummary()])
+      if (!isMounted) return
+
+      let interval = 8000
+      try {
+        const activeRes = await getActiveDownloadsCount()
+        if (activeRes.ok && activeRes.total > 0) {
+          interval = 2000
+        }
+      } catch {
+        interval = 8000
+      }
+
+      timerId = setTimeout(() => {
+        if (isMounted) {
+          void pollLoop()
+        }
+      }, interval)
     }
-
-    void loadHistory()
 
     const onStateChanged = () => {
       if (isMounted) {
-        void fetchHistory()
+        void Promise.all([fetchHistory(), fetchSummary()])
       }
     }
 
     window.addEventListener('applan2:download-state-changed', onStateChanged)
+
+    void pollLoop()
+
     return () => {
       isMounted = false
+      if (timerId) clearTimeout(timerId)
       window.removeEventListener('applan2:download-state-changed', onStateChanged)
     }
-  }, [fetchHistory])
+  }, [fetchHistory, fetchSummary])
 
   // Dynamic summary metrics calculated strictly from SQLite records
-  const totalFiles = historyItems.length
-  const videosCount = historyItems.filter((item) => item.format === 'MP4').length
-  const audioCount = historyItems.filter((item) => item.format === 'MP3').length
-  const completedCount = historyItems.filter((item) => item.status === 'completed').length
-  const failedCount = historyItems.filter(
-    (item) => item.status === 'failed' || item.status === 'cancelled'
-  ).length
+  const totalFiles = summary.totalFiles
+  const videosCount = summary.videos
+  const audioCount = summary.audio
+  const completedCount = summary.completed
+  const failedCount = summary.failed
+  const storageUsed = summary.storageBytes > 0 ? formatBytes(summary.storageBytes) : '—'
 
-  const totalStorageBytes = historyItems
-    .filter((item) => item.status === 'completed' && item.fileBytes)
-    .reduce((sum, item) => sum + item.fileBytes, 0)
-  const storageUsed = totalStorageBytes > 0 ? formatBytes(totalStorageBytes) : '—'
+  const handleSelectTab = (tabId) => {
+    setActiveTab(tabId)
+    setCurrentPage(1)
+    setSelectedIds([])
+  }
 
-  // Filter history items by tab and search query
-  const filteredItems = useMemo(() => {
-    return historyItems.filter((item) => {
-      // Tab filter
-      if (activeTab === 'videos' && item.format !== 'MP4') return false
-      if (activeTab === 'audio' && item.format !== 'MP3') return false
-      if (activeTab === 'completed' && item.status !== 'completed') return false
-      if (activeTab === 'failed' && item.status !== 'failed' && item.status !== 'cancelled')
-        return false
+  const handleSearchChange = (e) => {
+    setSearchQuery(e.target.value)
+    setCurrentPage(1)
+    setSelectedIds([])
+  }
 
-      // Search query filter
-      if (searchQuery.trim() !== '') {
-        const query = searchQuery.toLowerCase()
-        const matchesTitle = (item.title || '').toLowerCase().includes(query)
-        const matchesPlatform = (item.platform || '').toLowerCase().includes(query)
-        const matchesPath = (item.savedTo || '').toLowerCase().includes(query)
-        return matchesTitle || matchesPlatform || matchesPath
-      }
-
-      return true
-    })
-  }, [historyItems, activeTab, searchQuery])
+  const handlePageSizeChange = (newSize) => {
+    setPageSize(newSize)
+    setCurrentPage(1)
+    setSelectedIds([])
+  }
 
   // Toggle select all
   const handleSelectAll = (e) => {
     if (e.target.checked) {
-      setSelectedIds(filteredItems.map((item) => item.id))
+      setSelectedIds(historyItems.map((item) => item.id))
     } else {
       setSelectedIds([])
     }
@@ -195,6 +262,7 @@ export default function HistoryPage() {
           showToast(`Deleted ${deletedCount} record(s) from history`, 'success')
           setSelectedIds([])
           fetchHistory()
+          fetchSummary()
         } else {
           showError('Delete Failed', 'Failed to delete selected records.')
         }
@@ -225,6 +293,7 @@ export default function HistoryPage() {
         showToast('Download history cleared', 'success')
         setSelectedIds([])
         fetchHistory()
+        fetchSummary()
       } else {
         showError('Clear Failed', res.data?.message || 'Failed to clear download history.')
       }
@@ -252,6 +321,7 @@ export default function HistoryPage() {
         showToast('Record deleted from history', 'success')
         setSelectedIds((prev) => prev.filter((itemId) => itemId !== id))
         fetchHistory()
+        fetchSummary()
       } else {
         showError('Delete Failed', res.data?.message || 'Failed to delete record.')
       }
@@ -268,6 +338,7 @@ export default function HistoryPage() {
       if (res.ok && res.status === 201) {
         showToast('Download queued for retry', 'success')
         fetchHistory()
+        fetchSummary()
       } else {
         showError('Retry Failed', res.data?.message || 'Failed to retry download')
       }
@@ -286,7 +357,7 @@ export default function HistoryPage() {
     { id: 'failed', label: 'Failed', count: failedCount }
   ]
 
-  const isAllSelected = filteredItems.length > 0 && selectedIds.length === filteredItems.length
+  const isAllSelected = historyItems.length > 0 && selectedIds.length === historyItems.length
 
   return (
     <div className="p-6 lg:p-8 max-w-[1400px] w-full mx-auto flex flex-col gap-6 select-none animate-fadeIn">
@@ -310,7 +381,7 @@ export default function HistoryPage() {
             <input
               type="text"
               value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
+              onChange={handleSearchChange}
               placeholder="Search history..."
               className="w-full bg-[#07152E]/90 border border-primary/20 rounded-xl py-2 pl-10 pr-4 text-xs font-medium text-white placeholder:text-text-muted/50 focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/30"
             />
@@ -333,7 +404,7 @@ export default function HistoryPage() {
           label="Total Files"
           accentColor="blue"
           isActive={activeTab === 'all'}
-          onClick={() => setActiveTab('all')}
+          onClick={() => handleSelectTab('all')}
         />
         <StatCard
           icon={Video}
@@ -341,7 +412,7 @@ export default function HistoryPage() {
           label="Videos"
           accentColor="purple"
           isActive={activeTab === 'videos'}
-          onClick={() => setActiveTab('videos')}
+          onClick={() => handleSelectTab('videos')}
         />
         <StatCard
           icon={Music}
@@ -349,7 +420,7 @@ export default function HistoryPage() {
           label="Audio"
           accentColor="cyan"
           isActive={activeTab === 'audio'}
-          onClick={() => setActiveTab('audio')}
+          onClick={() => handleSelectTab('audio')}
         />
         <StatCard icon={HardDrive} count={storageUsed} label="Storage Used" accentColor="cyan" />
       </div>
@@ -358,7 +429,7 @@ export default function HistoryPage() {
       <FilterTabs
         tabs={tabs}
         activeTab={activeTab}
-        onSelectTab={setActiveTab}
+        onSelectTab={handleSelectTab}
         rightAction={
           <button
             type="button"
@@ -390,7 +461,7 @@ export default function HistoryPage() {
                     type="checkbox"
                     checked={isAllSelected}
                     onChange={handleSelectAll}
-                    disabled={filteredItems.length === 0}
+                    disabled={historyItems.length === 0}
                     className="rounded border-primary/30 bg-[#040B1C] text-primary focus:ring-primary/40 cursor-pointer"
                   />
                 </th>
@@ -408,7 +479,7 @@ export default function HistoryPage() {
 
             {/* Table Body */}
             <tbody className="divide-y divide-primary/10 text-xs">
-              {filteredItems.map((item, idx) => {
+              {historyItems.map((item, idx) => {
                 const isSelected = selectedIds.includes(item.id)
                 const isFailed = item.status === 'failed' || item.status === 'cancelled'
 
@@ -431,7 +502,7 @@ export default function HistoryPage() {
 
                     {/* Row Index */}
                     <td className="py-3 px-3 text-center text-text-muted/70 font-mono text-xs">
-                      {idx + 1}
+                      {(safeCurrentPage - 1) * pageSize + idx + 1}
                     </td>
 
                     {/* Media Thumbnail + Title + Platform */}
@@ -595,19 +666,31 @@ export default function HistoryPage() {
               ) : historyItems.length === 0 ? (
                 <tr>
                   <td colSpan={10} className="py-12 text-center text-text-muted">
-                    No download history found. Completed and failed downloads will appear here.
-                  </td>
-                </tr>
-              ) : filteredItems.length === 0 ? (
-                <tr>
-                  <td colSpan={10} className="py-12 text-center text-text-muted">
-                    No history records match the current filter.
+                    {searchQuery.trim()
+                      ? 'No history records match your search query.'
+                      : activeTab !== 'all'
+                        ? 'No history records match the selected filter.'
+                        : 'No download history found. Completed and failed downloads will appear here.'}
                   </td>
                 </tr>
               ) : null}
             </tbody>
           </table>
         </div>
+
+        {/* Reusable Pagination Controls */}
+        <Pagination
+          currentPage={safeCurrentPage}
+          pageSize={pageSize}
+          totalRecords={totalRecords}
+          onPageChange={(page) => {
+            setCurrentPage(page)
+            setSelectedIds([])
+          }}
+          onPageSizeChange={handlePageSizeChange}
+          pageSizeOptions={[10, 20, 50]}
+          recordLabel="history records"
+        />
       </div>
     </div>
   )

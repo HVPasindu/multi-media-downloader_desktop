@@ -711,3 +711,106 @@ export async function clearDownloadHistory({ confirm, statuses }) {
     )
   })
 }
+
+/**
+ * Computes lightweight aggregate summary metrics across all SQLite records
+ * for Downloads Manager and History Page.
+ *
+ * @returns {Promise<{
+ *   downloads: {
+ *     total: number,
+ *     downloading: number,
+ *     queued: number,
+ *     interrupted: number,
+ *     completed: number,
+ *     failed: number,
+ *     cancelled: number
+ *   },
+ *   history: {
+ *     totalFiles: number,
+ *     videos: number,
+ *     audio: number,
+ *     completed: number,
+ *     failed: number,
+ *     storageBytes: number
+ *   }
+ * }>}
+ */
+export async function getDownloadSummary() {
+  const { DownloadJob, DownloadFile } = getDatabase().models
+
+  const [statusCounts, formatCounts, storageResult] = await Promise.all([
+    DownloadJob.findAll({
+      attributes: ['status', [getDatabase().fn('COUNT', getDatabase().col('id')), 'count']],
+      group: ['status'],
+      raw: true
+    }),
+
+    DownloadJob.findAll({
+      where: {
+        status: {
+          [Op.in]: TERMINAL_JOB_STATUSES
+        }
+      },
+      attributes: ['output_format', [getDatabase().fn('COUNT', getDatabase().col('id')), 'count']],
+      group: ['output_format'],
+      raw: true
+    }),
+
+    DownloadFile.findOne({
+      include: [
+        {
+          model: DownloadJob,
+          as: 'downloadJob',
+          required: true,
+          where: { status: 'completed' },
+          attributes: []
+        }
+      ],
+      attributes: [[getDatabase().fn('SUM', getDatabase().col('file_size')), 'totalStorage']],
+      raw: true
+    })
+  ])
+
+  const statusMap = {}
+  let totalJobs = 0
+  for (const row of statusCounts) {
+    const count = Number(row.count) || 0
+    statusMap[row.status] = count
+    totalJobs += count
+  }
+
+  let terminalVideos = 0
+  let terminalAudio = 0
+  for (const row of formatCounts) {
+    const count = Number(row.count) || 0
+    if (row.output_format === 'mp4') terminalVideos = count
+    if (row.output_format === 'mp3') terminalAudio = count
+  }
+
+  const completed = statusMap['completed'] || 0
+  const failed = statusMap['failed'] || 0
+  const cancelled = statusMap['cancelled'] || 0
+  const totalFiles = completed + failed + cancelled
+  const storageBytes = Number(storageResult?.totalStorage) || 0
+
+  return {
+    downloads: {
+      total: totalJobs,
+      downloading: statusMap['downloading'] || 0,
+      queued: statusMap['queued'] || 0,
+      interrupted: statusMap['interrupted'] || 0,
+      completed,
+      failed: failed + cancelled,
+      cancelled
+    },
+    history: {
+      totalFiles,
+      videos: terminalVideos,
+      audio: terminalAudio,
+      completed,
+      failed: failed + cancelled,
+      storageBytes
+    }
+  }
+}

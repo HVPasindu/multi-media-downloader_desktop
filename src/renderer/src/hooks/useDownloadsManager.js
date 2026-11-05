@@ -1,9 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import {
-  listDownloads,
-  notifyDownloadStateChanged,
-  getActiveDownloadsCount
-} from '../services/downloadsApi'
+import { listDownloads, getActiveDownloadsCount } from '../services/downloadsApi'
 import { normalizeDownloadJob } from '../utils/downloadPresentation'
 import { seedKnownFailures, notifyLiveJobFailure } from '../utils/notificationService'
 
@@ -38,6 +34,7 @@ export function useDownloadsManager({
   const [error, setError] = useState(null)
 
   const speedTrackerRef = useRef(new Map())
+  const previousStatusesRef = useRef(new Map())
   const hasActiveRef = useRef(false)
   const isFetchingRef = useRef(false)
   const initialFetchDoneRef = useRef(false)
@@ -70,27 +67,32 @@ export function useDownloadsManager({
             .map((job) => normalizeDownloadJob(job, speedTrackerRef.current))
             .filter(Boolean)
 
-          // On first successful load, seed any existing failures so they never trigger popups
-          if (!initialFetchDoneRef.current) {
-            const initialFailedIds = normalized
-              .filter((j) => j.status === 'failed' || j.status === 'cancelled')
-              .map((j) => j.id)
-            seedKnownFailures(initialFailedIds)
-          } else {
-            // Live poll: check if any job transitioned to failed and alert once
-            for (const item of normalized) {
-              if (item.status === 'failed') {
-                notifyLiveJobFailure(
-                  item.id,
-                  item.errorInfo || { title: 'Download Failed', message: item.errorMessage }
-                )
-              }
+          // Step 10 & Task 03: Only notify when a previously active job transitions to failed
+          const prevStatuses = previousStatusesRef.current
+          for (const item of normalized) {
+            const idStr = String(item.id)
+            const prevStatus = prevStatuses.get(idStr)
+            const wasActive = ['queued', 'downloading', 'interrupted'].includes(prevStatus)
+
+            if (item.status === 'failed' && wasActive) {
+              notifyLiveJobFailure(
+                item.id,
+                item.errorInfo || { title: 'Download Failed', message: item.errorMessage }
+              )
+            } else if (item.status === 'failed' || item.status === 'cancelled') {
+              // Old failure encountered during initial load or pagination: suppress popups
+              seedKnownFailures([item.id])
             }
+
+            prevStatuses.set(idStr, item.status)
           }
 
           // Adaptive polling: check local page active items, fallback to global count
           const localHasActive = normalized.some(
-            (item) => item.status === 'downloading' || item.status === 'queued'
+            (item) =>
+              item.status === 'downloading' ||
+              item.status === 'queued' ||
+              item.status === 'interrupted'
           )
 
           if (localHasActive) {
@@ -109,7 +111,6 @@ export function useDownloadsManager({
           setTotal(Number.isSafeInteger(reportedTotal) ? reportedTotal : normalized.length)
           setError(null)
           initialFetchDoneRef.current = true
-          notifyDownloadStateChanged()
         } else {
           if (!initialFetchDoneRef.current) {
             setError(
