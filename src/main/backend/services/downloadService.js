@@ -37,7 +37,7 @@ import {
   resolveFFmpegLocationDirectory,
   resolveJavaScriptRuntimeOption
 } from './executablePathService.js'
-import { scheduleJobRetry } from './networkRecoveryService.js'
+import { scheduleJobRetry, clearJobRetryState } from './networkRecoveryService.js'
 
 export {
   DownloadError,
@@ -655,6 +655,8 @@ export async function markDownloadJobCompleted(jobId, transaction = null) {
     return null
   }
 
+  clearJobRetryState(jobId)
+
   return await DownloadJob.findByPk(jobId, {
     transaction
   })
@@ -696,6 +698,8 @@ export async function markDownloadJobFailed(jobId, error, expectedStatus = 'down
         return null
       }
 
+      clearJobRetryState(jobId)
+
       return await DownloadJob.findByPk(jobId)
     } catch (updateError) {
       if (isSqliteBusyError(updateError) && attempt < 3) {
@@ -732,6 +736,8 @@ export async function markDownloadJobCancelled(jobId) {
       if (updatedCount !== 1) {
         return null
       }
+
+      clearJobRetryState(jobId)
 
       return await DownloadJob.findByPk(jobId)
     } catch (updateError) {
@@ -778,6 +784,8 @@ export async function cancelRunningDownload(jobId) {
       error: error.message
     }
   }
+
+  clearJobRetryState(jobId)
 
   return {
     success: true
@@ -1094,14 +1102,31 @@ export async function verifyDownloadedFile(finalFilePath, options = {}) {
 }
 
 export async function verifyFinalMediaContent(filePath, expectedFormat) {
-  // Inspect the actual output container and media streams.
-  let probeData
-
-  // Step 04.43 - Dynamically resolve packaged or dev ffprobe executable path
-  const ffprobeExecutable = await resolveFFprobePath()
-
+  // Step 04.43 - Dynamically resolve packaged or dev ffprobe executable path inside protected error handling
+  let ffprobeExecutable
   try {
-    const { stdout } = await execFileAsync(
+    ffprobeExecutable = await resolveFFprobePath()
+  } catch (resolveErr) {
+    if (
+      resolveErr?.code === 'ENOENT' ||
+      resolveErr?.code === DOWNLOAD_ERROR_CODES.FFPROBE_NOT_FOUND
+    ) {
+      throw new DownloadError(
+        DOWNLOAD_ERROR_CODES.FFPROBE_NOT_FOUND,
+        'FFprobe executable was not found. FFmpeg tools must be available in PATH',
+        { cause: resolveErr }
+      )
+    }
+    throw new DownloadError(
+      DOWNLOAD_ERROR_CODES.FFPROBE_FAILED,
+      `FFprobe executable could not be resolved: ${resolveErr.message}`,
+      { cause: resolveErr }
+    )
+  }
+
+  let stdout
+  try {
+    const res = await execFileAsync(
       ffprobeExecutable,
       [
         '-v',
@@ -1118,8 +1143,7 @@ export async function verifyFinalMediaContent(filePath, expectedFormat) {
         maxBuffer: 1024 * 1024
       }
     )
-
-    probeData = JSON.parse(stdout)
+    stdout = res.stdout
   } catch (error) {
     if (error?.code === 'ENOENT') {
       throw new DownloadError(
@@ -1130,9 +1154,20 @@ export async function verifyFinalMediaContent(filePath, expectedFormat) {
     }
 
     throw new DownloadError(
-      DOWNLOAD_ERROR_CODES.OUTPUT_VERIFICATION_FAILED,
-      `Final media verification failed: ${error.message}`,
+      DOWNLOAD_ERROR_CODES.FFPROBE_FAILED,
+      `FFprobe inspection failed: ${error.message}`,
       { cause: error }
+    )
+  }
+
+  let probeData
+  try {
+    probeData = JSON.parse(stdout)
+  } catch (parseError) {
+    throw new DownloadError(
+      DOWNLOAD_ERROR_CODES.FFPROBE_FAILED,
+      `FFprobe returned malformed JSON output: ${parseError.message}`,
+      { cause: parseError }
     )
   }
 
@@ -1347,11 +1382,19 @@ export async function executeDownloadJob(jobId, options = {}) {
       })
       await verifyFinalMediaContent(candidateVerified.filePath, claimedJob.output_format)
     } catch (adoptionErr) {
-      console.warn(
-        `[download] Job ${jobId} candidate output file failed adoption: ${adoptionErr.message}. Removing invalid orphan.`
-      )
-      await removeJobOwnedOutputFile(execution.existingValidFile, execution.downloadPath, jobId)
-      candidateVerified = null
+      if (adoptionErr?.code === DOWNLOAD_ERROR_CODES.OUTPUT_VERIFICATION_FAILED) {
+        console.warn(
+          `[download] Job ${jobId} candidate output file confirmed invalid: ${adoptionErr.message}. Removing invalid orphan.`
+        )
+        await removeJobOwnedOutputFile(execution.existingValidFile, execution.downloadPath, jobId)
+        candidateVerified = null
+      } else {
+        // Operational verification failure (e.g. FFprobe missing/failed) -> preserve output file and abort adoption
+        console.warn(
+          `[download] Job ${jobId} candidate output file inspection error: ${adoptionErr.message}. Output preserved.`
+        )
+        throw adoptionErr
+      }
     }
 
     if (candidateVerified) {
@@ -1572,7 +1615,7 @@ export async function executeDownloadJob(jobId, options = {}) {
 
       await verifyFinalMediaContent(verifiedFile.filePath, claimedJob.output_format)
     } catch (verifyErr) {
-      verificationFailed = true
+      verificationFailed = verifyErr?.code === DOWNLOAD_ERROR_CODES.OUTPUT_VERIFICATION_FAILED
       throw verifyErr
     }
 
@@ -1775,6 +1818,10 @@ export async function executeDownloadJob(jobId, options = {}) {
             id: jobId
           }
         })
+
+        if (updatePayload.status === 'interrupted') {
+          scheduleJobRetry(jobId)
+        }
       } catch (statusError) {
         console.error(
           `[download] Failed to persist interrupted state for job ${jobId}:`,

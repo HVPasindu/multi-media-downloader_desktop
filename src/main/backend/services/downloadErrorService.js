@@ -9,6 +9,7 @@ export const DOWNLOAD_ERROR_CODES = Object.freeze({
   YT_DLP_NOT_FOUND: 'YT_DLP_NOT_FOUND',
   FFMPEG_NOT_FOUND: 'FFMPEG_NOT_FOUND',
   FFPROBE_NOT_FOUND: 'FFPROBE_NOT_FOUND',
+  FFPROBE_FAILED: 'FFPROBE_FAILED',
   YT_DLP_FAILED: 'YT_DLP_FAILED',
   FFMPEG_FAILED: 'FFMPEG_FAILED',
   DISK_FULL: 'DISK_FULL',
@@ -36,6 +37,8 @@ export const DEFAULT_ERROR_MESSAGES = Object.freeze({
     'FFmpeg executable was not found. Please ensure FFmpeg is installed and available in PATH.',
   [DOWNLOAD_ERROR_CODES.FFPROBE_NOT_FOUND]:
     'FFprobe executable was not found. FFmpeg tools must be available in PATH.',
+  [DOWNLOAD_ERROR_CODES.FFPROBE_FAILED]:
+    'FFprobe could not inspect the downloaded file. The output has been preserved for another verification attempt.',
   [DOWNLOAD_ERROR_CODES.YT_DLP_FAILED]:
     'Download engine encountered an error while processing the media.',
   [DOWNLOAD_ERROR_CODES.FFMPEG_FAILED]: 'Audio or video processing failed.',
@@ -184,6 +187,7 @@ export function classifyDownloadError(error, context = {}) {
       'ECONNREFUSED',
       'ENOTFOUND',
       'EAI_AGAIN',
+      'DNS_LOOKUP_FAILED',
       'ENETUNREACH',
       'EHOSTUNREACH',
       'EPIPE'

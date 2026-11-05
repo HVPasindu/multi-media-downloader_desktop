@@ -469,47 +469,66 @@ export function scheduleJobRetry(jobId, customDelayMs = null) {
     existing.timer = null
   }
 
-  const MAX_RETRIES = 5
-  if (existing.retryCount >= MAX_RETRIES) {
-    console.warn(
-      `[network-recovery] Job ${jobId} exceeded max DNS/network preparation retries (${MAX_RETRIES}).`
-    )
-    try {
-      const DownloadJob = getDatabase()?.models?.DownloadJob
-      if (DownloadJob) {
-        void DownloadJob.findByPk(jobId).then((j) => {
-          if (j && j.status === 'interrupted') {
-            void j.update({
-              status: 'failed',
-              error_message:
-                'Download preparation failed after multiple retries: DNS or network unreachable'
-            })
-          }
-        })
-      }
-    } catch {
-      // ignore
-    }
-    jobRetryState.delete(jobId)
-    return
-  }
-
   existing.retryCount += 1
-  const delayMs = customDelayMs ?? Math.min(2000 * Math.pow(2, existing.retryCount - 1), 30000)
+  const backoffPower = Math.min(existing.retryCount, 5)
+  const delayMs = customDelayMs ?? Math.min(2000 * Math.pow(2, backoffPower - 1), 30000)
+
   console.log(
-    `[network-recovery] Scheduling retry for job ${jobId} in ${delayMs}ms (attempt ${existing.retryCount}/${MAX_RETRIES})`
+    `[network-recovery] Scheduling retry for job ${jobId} in ${delayMs}ms (attempt ${existing.retryCount}, delay capped at 30s)`
   )
 
   existing.timer = setTimeout(async () => {
     existing.timer = null
     try {
+      const DownloadJob = getDatabase()?.models?.DownloadJob
+      if (!DownloadJob) return
+
+      const job = await DownloadJob.findByPk(jobId)
+      if (!job || job.status !== 'interrupted') {
+        jobRetryState.delete(jobId)
+        return
+      }
+
+      const online = await checkNetworkConnectivity({ timeoutMs: 2000 }).catch(() => false)
+      if (!online) {
+        console.log(
+          `[network-recovery] Network remains offline during retry check for job ${jobId}. Rescheduling next check...`
+        )
+        scheduleJobRetry(jobId)
+        return
+      }
+
       await resumeSingleInterruptedJob(jobId)
     } catch (err) {
-      console.warn(`[network-recovery] Auto-retry failed for job ${jobId}: ${err.message}`)
+      console.warn(`[network-recovery] Auto-retry check failed for job ${jobId}: ${err.message}`)
+      try {
+        const DownloadJob = getDatabase()?.models?.DownloadJob
+        const j = await DownloadJob?.findByPk(jobId)
+        if (j && j.status === 'interrupted') {
+          scheduleJobRetry(jobId)
+        } else {
+          jobRetryState.delete(jobId)
+        }
+      } catch {
+        jobRetryState.delete(jobId)
+      }
     }
   }, delayMs)
 
   jobRetryState.set(jobId, existing)
+  return { retryCount: existing.retryCount, delayMs }
+}
+
+/**
+ * Returns current retry state for a job (or null if not tracked).
+ *
+ * @param {number} jobId
+ * @returns {{ retryCount: number, hasTimer: boolean }|null}
+ */
+export function getJobRetryState(jobId) {
+  const existing = jobRetryState.get(jobId)
+  if (!existing) return null
+  return { retryCount: existing.retryCount, hasTimer: !!existing.timer }
 }
 
 /**

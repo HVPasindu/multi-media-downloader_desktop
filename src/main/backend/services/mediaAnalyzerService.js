@@ -79,10 +79,17 @@ export function getRateLimitCooldown(platform) {
 export function classifyAnalysisError(error, platform) {
   const message = String(error?.message || '')
   const stderr = String(error?.stderr || '')
-  const combined = `${message} ${stderr} ${platform || ''}`
+  const combined = `${message} ${stderr}`
+  const isYouTube =
+    String(platform || '')
+      .toLowerCase()
+      .trim() === 'youtube'
 
-  // 1. YouTube PO Token / Visitor Data Required (Priority 1)
-  if (/po[-_ ]token|proof[- ]of[- ]origin|visitor[-_ ]data|visitorData/i.test(combined)) {
+  // 1. YouTube PO Token / Visitor Data Required (Priority 1 - Strictly YouTube)
+  if (
+    isYouTube &&
+    /po[-_ ]token|proof[- ]of[- ]origin|visitor[-_ ]data|visitorData/i.test(combined)
+  ) {
     return {
       code: 'YOUTUBE_PO_TOKEN_REQUIRED',
       userMessage:
@@ -97,7 +104,7 @@ export function classifyAnalysisError(error, platform) {
       combined
     )
   ) {
-    if (platform === 'youtube') {
+    if (isYouTube) {
       return {
         code: 'YOUTUBE_AUTH_REQUIRED',
         userMessage:
@@ -118,7 +125,7 @@ export function classifyAnalysisError(error, platform) {
       combined
     )
   ) {
-    if (platform === 'youtube') {
+    if (isYouTube) {
       return {
         code: 'YOUTUBE_RATE_LIMITED',
         userMessage: 'YouTube rate limit encountered (HTTP 429). Please wait before retrying.',
@@ -194,7 +201,10 @@ export async function analyzeMedia(sourceUrl) {
   const cooldownUntil = rateLimitCooldowns.get(platform) || 0
   if (Date.now() < cooldownUntil) {
     const remainingSeconds = Math.max(1, Math.ceil((cooldownUntil - Date.now()) / 1000))
-    const isYt = platform === 'youtube'
+    const isYt =
+      String(platform || '')
+        .toLowerCase()
+        .trim() === 'youtube'
     const err = new Error(
       isYt
         ? 'YouTube rate limit cooldown active. Please wait before retrying.'

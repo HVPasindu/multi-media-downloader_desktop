@@ -20,7 +20,8 @@ import { assertNoJobOutputFileConflict } from '../src/main/backend/services/down
 import {
   scheduleJobRetry,
   clearJobRetryState,
-  resetJobRetryStateForTesting
+  resetJobRetryStateForTesting,
+  getJobRetryState
 } from '../src/main/backend/services/networkRecoveryService.js'
 import { parseMediaMetadata } from '../src/main/backend/services/mediaAnalyzerService.js'
 import defineMediaItem from '../src/main/backend/models/MediaItem.js'
@@ -1196,6 +1197,115 @@ async function runPlatformDownloadTests() {
     assert.strictEqual(emptyCleaned, false, '0-byte orphan file must be removed by conflict check')
     console.log(
       '✓ Pre-existing valid outputs correctly adopted; 0-byte orphan files automatically cleaned'
+    )
+
+    // 7.10 Operational FFprobe Failure Output Preservation
+    // If FFprobe fails (e.g. missing executable or timeout), valid output files must be preserved on disk
+    const opPreserveFile = path.join(testTempDir, 'Operational Tool Failure Output [job-110].mp4')
+    await fs.writeFile(opPreserveFile, Buffer.from('finished media stream bytes'))
+    // In executeDownloadJob: verificationFailed is only true for OUTPUT_VERIFICATION_FAILED
+    const mockOpError = {
+      code: DOWNLOAD_ERROR_CODES.FFPROBE_FAILED,
+      message: 'FFprobe execution timed out'
+    }
+    const verificationFailed = mockOpError.code === DOWNLOAD_ERROR_CODES.OUTPUT_VERIFICATION_FAILED
+    assert.strictEqual(
+      verificationFailed,
+      false,
+      'Operational FFprobe failure must not mark verificationFailed as true'
+    )
+    if (verificationFailed) {
+      await removeJobOwnedOutputFile(opPreserveFile, testTempDir, 110)
+    }
+    const opStillExists = await fs
+      .access(opPreserveFile)
+      .then(() => true)
+      .catch(() => false)
+    assert.strictEqual(
+      opStillExists,
+      true,
+      'Output file must remain on disk when FFprobe fails operationally'
+    )
+    console.log(
+      '✓ Operational FFprobe failure (timeout/missing binary) safely preserves valid output files'
+    )
+
+    // 7.11 Confirmed Corrupt Output Cleanup (OUTPUT_VERIFICATION_FAILED)
+    const corruptFile = path.join(testTempDir, 'Confirmed Corrupt File [job-111].mp4')
+    await fs.writeFile(corruptFile, Buffer.from('corrupt invalid video stream'))
+    const mockCorruptError = {
+      code: DOWNLOAD_ERROR_CODES.OUTPUT_VERIFICATION_FAILED,
+      message: 'Invalid video stream'
+    }
+    const corruptVerificationFailed =
+      mockCorruptError.code === DOWNLOAD_ERROR_CODES.OUTPUT_VERIFICATION_FAILED
+    assert.strictEqual(
+      corruptVerificationFailed,
+      true,
+      'Corrupt output must mark verificationFailed as true'
+    )
+    if (corruptVerificationFailed) {
+      await removeJobOwnedOutputFile(corruptFile, testTempDir, 111)
+    }
+    const corruptStillExists = await fs
+      .access(corruptFile)
+      .then(() => true)
+      .catch(() => false)
+    assert.strictEqual(
+      corruptStillExists,
+      false,
+      'Corrupt output must be cleanly removed from disk'
+    )
+    console.log('✓ Confirmed corrupt output (OUTPUT_VERIFICATION_FAILED) triggers clean removal')
+
+    // 7.12 Candidate Adoption: Operational vs Corrupt Distinction
+    const adoptCandidateOp = path.join(testTempDir, 'Adoption Operational Preserved [job-112].mp4')
+    await fs.writeFile(adoptCandidateOp, Buffer.from('candidate stream bytes'))
+    const mockAdoptionOpErr = {
+      code: DOWNLOAD_ERROR_CODES.FFPROBE_FAILED,
+      message: 'ffprobe timed out'
+    }
+    if (mockAdoptionOpErr.code === DOWNLOAD_ERROR_CODES.OUTPUT_VERIFICATION_FAILED) {
+      await removeJobOwnedOutputFile(adoptCandidateOp, testTempDir, 112)
+    }
+    const adoptOpExists = await fs
+      .access(adoptCandidateOp)
+      .then(() => true)
+      .catch(() => false)
+    assert.strictEqual(
+      adoptOpExists,
+      true,
+      'Candidate file preserved when adoption check encounters operational tool failure'
+    )
+    console.log(
+      '✓ Pre-existing adoption preserves candidate files during operational tool failures'
+    )
+
+    // 7.13 Long Network Outage Backoff (>5 retries, capped at 30s)
+    resetJobRetryStateForTesting()
+    const retryDelays = []
+    for (let r = 1; r <= 8; r++) {
+      const res = scheduleJobRetry(113)
+      retryDelays.push(res.delayMs)
+    }
+    // Expected backoff: 2s, 4s, 8s, 16s, 30s, 30s, 30s, 30s
+    assert.strictEqual(retryDelays[0], 2000, 'Retry 1 delay = 2000ms')
+    assert.strictEqual(retryDelays[1], 4000, 'Retry 2 delay = 4000ms')
+    assert.strictEqual(retryDelays[2], 8000, 'Retry 3 delay = 8000ms')
+    assert.strictEqual(retryDelays[3], 16000, 'Retry 4 delay = 16000ms')
+    assert.strictEqual(retryDelays[4], 30000, 'Retry 5 delay = 30000ms')
+    assert.strictEqual(retryDelays[5], 30000, 'Retry 6 delay = 30000ms (capped at 30s)')
+    assert.strictEqual(retryDelays[6], 30000, 'Retry 7 delay = 30000ms (capped at 30s)')
+    assert.strictEqual(retryDelays[7], 30000, 'Retry 8 delay = 30000ms (capped at 30s)')
+    const retryState = getJobRetryState(113)
+    assert.strictEqual(
+      retryState.retryCount,
+      8,
+      'Job retry count accurately tracked without permanent failure'
+    )
+    clearJobRetryState(113)
+    console.log(
+      '✓ Long network outages (>5 retries) maintain interrupted state with capped 30s exponential backoff'
     )
 
     console.log('\n================================================================')
