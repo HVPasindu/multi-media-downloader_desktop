@@ -89,6 +89,10 @@ const TEST_SUITES = [
   {
     name: 'Phase 05: Step 12 Downloads Manager Pagination & Search Suite',
     file: 'tests/step12_pagination_search_tests.js'
+  },
+  {
+    name: 'Order 10: Progress, ETA, File Size, Same-Job Retry & Clear Failed Suite',
+    file: 'tests/download_progress_eta_retry_tests.js'
   }
 ]
 

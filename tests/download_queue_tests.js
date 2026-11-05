@@ -197,23 +197,29 @@ async function runDownloadQueueTests() {
     // 4.1: Retry failed job
     const retryResult = await retryDownloadJob(failedJob.id, { enqueue: mockEnqueue })
     assert.equal(retryResult.outcome, 'created', '4.1: Retry created successfully')
-    assert.ok(retryResult.retryJobId !== failedJob.id, '4.1: Retry creates a NEW Job ID')
+    assert.equal(retryResult.originalJobId, failedJob.id, '4.1: Original Job ID matches')
+    assert.equal(retryResult.retryJobId, failedJob.id, '4.1: Retry reuses the SAME Job ID')
     assert.ok(enqueuedJobIds.includes(retryResult.retryJobId), '4.1: Retry job was enqueued')
 
-    // Verify original failed job is preserved unchanged
+    // Verify original failed job transitioned in-place to queued
     const originalCheck = await DownloadJob.findByPk(failedJob.id)
-    assert.equal(originalCheck.status, 'failed', '4.1: Original job remains failed')
-    assert.equal(originalCheck.error_message, 'Simulated network drop')
+    assert.equal(originalCheck.status, 'queued', '4.1: Original job is now queued')
+    assert.equal(originalCheck.error_message, null, '4.1: Error message is cleared')
+    assert.equal(originalCheck.output_format, 'mp4')
+    assert.equal(originalCheck.quality, '480p')
 
-    // Verify new job was inserted with queued status
-    const newJob = await DownloadJob.findByPk(retryResult.retryJobId)
-    assert.equal(newJob.status, 'queued', '4.1: Fresh retry job is queued')
-    assert.equal(newJob.output_format, 'mp4')
-    assert.equal(newJob.quality, '480p')
+    // Verify exactly one job row exists in the database
+    const allMatching = await DownloadJob.findAll({ where: { id: failedJob.id } })
+    assert.equal(allMatching.length, 1, '4.1: Exactly one database row exists')
 
     // 4.2: Retry cancelled job
     const retryCancelledResult = await retryDownloadJob(activeMp4Job.id, { enqueue: mockEnqueue })
     assert.equal(retryCancelledResult.outcome, 'created', '4.2: Cancelled job can be retried')
+    assert.equal(
+      retryCancelledResult.retryJobId,
+      activeMp4Job.id,
+      '4.2: Cancelled retry reuses SAME Job ID'
+    )
     assert.ok(
       enqueuedJobIds.includes(retryCancelledResult.retryJobId),
       '4.2: Retry job was enqueued'
@@ -742,16 +748,16 @@ async function runDownloadQueueTests() {
       const resD = await retryDownloadJob(jobD.id, { enqueue: (id) => enqueuedD.push(id) })
       assert.equal(resD.outcome, 'created', 'Scenario D: outcome is created')
       assert.equal(resD.originalJobId, jobD.id, 'Scenario D: originalJobId matches')
-      assert.notEqual(resD.retryJobId, jobD.id, 'Scenario D: new distinct Job ID created')
-      assert.deepEqual(enqueuedD, [resD.retryJobId], 'Scenario D: new distinct Job ID enqueued')
+      assert.equal(resD.retryJobId, jobD.id, 'Scenario D: same Job ID reused for retry')
+      assert.deepEqual(enqueuedD, [jobD.id], 'Scenario D: same Job ID enqueued')
 
       const reloadedD = await DownloadJob.findByPk(jobD.id)
       assert.equal(
         reloadedD.status,
-        'failed',
-        'Scenario D: original failed job preserved as failed'
+        'queued',
+        'Scenario D: original failed job updated in-place to queued'
       )
-      console.log('✓ Scenario D: Normal failed download creates new Job ID and preserves original.')
+      console.log('✓ Scenario D: Normal failed download correctly reuses same Job ID.')
     } finally {
       resetQueueForTesting()
       stopQueueForShutdown()

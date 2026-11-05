@@ -122,3 +122,155 @@ export function getMediaFormatAvailability(analyzedMedia) {
     defaultFormat
   }
 }
+
+/**
+ * Formats a raw number of bytes into a human-readable string with units (e.g. 452 MB, 1.2 GB).
+ *
+ * @param {number|null|undefined} bytes - Total bytes
+ * @param {number} [decimals=1] - Decimal precision
+ * @returns {string|null} Formatted size string or null if invalid
+ */
+export function formatBytes(bytes, decimals = 1) {
+  if (bytes === null || bytes === undefined || !Number.isFinite(bytes) || bytes < 0) {
+    return null
+  }
+  if (bytes === 0) return '0 B'
+
+  const k = 1024
+  const dm = decimals < 0 ? 0 : decimals
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB']
+  const i = Math.floor(Math.log(bytes) / Math.log(k))
+  const clampedIndex = Math.min(i, sizes.length - 1)
+
+  return `${parseFloat((bytes / Math.pow(k, clampedIndex)).toFixed(dm))} ${sizes[clampedIndex]}`
+}
+
+/**
+ * Estimates the file size for an MP4 quality option based on analyzed metadata
+ * and the backend's format-selection rules.
+ *
+ * @param {object|null|undefined} analyzedMedia
+ * @param {string} [requestedQuality='best'] - Resolution string (e.g. '1080p') or 'best'
+ * @returns {string} Formatted size (e.g. "~52 MB" or "Size unavailable")
+ */
+export function estimateMp4QualitySize(analyzedMedia, requestedQuality = 'best') {
+  if (!analyzedMedia || typeof analyzedMedia !== 'object') {
+    return 'Size unavailable'
+  }
+
+  const mp4Qualities = extractMp4Qualities(analyzedMedia)
+  if (!mp4Qualities || mp4Qualities.length === 0) {
+    return 'Size unavailable'
+  }
+
+  let targetQuality = requestedQuality
+  if (
+    !targetQuality ||
+    targetQuality === 'best' ||
+    targetQuality === 'Best' ||
+    !mp4Qualities.includes(targetQuality)
+  ) {
+    targetQuality = mp4Qualities[0]
+  }
+
+  const availableFormats = analyzedMedia.availableFormats || {}
+  const mp4Formats = Array.isArray(availableFormats.mp4Formats) ? availableFormats.mp4Formats : []
+  const audioFormats = Array.isArray(availableFormats.audioFormats)
+    ? availableFormats.audioFormats
+    : []
+
+  const hasFormatId = (format) =>
+    typeof format?.formatId === 'string' && format.formatId.trim().length > 0
+
+  const matchingVideos = mp4Formats.filter(
+    (format) =>
+      (format?.quality === targetQuality || `${format?.height}p` === targetQuality) &&
+      hasFormatId(format)
+  )
+
+  // 1. Prefer video-only MP4 with separate compatible audio
+  const videoOnly = [...matchingVideos].reverse().find((format) => format.audioIncluded === false)
+
+  const isPreferredAudio = (format) => {
+    if (!hasFormatId(format)) return false
+    const ext = String(format.extension || '').toLowerCase()
+    const codec = String(format.audioCodec || '').toLowerCase()
+    return (
+      ext === 'm4a' ||
+      ext === 'mp4' ||
+      ext === 'aac' ||
+      codec.includes('aac') ||
+      codec.includes('mp4a')
+    )
+  }
+
+  const compatibleAudio =
+    [...audioFormats].reverse().find(isPreferredAudio) ||
+    [...audioFormats].reverse().find(hasFormatId)
+
+  // 2. Combined stream
+  const combinedVideo = [...matchingVideos]
+    .reverse()
+    .find((format) => format.audioIncluded === true)
+
+  if (videoOnly && compatibleAudio) {
+    const vSize = Number(videoOnly.fileSize)
+    const aSize = Number(compatibleAudio.fileSize)
+    if (!Number.isFinite(vSize) || vSize <= 0 || !Number.isFinite(aSize) || aSize <= 0) {
+      return 'Size unavailable'
+    }
+    const totalBytes = vSize + aSize
+    const isApprox = Boolean(videoOnly.isApproximate || compatibleAudio.isApproximate)
+    const formatted = formatBytes(totalBytes)
+    return formatted ? (isApprox ? `~${formatted}` : formatted) : 'Size unavailable'
+  } else if (combinedVideo) {
+    const cSize = Number(combinedVideo.fileSize)
+    if (!Number.isFinite(cSize) || cSize <= 0) {
+      return 'Size unavailable'
+    }
+    const isApprox = Boolean(combinedVideo.isApproximate)
+    const formatted = formatBytes(cSize)
+    return formatted ? (isApprox ? `~${formatted}` : formatted) : 'Size unavailable'
+  }
+
+  return 'Size unavailable'
+}
+
+/**
+ * Estimates MP3 output file size based on duration and bitrate.
+ * Formula: (durationSeconds * bitrateKbps * 1000) / 8
+ *
+ * @param {object|null|undefined} analyzedMedia
+ * @param {number|string} bitrateKbps - e.g. 128, 192, 320
+ * @returns {string} Formatted size (e.g. "~5.2 MB" or "Size unavailable")
+ */
+export function estimateMp3BitrateSize(analyzedMedia, bitrateKbps) {
+  if (!analyzedMedia || typeof analyzedMedia !== 'object') {
+    return 'Size unavailable'
+  }
+
+  const durationSeconds =
+    Number.isFinite(analyzedMedia.durationSeconds) && analyzedMedia.durationSeconds > 0
+      ? analyzedMedia.durationSeconds
+      : Number.isFinite(analyzedMedia.duration) && analyzedMedia.duration > 0
+        ? analyzedMedia.duration
+        : null
+
+  if (!durationSeconds) {
+    return 'Size unavailable'
+  }
+
+  const numBitrate =
+    typeof bitrateKbps === 'number'
+      ? bitrateKbps
+      : parseInt(String(bitrateKbps).replace(/\D+/g, ''), 10)
+
+  if (!Number.isFinite(numBitrate) || numBitrate <= 0) {
+    return 'Size unavailable'
+  }
+
+  const estimatedBytes = (durationSeconds * numBitrate * 1000) / 8
+  const formatted = formatBytes(estimatedBytes)
+
+  return formatted ? `~${formatted}` : 'Size unavailable'
+}

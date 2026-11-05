@@ -33,7 +33,9 @@ import { showConfirm, showToast, showError } from '../utils/notificationService'
 import {
   formatMediaDuration,
   getMediaFormatAvailability,
-  extractMp4Qualities
+  extractMp4Qualities,
+  estimateMp4QualitySize,
+  estimateMp3BitrateSize
 } from '../utils/mediaMetadata'
 import { extractUrlFromDataTransfer, validateMediaUrlInput } from '../utils/mediaUrlInput'
 import { useDownloadDuplicateGuard } from '../hooks/useDownloadDuplicateGuard'
@@ -1237,12 +1239,14 @@ export default function DownloaderPage() {
                       title: 'Best',
                       sub: highestAvailableQuality
                         ? `${highestAvailableQuality} 👑`
-                        : 'Available 👑'
+                        : 'Available 👑',
+                      size: estimateMp4QualitySize(analyzedMedia, 'best')
                     },
                     ...mp4Qualities.map((q) => ({
                       id: q,
                       title: q,
-                      sub: getQualitySubLabel(q)
+                      sub: getQualitySubLabel(q),
+                      size: estimateMp4QualitySize(analyzedMedia, q)
                     }))
                   ].map((q) => {
                     const isSelected = selectedVideoQuality === q.id
@@ -1263,6 +1267,11 @@ export default function DownloaderPage() {
                       >
                         <div className="text-xs font-extrabold">{q.title}</div>
                         <div className="text-[10px] text-text-muted/80">{q.sub}</div>
+                        {q.size && (
+                          <div className="text-[10px] text-cyan-400/90 font-medium mt-0.5">
+                            {q.size}
+                          </div>
+                        )}
                       </button>
                     )
                   })
@@ -1297,6 +1306,7 @@ export default function DownloaderPage() {
                     { bitrate: 320, label: '320', unit: 'kbps' }
                   ].map((b) => {
                     const isSelected = selectedAudioBitrate === b.bitrate
+                    const sizeLabel = estimateMp3BitrateSize(analyzedMedia, b.bitrate)
 
                     return (
                       <button
@@ -1314,6 +1324,11 @@ export default function DownloaderPage() {
                       >
                         <div className="text-xs font-extrabold">{b.label}</div>
                         <div className="text-[10px] text-text-muted/80">{b.unit}</div>
+                        {sizeLabel && (
+                          <div className="text-[10px] text-cyan-400/90 font-medium mt-0.5">
+                            {sizeLabel}
+                          </div>
+                        )}
                       </button>
                     )
                   })
@@ -1487,16 +1502,23 @@ export default function DownloaderPage() {
                           </span>
                         </div>
 
-                        <div className="text-[10px] text-text-muted mt-0.5">
-                          {item.format} • {item.quality} • {item.fileSize || item.size}
+                        <div className="text-[10px] text-text-muted mt-0.5 flex items-center justify-between">
+                          <span>
+                            {item.format} • {item.quality}
+                          </span>
+                          {isDownloading && item.speedText && item.speedText !== '—' && (
+                            <span className="text-cyan-400 font-semibold">{item.speedText}</span>
+                          )}
                         </div>
 
                         {/* Downloading state: active progress bar */}
                         {isDownloading && (
                           <div className="mt-1.5 flex flex-col gap-1">
                             <div className="flex items-center justify-between text-[10px]">
-                              <span className="text-[#19D8FF] font-semibold">
-                                {item.statusText || `Downloading... ${item.progress}%`}
+                              <span className="text-text-muted">
+                                {item.progressText !== '0 B'
+                                  ? item.progressText
+                                  : item.fileSize || item.size}
                               </span>
                               <span className="text-white font-bold">{item.progress}%</span>
                             </div>
@@ -1506,6 +1528,12 @@ export default function DownloaderPage() {
                                 style={{ width: `${item.progress}%` }}
                               />
                             </div>
+                            {item.etaDisplay && (
+                              <div className="text-[10px] text-text-muted/80">
+                                Estimated time remaining:{' '}
+                                <span className="text-white font-medium">{item.etaDisplay}</span>
+                              </div>
+                            )}
                           </div>
                         )}
 
