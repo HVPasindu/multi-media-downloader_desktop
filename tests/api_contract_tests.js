@@ -534,15 +534,25 @@ async function runAllApiContractTests() {
     })
     assertConflictResponse(resDeleteActive.status, resDeleteActive.body)
 
-    // Now delete the terminal cancelled job (cancelTargetJob.id) -> should succeed with 200 OK
+    // Now delete a terminal cancelled job (terminalJob.id) -> should succeed with 200 OK
+    const terminalJob = await DownloadJob.create({
+      media_id: testMediaItem.id,
+      source_type: 'link',
+      status: 'cancelled',
+      output_format: 'mp3',
+      audio_bitrate_kbps: 192,
+      progress: 0,
+      downloaded_bytes: 0
+    })
+
     const resDeleteTerminal = await makeHttpRequest({
       port: testPort,
-      path: `/api/downloads/${cancelTargetJob.id}`,
+      path: `/api/downloads/${terminalJob.id}`,
       method: 'DELETE',
       headers: authHeaders
     })
     assertHistoryDeleteResponse(resDeleteTerminal.status, resDeleteTerminal.body)
-    assert.equal(resDeleteTerminal.body.data.id, cancelTargetJob.id)
+    assert.equal(resDeleteTerminal.body.data.id, terminalJob.id)
     assert.equal(resDeleteTerminal.body.data.deleted, true)
     console.log('  -> PASS: Category X valid\n')
 

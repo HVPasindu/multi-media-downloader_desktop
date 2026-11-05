@@ -206,6 +206,37 @@ export default function DownloadsPage() {
     }
   }
 
+  // Permanently clear failed download records from SQLite history (Order 09)
+  const handleClearFailed = async () => {
+    const confirmed = await showConfirm(
+      'Clear Failed Downloads?',
+      'This will permanently remove failed download records from history. Media files on disk will not be deleted.',
+      {
+        confirmButtonText: 'Clear Failed',
+        isDanger: true
+      }
+    )
+
+    if (!confirmed) return
+
+    try {
+      const res = await clearDownloadHistory({
+        confirm: true,
+        statuses: ['failed']
+      })
+
+      if (res.ok && res.data?.success) {
+        showToast('Failed downloads cleared from history', 'success')
+        if (typeof retry === 'function') retry()
+        fetchGlobalCounts()
+      } else {
+        showError('Clear Failed', res.data?.message || 'Failed to clear failed downloads.')
+      }
+    } catch (err) {
+      showError('Clear Failed', err?.message || 'An unexpected error occurred.')
+    }
+  }
+
   const tabs = [
     { id: 'all', label: 'All', count: globalCounts.total },
     { id: 'downloading', label: 'Downloading', count: globalCounts.downloading },
@@ -290,25 +321,40 @@ export default function DownloadsPage() {
         />
       </div>
 
-      {/* ----------------- FILTER TABS & CLEAR COMPLETED ----------------- */}
+      {/* ----------------- FILTER TABS & CLEAR ACTIONS ----------------- */}
       <FilterTabs
         tabs={tabs}
         activeTab={activeTab}
         onSelectTab={handleSelectTab}
         rightAction={
-          <button
-            type="button"
-            onClick={handleClearCompleted}
-            disabled={globalCounts.completed === 0}
-            className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold transition-all ${
-              globalCounts.completed > 0
-                ? 'text-text-muted hover:text-white bg-[#07152E]/80 hover:bg-[#0B1C38] border border-primary/15 cursor-pointer'
-                : 'text-text-muted/40 bg-[#07152E]/40 border border-primary/10 cursor-not-allowed'
-            }`}
-          >
-            <Trash2 className="w-3.5 h-3.5" />
-            <span>Clear Completed</span>
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleClearFailed}
+              disabled={globalCounts.failed === 0}
+              className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold transition-all ${
+                globalCounts.failed > 0
+                  ? 'text-rose-400 hover:text-white bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/20 cursor-pointer'
+                  : 'text-text-muted/40 bg-[#07152E]/40 border border-primary/10 cursor-not-allowed'
+              }`}
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              <span>Clear Failed</span>
+            </button>
+            <button
+              type="button"
+              onClick={handleClearCompleted}
+              disabled={globalCounts.completed === 0}
+              className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold transition-all ${
+                globalCounts.completed > 0
+                  ? 'text-text-muted hover:text-white bg-[#07152E]/80 hover:bg-[#0B1C38] border border-primary/15 cursor-pointer'
+                  : 'text-text-muted/40 bg-[#07152E]/40 border border-primary/10 cursor-not-allowed'
+              }`}
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              <span>Clear Completed</span>
+            </button>
+          </div>
         }
       />
 
@@ -406,6 +452,18 @@ export default function DownloadsPage() {
                             style={{ width: `${item.progress}%` }}
                           />
                         </div>
+
+                        {/* Live Speed & ETA when downloading */}
+                        {isDownloading && (item.speedText || item.etaText) && (
+                          <div className="flex items-center justify-between text-[10px] text-text-muted mt-0.5">
+                            <span className="text-cyan-400 font-semibold">
+                              {item.speedText || '—'}
+                            </span>
+                            <span className="text-text-muted/80">
+                              {item.etaText || 'Calculating...'}
+                            </span>
+                          </div>
+                        )}
                       </div>
                     </td>
 

@@ -412,7 +412,8 @@ export function parseMediaMetadata(metadata, platform, sourceUrl) {
           : format.audio_ext === 'mp4' || format.ext === 'mp4' || format.ext === 'm4a'
             ? 'aac'
             : null,
-      fileSize: format.filesize ?? format.filesize_approx ?? null
+      fileSize: format.filesize ?? format.filesize_approx ?? null,
+      isApproximate: !format.filesize && Boolean(format.filesize_approx)
     }))
 
   const hasSeparateAudio = audioFormats.length > 0
@@ -448,7 +449,8 @@ export function parseMediaMetadata(metadata, platform, sourceUrl) {
         height: format.height,
         videoCodec: format.vcodec ?? 'h264',
         audioIncluded,
-        fileSize: format.filesize ?? format.filesize_approx ?? null
+        fileSize: format.filesize ?? format.filesize_approx ?? null,
+        isApproximate: !format.filesize && Boolean(format.filesize_approx)
       }
     })
 

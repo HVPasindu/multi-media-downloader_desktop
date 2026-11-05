@@ -1530,8 +1530,17 @@ export async function executeDownloadJob(jobId, options = {}) {
   }
 
   // Schedule downloaded byte updates
+  let lastScheduledTotalBytes = null
+  let lastScheduledTotalIsEstimate = false
+  let latestObservedTotalBytes = null
+  let latestObservedTotalIsEstimate = false
 
-  const scheduleDownloadedBytes = (downloadedBytes, force = false) => {
+  const scheduleDownloadedBytes = (
+    downloadedBytes,
+    force = false,
+    totalBytes = null,
+    totalBytesIsEstimate = false
+  ) => {
     // Validate byte count
     if (!Number.isSafeInteger(downloadedBytes) || downloadedBytes < 0) {
       return
@@ -1540,8 +1549,25 @@ export async function executeDownloadJob(jobId, options = {}) {
     // Remember the latest observed network bytes
     latestObservedBytes = Math.max(latestObservedBytes, downloadedBytes)
 
-    // Never schedule a lower or duplicate value
-    if (downloadedBytes <= lastScheduledBytes) {
+    if (Number.isFinite(totalBytes) && totalBytes > 0) {
+      latestObservedTotalBytes = totalBytes
+      latestObservedTotalIsEstimate = Boolean(totalBytesIsEstimate)
+    }
+
+    const currentTotalBytes =
+      Number.isFinite(totalBytes) && totalBytes > 0 ? totalBytes : latestObservedTotalBytes
+    const currentTotalIsEstimate =
+      Number.isFinite(totalBytes) && totalBytes > 0
+        ? Boolean(totalBytesIsEstimate)
+        : latestObservedTotalIsEstimate
+
+    const totalChanged =
+      currentTotalBytes !== null &&
+      (currentTotalBytes !== lastScheduledTotalBytes ||
+        currentTotalIsEstimate !== lastScheduledTotalIsEstimate)
+
+    // Never schedule a lower or duplicate value unless total has changed or force is true
+    if (downloadedBytes <= lastScheduledBytes && !totalChanged && !force) {
       return
     }
 
@@ -1555,11 +1581,13 @@ export async function executeDownloadJob(jobId, options = {}) {
     const intervalElapsed = now - lastBytesWriteAt >= MIN_UPDATE_INTERVAL_MS
 
     // Limit unnecessary SQLite updates
-    if (!force && (!reachedCheckpoint || !intervalElapsed)) {
+    if (!force && !totalChanged && (!reachedCheckpoint || !intervalElapsed)) {
       return
     }
 
     lastScheduledBytes = downloadedBytes
+    lastScheduledTotalBytes = currentTotalBytes
+    lastScheduledTotalIsEstimate = currentTotalIsEstimate
     lastBytesWriteAt = now
 
     // Preserve the existing ordered database queue
@@ -1569,7 +1597,12 @@ export async function executeDownloadJob(jobId, options = {}) {
           return
         }
 
-        await updateDownloadJobDownloadedBytes(jobId, downloadedBytes)
+        await updateDownloadJobDownloadedBytes(
+          jobId,
+          downloadedBytes,
+          currentTotalBytes,
+          currentTotalIsEstimate
+        )
       })
       .catch((error) => {
         progressWriteError ??= error
@@ -1611,8 +1644,15 @@ export async function executeDownloadJob(jobId, options = {}) {
           snapshot.streams.length > 0 &&
           snapshot.streams.every((stream) => stream.status === 'finished')
 
-        // Save downloaded bytes for both formats
-        scheduleDownloadedBytes(totalDownloadedBytes, allStreamsFinished)
+        const totals = aggregateStreamTotals(snapshot.streams)
+
+        // Save downloaded bytes and total bytes for both formats
+        scheduleDownloadedBytes(
+          totalDownloadedBytes,
+          allStreamsFinished,
+          totals.totalBytes,
+          totals.totalBytesIsEstimate
+        )
 
         // MP4 needs separate overall progress calculation
         if (claimedJob.output_format === 'mp4') {
@@ -1626,8 +1666,13 @@ export async function executeDownloadJob(jobId, options = {}) {
       { jobId }
     )
 
-    // Flush any remaining downloaded bytes
-    scheduleDownloadedBytes(latestObservedBytes, true)
+    // Flush any remaining downloaded bytes and total bytes
+    scheduleDownloadedBytes(
+      latestObservedBytes,
+      true,
+      latestObservedTotalBytes,
+      latestObservedTotalIsEstimate
+    )
 
     // Wait until all progress and byte writes finish
     await progressWriteChain
@@ -2173,7 +2218,12 @@ export async function updateDownloadJobProgress(jobId, overallPercent) {
   }
 }
 
-export async function updateDownloadJobDownloadedBytes(jobId, downloadedBytes) {
+export async function updateDownloadJobDownloadedBytes(
+  jobId,
+  downloadedBytes,
+  totalBytes = null,
+  totalBytesIsEstimate = false
+) {
   // Validate incoming values
   if (!Number.isSafeInteger(jobId) || jobId <= 0) {
     throw new Error('A valid Download Job ID is required')
@@ -2185,23 +2235,44 @@ export async function updateDownloadJobDownloadedBytes(jobId, downloadedBytes) {
 
   const DownloadJob = getDatabase().models.DownloadJob
 
+  const updateFields = {
+    downloaded_bytes: downloadedBytes
+  }
+
+  if (Number.isFinite(totalBytes) && totalBytes > 0) {
+    updateFields.total_bytes = totalBytes
+    updateFields.total_bytes_is_estimate = Boolean(totalBytesIsEstimate)
+  }
+
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      // Update only an active job with higher byte count
-      const [updatedCount] = await DownloadJob.update(
+      // Update only an active job with higher byte count or newly known/changed total bytes
+      const whereConditions = [
         {
-          downloaded_bytes: downloadedBytes
-        },
-        {
-          where: {
-            id: jobId,
-            status: 'downloading',
-            downloaded_bytes: {
-              [Op.lt]: downloadedBytes
-            }
+          downloaded_bytes: {
+            [Op.lt]: downloadedBytes
           }
         }
-      )
+      ]
+
+      if (Number.isFinite(totalBytes) && totalBytes > 0) {
+        whereConditions.push({
+          total_bytes: null
+        })
+        whereConditions.push({
+          total_bytes: {
+            [Op.ne]: totalBytes
+          }
+        })
+      }
+
+      const [updatedCount] = await DownloadJob.update(updateFields, {
+        where: {
+          id: jobId,
+          status: 'downloading',
+          [Op.or]: whereConditions
+        }
+      })
 
       if (updatedCount !== 1) {
         return null
@@ -2294,12 +2365,23 @@ export function createMultiStreamProgressTracker() {
             : (previous?.downloadedBytes ?? 0)
 
         // Extract total bytes when available
-        const reportedTotal = data.total_bytes ?? data.total_bytes_estimate
+        const hasExactTotal = Number.isFinite(data.total_bytes) && data.total_bytes > 0
+        const hasEstimateTotal =
+          Number.isFinite(data.total_bytes_estimate) && data.total_bytes_estimate > 0
 
-        const totalBytes =
-          Number.isFinite(reportedTotal) && reportedTotal >= 0
-            ? reportedTotal
-            : (previous?.totalBytes ?? null)
+        let totalBytes = null
+        let totalBytesIsEstimate = false
+
+        if (hasExactTotal) {
+          totalBytes = data.total_bytes
+          totalBytesIsEstimate = false
+        } else if (hasEstimateTotal) {
+          totalBytes = data.total_bytes_estimate
+          totalBytesIsEstimate = true
+        } else if (previous?.totalBytes) {
+          totalBytes = previous.totalBytes
+          totalBytesIsEstimate = previous.totalBytesIsEstimate ?? false
+        }
 
         // Reuse the existing percentage parser
         const percent = parseYtDlpProgressLine(line)
@@ -2310,6 +2392,7 @@ export function createMultiStreamProgressTracker() {
           status: typeof data.status === 'string' ? data.status : (previous?.status ?? 'unknown'),
           downloadedBytes,
           totalBytes,
+          totalBytesIsEstimate,
           percent: percent ?? previous?.percent ?? null
         })
 
@@ -2344,6 +2427,53 @@ export function createMultiStreamProgressTracker() {
 
     // 8. Read current tracker state whenever needed
     getSnapshot
+  }
+}
+
+/**
+ * Aggregates total transfer bytes and estimate indicator across active/finished streams.
+ *
+ * @param {Array<object>} streams
+ * @returns {{ totalBytes: number|null, totalBytesIsEstimate: boolean }}
+ */
+export function aggregateStreamTotals(streams) {
+  if (!Array.isArray(streams) || streams.length === 0) {
+    return { totalBytes: null, totalBytesIsEstimate: false }
+  }
+
+  let aggregatedTotal = 0
+  let isEstimate = false
+
+  for (const stream of streams) {
+    if (stream.status === 'finished') {
+      const streamTotal =
+        Number.isFinite(stream.totalBytes) && stream.totalBytes > 0
+          ? stream.totalBytes
+          : Number.isFinite(stream.downloadedBytes) && stream.downloadedBytes > 0
+            ? stream.downloadedBytes
+            : null
+
+      if (streamTotal === null) {
+        return { totalBytes: null, totalBytesIsEstimate: false }
+      }
+      aggregatedTotal += streamTotal
+      if (stream.totalBytesIsEstimate) {
+        isEstimate = true
+      }
+    } else {
+      if (!Number.isFinite(stream.totalBytes) || stream.totalBytes <= 0) {
+        return { totalBytes: null, totalBytesIsEstimate: false }
+      }
+      aggregatedTotal += stream.totalBytes
+      if (stream.totalBytesIsEstimate) {
+        isEstimate = true
+      }
+    }
+  }
+
+  return {
+    totalBytes: aggregatedTotal > 0 ? aggregatedTotal : null,
+    totalBytesIsEstimate: isEstimate
   }
 }
 

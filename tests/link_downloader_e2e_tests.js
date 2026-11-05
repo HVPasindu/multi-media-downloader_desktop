@@ -330,7 +330,7 @@ async function runAllE2eTests() {
     })
     assertRetryResponse(retryRes.status, retryRes.body)
     const newRetryJobId = retryRes.body.data.retryJobId
-    assert.notEqual(newRetryJobId, toCancelId, 'Retry must create a fresh Job ID')
+    assert.equal(newRetryJobId, toCancelId, 'Retry must reuse the original Job ID')
 
     // Wait for the retried job to complete
     const completedRetryJob = await env.waitForJobState(
@@ -339,12 +339,12 @@ async function runAllE2eTests() {
     )
     assert.equal(completedRetryJob.status, 'completed')
 
-    // Original cancelled job must remain preserved in SQLite
-    const originalCancelledRec = await DownloadJob.findByPk(toCancelId)
+    // Original job is now completed in SQLite (reused in-place)
+    const reloadedJob = await DownloadJob.findByPk(toCancelId)
     assert.equal(
-      originalCancelledRec.status,
-      'cancelled',
-      'Original cancelled job must remain preserved'
+      reloadedJob.status,
+      'completed',
+      'Original job must transition in-place to completed'
     )
 
     // Attempting to retry a completed job must fail
