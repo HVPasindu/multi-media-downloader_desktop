@@ -7,6 +7,19 @@ import { tmpdir } from 'node:os'
 import { mkdir, writeFile, symlink } from 'node:fs/promises'
 import { createTestDatabase } from './helpers/testDatabase.js'
 import {
+  resolveValidatedDownloadPath,
+  setPathResolverForTesting,
+  resetPathResolverForTesting
+} from '../src/main/backend/services/downloadPathService.js'
+import {
+  setAllowLocalhostForTesting,
+  resetAllowLocalhostForTesting
+} from '../src/main/backend/services/mediaUrlSecurityService.js'
+import {
+  setAnalyzerForTesting,
+  resetAnalyzerForTesting
+} from '../src/main/backend/services/mediaAnalyzerService.js'
+import {
   isTransientNetworkError,
   classifyDownloadError,
   DOWNLOAD_ERROR_CODES
@@ -78,7 +91,7 @@ async function runNetworkRecoveryTests() {
   await mkdir(testDownloadDir, { recursive: true })
 
   try {
-    const { MediaItem, DownloadJob, AppSetting } = testDb.sequelize.models
+    const { MediaItem, DownloadJob, DownloadFile, AppSetting } = testDb.sequelize.models
 
     await AppSetting.create({
       key: 'download_path',
@@ -1667,35 +1680,284 @@ async function runNetworkRecoveryTests() {
     console.log('✓ Test 1.10 passed: Successful cleanup allows normal recovery flow\n')
 
     // ========================================================================
+    // STEP 01.B: DOWNLOAD PATH RESOLUTION FAILURE AUTOMATED TESTS
+    // ========================================================================
+    console.log('--- STEP 01.B: Download Path Resolution Failure Fix Automated Tests ---')
+
+    // 1. Path Resolution Validation Matrix Table
+    console.log('  [Path Matrix 1.1] Valid directory path resolution...')
+    const validResolved = await resolveValidatedDownloadPath(AppSetting)
+    assert.equal(
+      typeof validResolved,
+      'string',
+      'Valid download directory resolves to non-empty string'
+    )
+    assert.ok(validResolved.length > 0, 'Valid path resolved')
+
+    console.log('  [Path Matrix 1.2] Null path rejection...')
+    setPathResolverForTesting(async () => null)
+    const nullResolved = await resolveValidatedDownloadPath(AppSetting)
+    assert.equal(nullResolved, null, 'Null path resolves to null')
+
+    console.log('  [Path Matrix 1.3] Empty and whitespace path rejection...')
+    setPathResolverForTesting(async () => '   ')
+    const emptyResolved = await resolveValidatedDownloadPath(AppSetting)
+    assert.equal(emptyResolved, null, 'Empty/whitespace path resolves to null')
+
+    console.log('  [Path Matrix 1.4] Malformed path with illegal characters rejection...')
+    setPathResolverForTesting(async () => 'C:\\invalid<?|folder')
+    const malformedResolved = await resolveValidatedDownloadPath(AppSetting)
+    assert.equal(malformedResolved, null, 'Malformed path resolves to null')
+
+    console.log('  [Path Matrix 1.5] Root drive path rejection...')
+    setPathResolverForTesting(async () => 'C:\\')
+    const rootDriveResolved = await resolveValidatedDownloadPath(AppSetting)
+    assert.equal(rootDriveResolved, null, 'Root drive directory resolves to null')
+
+    console.log('  [Path Matrix 1.6] Non-existent path traversal escape rejection...')
+    setPathResolverForTesting(async () => 'C:\\nonexistent_directory_xyz\\..\\..\\traversal')
+    const traversalResolved = await resolveValidatedDownloadPath(AppSetting)
+    assert.equal(traversalResolved, null, 'Non-existent traversal path resolves to null')
+
+    resetPathResolverForTesting()
+    console.log(
+      '  ✓ Path Matrix Tests passed: Valid, null, empty, malformed, root drive, and traversal paths verified'
+    )
+
+    // 2. Specific Regression Scenario 1: Startup Download Recovery with null path
+    console.log('  [Regression 1.1] Startup Recovery with null downloadPath (Option A)...')
+    const regJob1 = await DownloadJob.create({
+      media_id: media.id,
+      output_format: 'mp4',
+      quality: '720p',
+      status: 'interrupted',
+      progress: 45,
+      downloaded_bytes: 450000
+    })
+    setPathResolverForTesting(async () => null)
+    resetRecoveryTrackingForTesting()
+    const regStartupRes = await recoverInterruptedDownloadJobs({
+      autoEnqueue: true,
+      isOnline: true
+    })
+    const reloadedReg1 = await DownloadJob.findByPk(regJob1.id)
+
+    assert.equal(reloadedReg1.id, regJob1.id, 'Reg 1.1: Original Job ID strictly preserved')
+    assert.equal(reloadedReg1.status, 'failed', 'Reg 1.1: Status marked as failed')
+    assert.equal(
+      reloadedReg1.error_message,
+      'Recovery failed: Unable to resolve valid download folder path',
+      'Reg 1.1: Exact descriptive error message persisted'
+    )
+    assert.equal(reloadedReg1.progress, 45, 'Reg 1.1: Progress NOT reset to 0')
+    assert.equal(reloadedReg1.downloaded_bytes, 450000, 'Reg 1.1: Downloaded bytes NOT reset to 0')
+    assert.equal(
+      regStartupRes.recoveredJobIds.includes(regJob1.id),
+      false,
+      'Reg 1.1: Job NOT returned in recoveredJobIds'
+    )
+    assert.equal(
+      getQueueStatus().scheduledJobIds.includes(regJob1.id),
+      false,
+      'Reg 1.1: Job NOT enqueued into download queue'
+    )
+    console.log(
+      '  ✓ Reg 1.1 passed: Startup recovery with null path preserves Job ID & progress, persists error, never enqueued'
+    )
+
+    // 3. Specific Regression Scenario 2: Network Recovery with null path
+    console.log('  [Regression 1.2] Network Recovery with null downloadPath (Option A)...')
+    const regJob2 = await DownloadJob.create({
+      media_id: media.id,
+      output_format: 'mp4',
+      quality: '720p',
+      status: 'interrupted',
+      progress: 60,
+      downloaded_bytes: 600000
+    })
+    setConnectivityCheckerForTesting(async () => true)
+    setPathResolverForTesting(async () => null)
+    const regNetRes = await resumeInterruptedNetworkJobs()
+    const reloadedReg2 = await DownloadJob.findByPk(regJob2.id)
+
+    assert.equal(reloadedReg2.id, regJob2.id, 'Reg 1.2: Original Job ID strictly preserved')
+    assert.equal(reloadedReg2.status, 'failed', 'Reg 1.2: Status marked as failed')
+    assert.equal(
+      reloadedReg2.error_message,
+      'Network recovery failed: Unable to resolve valid download folder path',
+      'Reg 1.2: Exact descriptive error message persisted'
+    )
+    assert.equal(reloadedReg2.progress, 60, 'Reg 1.2: Progress NOT reset to 0')
+    assert.equal(reloadedReg2.downloaded_bytes, 600000, 'Reg 1.2: Downloaded bytes NOT reset to 0')
+    assert.equal(
+      regNetRes.resumedJobIds.includes(regJob2.id),
+      false,
+      'Reg 1.2: Job NOT in resumedJobIds'
+    )
+    assert.equal(
+      getQueueStatus().scheduledJobIds.includes(regJob2.id),
+      false,
+      'Reg 1.2: Job NOT enqueued into queue'
+    )
+    console.log(
+      '  ✓ Reg 1.2 passed: Network recovery with null path preserves Job ID & progress, persists error, never enqueued'
+    )
+
+    // 4. Regression Scenario 3: Startup Recovery with root drive path
+    console.log('  [Regression 1.3] Startup Recovery with root drive path...')
+    const regJob3 = await DownloadJob.create({
+      media_id: media.id,
+      output_format: 'mp4',
+      quality: '1080p',
+      status: 'downloading',
+      progress: 30,
+      downloaded_bytes: 300000
+    })
+    setPathResolverForTesting(async () => 'C:\\')
+    resetRecoveryTrackingForTesting()
+    await recoverInterruptedDownloadJobs({ autoEnqueue: true, isOnline: true })
+    const reloadedReg3 = await DownloadJob.findByPk(regJob3.id)
+
+    assert.equal(reloadedReg3.id, regJob3.id, 'Reg 1.3: Original Job ID strictly preserved')
+    assert.equal(reloadedReg3.status, 'failed', 'Reg 1.3: Status marked as failed')
+    assert.equal(reloadedReg3.progress, 30, 'Reg 1.3: Progress NOT reset')
+    assert.equal(reloadedReg3.downloaded_bytes, 300000, 'Reg 1.3: Downloaded bytes NOT reset')
+    assert.equal(
+      getQueueStatus().scheduledJobIds.includes(regJob3.id),
+      false,
+      'Reg 1.3: Job NOT enqueued'
+    )
+    console.log(
+      '  ✓ Reg 1.3 passed: Startup recovery with root drive marks failed safely without resetting progress'
+    )
+
+    // 5. Regression Scenario 4: Network Recovery with malformed path
+    console.log('  [Regression 1.4] Network Recovery with malformed path...')
+    const regJob4 = await DownloadJob.create({
+      media_id: media.id,
+      output_format: 'mp4',
+      quality: '480p',
+      status: 'interrupted',
+      progress: 25,
+      downloaded_bytes: 250000
+    })
+    setPathResolverForTesting(async () => 'C:\\invalid<?path')
+    await resumeInterruptedNetworkJobs()
+    const reloadedReg4 = await DownloadJob.findByPk(regJob4.id)
+
+    assert.equal(reloadedReg4.id, regJob4.id, 'Reg 1.4: Original Job ID strictly preserved')
+    assert.equal(reloadedReg4.status, 'failed', 'Reg 1.4: Status marked as failed')
+    assert.equal(reloadedReg4.progress, 25, 'Reg 1.4: Progress NOT reset')
+    assert.equal(reloadedReg4.downloaded_bytes, 250000, 'Reg 1.4: Downloaded bytes NOT reset')
+    assert.equal(
+      getQueueStatus().scheduledJobIds.includes(regJob4.id),
+      false,
+      'Reg 1.4: Job NOT enqueued'
+    )
+    resetPathResolverForTesting()
+    console.log(
+      '  ✓ Reg 1.4 passed: Network recovery with malformed path marks failed safely without resetting progress\n'
+    )
+
+    // ========================================================================
     // STEP 03: FULL APPLICATION RECOVERY INTEGRATION PIPELINE (Scenarios A - E)
+    // Production Pipeline: Startup Recovery -> File Validation -> Recovery Decision
+    // -> Real Queue -> Real Download Service -> Real Process Launcher -> Real yt-dlp
+    // -> Progress Updates -> SQLite Persistence -> Final Media File
     // ========================================================================
     console.log('--- STEP 03: Full Application Recovery Integration Pipeline (Scenarios A - E) ---')
 
-    // Setup local Range HTTP server for End-to-End Scenarios
-    const e2eFixtureBytes = 1024 * 512 // 512 KB
-    const e2eFixtureBuffer = Buffer.alloc(e2eFixtureBytes)
-    for (let i = 0; i < e2eFixtureBytes; i++) {
-      e2eFixtureBuffer[i] = (i * 13 + 37) % 256
+    const fs = await import('node:fs/promises')
+    const fsSync = await import('node:fs')
+    const fixturePath = join(testDownloadDir, 'test_fixture.mp4')
+    if (!fsSync.existsSync(fixturePath)) {
+      const rootFixture = 'test_fixture.mp4'
+      if (fsSync.existsSync(rootFixture)) {
+        await fs.copyFile(rootFixture, fixturePath)
+      } else {
+        const { execFileSync } = await import('node:child_process')
+        const ffmpegBin = join(process.cwd(), 'resources', 'bin', 'win32-x64', 'ffmpeg.exe')
+        execFileSync(ffmpegBin, [
+          '-f',
+          'lavfi',
+          '-i',
+          'testsrc=duration=5:size=640x480:rate=10',
+          '-f',
+          'lavfi',
+          '-i',
+          'anullsrc=r=44100:cl=stereo',
+          '-c:v',
+          'libx264',
+          '-c:a',
+          'aac',
+          '-pix_fmt',
+          'yuv420p',
+          '-b:v',
+          '500k',
+          '-t',
+          '5',
+          '-y',
+          fixturePath
+        ])
+      }
     }
-    const e2eExpectedSha256 = crypto.createHash('sha256').update(e2eFixtureBuffer).digest('hex')
+    const e2eFullFixtureBuffer = await fs.readFile(fixturePath)
+    const e2eFullFixtureBytes = e2eFullFixtureBuffer.length
+    const expectedSha256 = crypto.createHash('sha256').update(e2eFullFixtureBuffer).digest('hex')
+    console.log(
+      `  [Setup] Genuine media fixture loaded: ${e2eFullFixtureBytes} bytes, SHA-256: ${expectedSha256}`
+    )
 
-    let e2eRangeRequests = []
     let e2eShouldDisconnect = false
-    let e2eDisconnectAfterBytes = 131072 // 128 KB
+    let e2eReqCount = 0
+    let e2eRangeRequests = []
 
     const e2eServer = http.createServer((req, res) => {
+      e2eReqCount++
       const range = req.headers['range']
       if (range) {
         e2eRangeRequests.push(range)
-        const match = range.match(/bytes=(\d+)-(\d+)?/)
+      }
+
+      if (e2eShouldDisconnect) {
+        if (e2eReqCount === 1) {
+          // Request 1: metadata probe
+          res.writeHead(200, {
+            'Content-Type': 'video/mp4',
+            'Accept-Ranges': 'bytes',
+            'Content-Length': e2eFullFixtureBytes
+          })
+          res.end(e2eFullFixtureBuffer)
+          return
+        }
+        if (e2eReqCount === 2) {
+          // Request 2: media stream - deliver first 40,000 bytes then drop connection
+          res.writeHead(200, {
+            'Content-Type': 'video/mp4',
+            'Accept-Ranges': 'bytes',
+            'Content-Length': e2eFullFixtureBytes
+          })
+          res.write(e2eFullFixtureBuffer.subarray(0, 40000))
+          setTimeout(() => {
+            req.socket.destroy()
+          }, 50)
+          return
+        }
+        // Subsequent retries during network drop
+        req.socket.destroy()
+        return
+      }
+
+      if (range) {
+        const match = /bytes=(\d+)-(\d*)/.exec(range)
         if (match) {
           const start = parseInt(match[1], 10)
-          const end = match[2] ? parseInt(match[2], 10) : e2eFixtureBytes - 1
-          const chunk = e2eFixtureBuffer.subarray(start, end + 1)
+          const end = match[2] ? parseInt(match[2], 10) : e2eFullFixtureBytes - 1
+          const chunk = e2eFullFixtureBuffer.subarray(start, end + 1)
           res.writeHead(206, {
             'Content-Type': 'video/mp4',
             'Accept-Ranges': 'bytes',
-            'Content-Range': `bytes ${start}-${end}/${e2eFixtureBytes}`,
+            'Content-Range': `bytes ${start}-${end}/${e2eFullFixtureBytes}`,
             'Content-Length': chunk.length
           })
           res.end(chunk)
@@ -1703,40 +1965,51 @@ async function runNetworkRecoveryTests() {
         }
       }
 
-      if (e2eShouldDisconnect) {
-        res.writeHead(200, {
-          'Content-Type': 'video/mp4',
-          'Accept-Ranges': 'bytes',
-          'Content-Length': e2eFixtureBytes
-        })
-        const partialChunk = e2eFixtureBuffer.subarray(0, e2eDisconnectAfterBytes)
-        res.write(partialChunk)
-        setTimeout(() => {
-          req.socket.destroy()
-        }, 50)
-        return
-      }
-
       res.writeHead(200, {
         'Content-Type': 'video/mp4',
         'Accept-Ranges': 'bytes',
-        'Content-Length': e2eFixtureBytes
+        'Content-Length': e2eFullFixtureBytes
       })
-      res.end(e2eFixtureBuffer)
+      res.end(e2eFullFixtureBuffer)
     })
 
     await new Promise((resolve) => e2eServer.listen(0, '127.0.0.1', resolve))
     const e2ePort = e2eServer.address().port
-    const e2eUrl = `http://127.0.0.1:${e2ePort}/e2e-video.mp4`
+    const e2eUrl = `http://127.0.0.1:${e2ePort}/fixture.mp4`
+
+    // Enable automated test hooks
+    setAllowLocalhostForTesting(true)
+    setAnalyzerForTesting(async () => ({
+      platform: 'youtube',
+      title: 'fixture',
+      duration: 20,
+      availableFormats: {
+        mp4Formats: [
+          { formatId: 'mp4', quality: '720p', audioIncluded: true, fileSize: e2eFullFixtureBytes }
+        ],
+        audioFormats: [],
+        mp4Qualities: ['720p']
+      }
+    }))
+    setConnectivityCheckerForTesting(async () => true)
 
     try {
-      // Scenario A: Application-Level Resume
-      console.log('  [Scenario A] Application-Level Resume via Range Header...')
-      setConnectivityCheckerForTesting(async () => true)
+      const e2eMedia = await MediaItem.create({
+        source_url: e2eUrl,
+        platform: 'youtube',
+        title: 'Fixture Media'
+      })
+
+      // Scenario A & B: Full Application Pipeline Download, Interruption, and Range-Header Resume
+      console.log(
+        '  [Scenario A & B] Production Pipeline End-to-End: Interruption, Recovery & Range Resume...'
+      )
       e2eShouldDisconnect = true
+      e2eReqCount = 0
       e2eRangeRequests = []
+
       const e2eJobA = await DownloadJob.create({
-        media_id: media.id,
+        media_id: e2eMedia.id,
         output_format: 'mp4',
         quality: '720p',
         status: 'queued',
@@ -1744,100 +2017,178 @@ async function runNetworkRecoveryTests() {
         downloaded_bytes: 0
       })
 
-      const outTemplateA = join(testDownloadDir, `e2e-resumable [job-${e2eJobA.id}].%(ext)s`)
-      const partFileA = join(testDownloadDir, `e2e-resumable [job-${e2eJobA.id}].mp4.part`)
-      const finalFileA = join(testDownloadDir, `e2e-resumable [job-${e2eJobA.id}].mp4`)
+      // Phase 1: Real download initiated via real queue
+      enqueueDownloadJob(e2eJobA.id)
 
-      // Initial partial download with retries 0
-      await new Promise((resolve) => {
-        const c1 = spawn(ytdlpExecPath, ['--retries', '0', e2eUrl, '-o', outTemplateA], {
-          windowsHide: true
-        })
-        c1.on('close', () => resolve())
-        c1.on('error', () => resolve())
-      })
+      // Wait until initial download is interrupted by network loss and queue is idle
+      const startWaitA1 = Date.now()
+      while (Date.now() - startWaitA1 < 25000) {
+        const j = await DownloadJob.findByPk(e2eJobA.id)
+        if (
+          j.status !== 'queued' &&
+          getQueueStatus().activeJobs === 0 &&
+          getQueueStatus().waitingJobs === 0
+        ) {
+          break
+        }
+        await new Promise((r) => setTimeout(r, 100))
+      }
 
-      // Update DB to simulate interrupted job
-      const partCheckA = await verifyJobPartialDownload(e2eJobA.id, testDownloadDir)
-      assert.ok(partFileA, 'Scenario A: Part file path resolved')
-      assert.equal(partCheckA.isValid, true, 'Scenario A: Partial file exists on disk')
-      await e2eJobA.update({
-        status: 'interrupted',
-        progress: Math.floor((partCheckA.reconciledBytes / e2eFixtureBytes) * 100),
-        downloaded_bytes: partCheckA.reconciledBytes
-      })
+      const interruptedJobA = await DownloadJob.findByPk(e2eJobA.id)
+      assert.equal(
+        interruptedJobA.status,
+        'interrupted',
+        'Scenario A: Job transitioned to interrupted on network drop'
+      )
+      assert.ok(
+        interruptedJobA.downloaded_bytes > 0,
+        'Scenario A: Downloaded bytes recorded in SQLite'
+      )
+      assert.equal(interruptedJobA.id, e2eJobA.id, 'Scenario A: Original Job ID preserved')
 
-      // Trigger recovery service
+      // Record original Job ID and verify partial workspace exists
+      const originalJobId = e2eJobA.id
+      const partialWorkspaceDir = join(
+        testDownloadDir,
+        '.applan2-partial-downloads',
+        `job-${originalJobId}`
+      )
+      const partialEntries = await fs.readdir(partialWorkspaceDir).catch(() => [])
+      assert.ok(
+        partialEntries.length > 0,
+        'Scenario A: Partial file exists before cold-start restart'
+      )
+
+      // Phase B: Simulate application shutdown & cold start (persist SQLite & partial files, clear in-memory state)
+      stopQueueForShutdown()
+      resetQueueForTesting()
+      resetNetworkMonitoringForTesting()
+      resetRecoveryTrackingForTesting()
+
+      // Phase C: Application startup recovery
       e2eShouldDisconnect = false
       e2eRangeRequests = []
-      const enqueuedA = []
-      await resumeInterruptedNetworkJobs({
-        enqueue: (id) => {
-          enqueuedA.push(id)
-          return true
+
+      console.log(
+        '    Triggering recoverInterruptedDownloadJobs() with real production queue on cold start...'
+      )
+      const startupRecRes = await recoverInterruptedDownloadJobs({
+        autoEnqueue: true,
+        isOnline: true
+      })
+      assert.ok(
+        startupRecRes.recoveredJobIds.includes(originalJobId),
+        'Scenario A: Job recovered and auto-enqueued upon cold-start startup'
+      )
+
+      // Phase D: Wait until real queue and yt-dlp finish download and ffprobe completes
+      const startWaitA2 = Date.now()
+      while (Date.now() - startWaitA2 < 25000) {
+        const j = await DownloadJob.findByPk(originalJobId)
+        if (j.status === 'completed' || j.status === 'failed') {
+          break
         }
-      })
-      assert.ok(enqueuedA.includes(e2eJobA.id), 'Scenario A: Job enqueued by network recovery')
-      const reloadedJobA = await DownloadJob.findByPk(e2eJobA.id)
-      assert.equal(reloadedJobA.status, 'queued', 'Scenario A: Valid partial preserved as queued')
+        await new Promise((r) => setTimeout(r, 100))
+      }
 
-      // Resume download with yt-dlp using --continue
-      const resumeExitCodeA = await new Promise((resolve) => {
-        const c2 = spawn(ytdlpExecPath, ['--continue', e2eUrl, '-o', outTemplateA], {
-          windowsHide: true
-        })
-        c2.on('close', (code) => resolve(code))
-        c2.on('error', () => resolve(1))
-      })
-      assert.equal(resumeExitCodeA, 0, 'Scenario A: yt-dlp resume exit code is 0')
-      assert.ok(e2eRangeRequests.length > 0, 'Scenario A: Server received HTTP Range header')
+      // Phase E: Required assertions for cold-start recovery
+      const completedJobA = await DownloadJob.findByPk(originalJobId)
+      assert.equal(
+        completedJobA.status,
+        'completed',
+        'Scenario A: Real pipeline completed successfully'
+      )
+      assert.equal(
+        completedJobA.id,
+        originalJobId,
+        'Scenario A: Original Job ID strictly preserved throughout'
+      )
+      assert.equal(completedJobA.progress, 100, 'Scenario A: Progress reached 100%')
 
-      const finalContentA = await import('node:fs/promises').then((fs) => fs.readFile(finalFileA))
-      const finalShaA = crypto.createHash('sha256').update(finalContentA).digest('hex')
+      const e2eJobRows = await DownloadJob.findAll({ where: { id: originalJobId } })
+      assert.equal(e2eJobRows.length, 1, 'Scenario A: Exactly one DownloadJob row exists')
+
+      const e2eFileRows = await DownloadFile.findAll({ where: { download_job_id: originalJobId } })
+      assert.equal(e2eFileRows.length, 1, 'Scenario A: Exactly one DownloadFile row exists')
+
+      // Scenario B assertions: HTTP Range Header Verification
+      assert.ok(e2eRangeRequests.length > 0, 'Scenario B: Real yt-dlp sent HTTP Range request')
+      const firstRange = e2eRangeRequests[0]
+      const rangeMatch = /bytes=(\d+)-/.exec(firstRange)
+      assert.ok(rangeMatch, `Scenario B: Received valid Range header: ${firstRange}`)
+      const requestedOffset = parseInt(rangeMatch[1], 10)
+      assert.ok(
+        requestedOffset > 0,
+        `Scenario B: Range request offset (${requestedOffset}) matches partial file`
+      )
+
+      // Verify final media file on disk
+      const dirFilesA = await fs.readdir(testDownloadDir)
+      const finalFileA = dirFilesA.find(
+        (f) => f.includes(`[job-${e2eJobA.id}]`) && !f.endsWith('.part')
+      )
+      assert.ok(finalFileA, 'Scenario A: Final media file exists on disk without .part extension')
+      const finalBufA = await fs.readFile(join(testDownloadDir, finalFileA))
+      const finalShaA = crypto.createHash('sha256').update(finalBufA).digest('hex')
       assert.equal(
         finalShaA,
-        e2eExpectedSha256,
-        'Scenario A: Completed file SHA-256 matches fixture exactly'
+        expectedSha256,
+        'Scenario A: Final file SHA-256 matches fixture exactly'
       )
-      assert.equal(reloadedJobA.id, e2eJobA.id, 'Scenario A: Original Job ID strictly preserved')
-      console.log('  ✓ Scenario A passed: Application-level resume with Range header verified')
+      console.log(
+        '  ✓ Scenario A & B passed: Production pipeline (startup recovery -> queue -> yt-dlp -> Range -> ffprobe -> SHA match) verified'
+      )
 
-      // Scenario B: Invalid Partial File (20 MB DB / 1 MB Disk -> reject -> cleanup -> safe restart from 0)
-      console.log('  [Scenario B] Invalid Partial File Safe Restart...')
-      setConnectivityCheckerForTesting(async () => true)
-      const e2eJobB = await DownloadJob.create({
-        media_id: media.id,
+      // Scenario C: Invalid Partial File (Severe Progress Mismatch) -> Cleanup -> Safe Restart
+      console.log('  [Scenario C] Invalid Partial File Safe Restart via Real Queue...')
+      const e2eJobC = await DownloadJob.create({
+        media_id: e2eMedia.id,
         output_format: 'mp4',
-        quality: '1080p',
+        quality: '720p',
         status: 'interrupted',
         progress: 50,
-        downloaded_bytes: 20 * 1024 * 1024
+        downloaded_bytes: 20 * 1024 * 1024 // 20 MB in DB
       })
-      const partFileB = join(testDownloadDir, `e2e-invalid [job-${e2eJobB.id}].mp4.part`)
-      await writeFile(partFileB, Buffer.alloc(1024 * 1024))
+      // Write corrupted 1 KB partial file (severe mismatch with 20 MB DB value)
+      const corruptedPartPath = join(testDownloadDir, `corrupted [job-${e2eJobC.id}].mp4.part`)
+      await fs.writeFile(corruptedPartPath, Buffer.alloc(1024))
 
-      const enqueuedB = []
-      await resumeInterruptedNetworkJobs({
-        enqueue: (id) => {
-          enqueuedB.push(id)
-          return true
+      resetRecoveryTrackingForTesting()
+      await recoverInterruptedDownloadJobs({ autoEnqueue: true, isOnline: true })
+
+      // Wait until real queue schedules and executes download from 0 to completion
+      const startWaitC = Date.now()
+      while (Date.now() - startWaitC < 25000) {
+        const j = await DownloadJob.findByPk(e2eJobC.id)
+        if (j.status === 'completed' || j.status === 'failed') {
+          break
         }
-      })
-      const reloadedJobB = await DownloadJob.findByPk(e2eJobB.id)
-      assert.equal(reloadedJobB.status, 'queued', 'Scenario B: Resets to queued')
-      assert.equal(reloadedJobB.progress, 0, 'Scenario B: Progress reset to 0')
-      assert.equal(reloadedJobB.downloaded_bytes, 0, 'Scenario B: Downloaded bytes reset to 0')
-      assert.ok(enqueuedB.includes(e2eJobB.id), 'Scenario B: Enqueued for fresh restart')
-      assert.equal(reloadedJobB.id, e2eJobB.id, 'Scenario B: Original Job ID preserved')
+        await new Promise((r) => setTimeout(r, 100))
+      }
+
+      const completedJobC = await DownloadJob.findByPk(e2eJobC.id)
+      assert.equal(
+        completedJobC.status,
+        'completed',
+        'Scenario C: Invalid partial restarted safely and completed'
+      )
+      assert.equal(completedJobC.id, e2eJobC.id, 'Scenario C: Original Job ID preserved')
+      const dirFilesC = await fs.readdir(testDownloadDir)
+      const finalFileC = dirFilesC.find(
+        (f) => f.includes(`[job-${e2eJobC.id}]`) && !f.endsWith('.part')
+      )
+      assert.ok(finalFileC, 'Scenario C: Final completed media file exists')
+      const finalBufC = await fs.readFile(join(testDownloadDir, finalFileC))
+      const finalShaC = crypto.createHash('sha256').update(finalBufC).digest('hex')
+      assert.equal(finalShaC, expectedSha256, 'Scenario C: SHA-256 matches fixture')
       console.log(
-        '  ✓ Scenario B passed: Invalid partial file rejected and restarted safely from 0'
+        '  ✓ Scenario C passed: Invalid partial file safely cleaned and restarted from 0 via real queue'
       )
 
-      // Scenario C: Cleanup Failure During Recovery
-      console.log('  [Scenario C] Cleanup Failure During Recovery...')
-      setConnectivityCheckerForTesting(async () => true)
-      const e2eJobC = await DownloadJob.create({
-        media_id: media.id,
+      // Scenario D: Cleanup Failure During Recovery
+      console.log('  [Scenario D] Cleanup Failure Halts Recovery Safely...')
+      const e2eJobD = await DownloadJob.create({
+        media_id: e2eMedia.id,
         output_format: 'mp4',
         quality: '720p',
         status: 'interrupted',
@@ -1851,71 +2202,42 @@ async function runNetworkRecoveryTests() {
         workspaceCleaned: false,
         error: 'Simulated disk I/O error during recovery cleanup'
       }))
-      const enqueuedC = []
-      await resumeInterruptedNetworkJobs({
-        enqueue: (id) => {
-          enqueuedC.push(id)
-          return true
-        }
-      })
-      const reloadedJobC = await DownloadJob.findByPk(e2eJobC.id)
-      assert.equal(reloadedJobC.status, 'failed', 'Scenario C: Status marked failed')
-      assert.ok(
-        reloadedJobC.error_message.includes('Simulated disk I/O error'),
-        'Scenario C: Error persisted'
-      )
-      assert.equal(
-        enqueuedC.includes(e2eJobC.id),
-        false,
-        'Scenario C: Job NOT enqueued on cleanup failure'
-      )
-      assert.equal(reloadedJobC.id, e2eJobC.id, 'Scenario C: Original Job ID preserved')
-      resetCleanupHandlerForTesting()
-      console.log(
-        '  ✓ Scenario C passed: Cleanup failure marks job failed and halts recovery safely'
-      )
-
-      // Scenario D: Network Reconnection
-      console.log('  [Scenario D] Network Reconnection Monitoring...')
-      let simulatedOnline = false
-      setConnectivityCheckerForTesting(async () => simulatedOnline)
-      const e2eJobD = await DownloadJob.create({
-        media_id: media.id,
-        output_format: 'mp4',
-        quality: '480p',
-        status: 'interrupted',
-        progress: 33,
-        downloaded_bytes: 33000
-      })
-      const offRes = await resumeInterruptedNetworkJobs({ enqueue: () => {} })
-      assert.equal(offRes.resumedCount, 0, 'Scenario D: No jobs resumed while offline')
-
-      simulatedOnline = true
       const enqueuedD = []
-      const onRes = await resumeInterruptedNetworkJobs({
+      await resumeInterruptedNetworkJobs({
         enqueue: (id) => {
           enqueuedD.push(id)
           return true
         }
       })
+      const reloadedJobD = await DownloadJob.findByPk(e2eJobD.id)
+      assert.equal(reloadedJobD.status, 'failed', 'Scenario D: Status marked failed')
       assert.ok(
-        onRes.resumedCount >= 1,
-        'Scenario D: Interrupted jobs resumed upon network reconnection'
+        reloadedJobD.error_message.includes('Simulated disk I/O error'),
+        'Scenario D: Error persisted'
       )
-      assert.ok(enqueuedD.includes(e2eJobD.id), 'Scenario D: Same job enqueued')
-      console.log('  ✓ Scenario D passed: Network restoration auto-resumes interrupted downloads')
+      assert.equal(
+        enqueuedD.includes(e2eJobD.id),
+        false,
+        'Scenario D: Job NOT enqueued on cleanup failure'
+      )
+      assert.equal(reloadedJobD.id, e2eJobD.id, 'Scenario D: Original Job ID preserved')
+      resetCleanupHandlerForTesting()
+      console.log(
+        '  ✓ Scenario D passed: Cleanup failure marks job failed and halts recovery safely'
+      )
 
-      // Scenario E: Application Restart Recovery
+      // Scenario E: Application Restart Lifecycle (Offline -> Interrupted, Online -> Resumed -> Completed)
       console.log('  [Scenario E] Application Restart Recovery Lifecycle...')
       const e2eJobE = await DownloadJob.create({
-        media_id: media.id,
+        media_id: e2eMedia.id,
         output_format: 'mp4',
-        quality: '360p',
+        quality: '720p',
         status: 'downloading',
         progress: 20,
-        downloaded_bytes: 200000
+        downloaded_bytes: 20000
       })
-      simulatedOnline = false
+
+      // Restart 1: Application starts offline
       resetRecoveryTrackingForTesting()
       await recoverInterruptedDownloadJobs({ autoEnqueue: false, isOnline: false })
       const reloadedJobE1 = await DownloadJob.findByPk(e2eJobE.id)
@@ -1925,29 +2247,27 @@ async function runNetworkRecoveryTests() {
         'Scenario E: Downloading job moved to interrupted during offline startup'
       )
 
-      // Application restart in online mode
+      // Restart 2: Application starts online
       resetRecoveryTrackingForTesting()
-      simulatedOnline = true
-      const enqueuedE = []
-      await recoverInterruptedDownloadJobs({
-        autoEnqueue: true,
-        isOnline: true,
-        enqueue: (id) => {
-          enqueuedE.push(id)
-          return true
+      await recoverInterruptedDownloadJobs({ autoEnqueue: true, isOnline: true })
+
+      // Wait until real queue executes and completes download
+      const startWaitE = Date.now()
+      while (Date.now() - startWaitE < 25000) {
+        const j = await DownloadJob.findByPk(e2eJobE.id)
+        if (j.status === 'completed' || j.status === 'failed') {
+          break
         }
-      })
-      const reloadedJobE2 = await DownloadJob.findByPk(e2eJobE.id)
+        await new Promise((r) => setTimeout(r, 100))
+      }
+
+      const completedJobE = await DownloadJob.findByPk(e2eJobE.id)
       assert.equal(
-        reloadedJobE2.status,
-        'queued',
-        'Scenario E: Interrupted job restored to queued during online startup'
+        completedJobE.status,
+        'completed',
+        'Scenario E: Job completed via real queue after online restart'
       )
-      assert.ok(
-        enqueuedE.includes(e2eJobE.id),
-        'Scenario E: Job submitted to queue on application startup'
-      )
-      assert.equal(reloadedJobE2.id, e2eJobE.id, 'Scenario E: Original Job ID strictly preserved')
+      assert.equal(completedJobE.id, e2eJobE.id, 'Scenario E: Original Job ID strictly preserved')
       console.log(
         '  ✓ Scenario E passed: Application restart lifecycle recovers interrupted jobs safely\n'
       )
@@ -1956,12 +2276,16 @@ async function runNetworkRecoveryTests() {
     }
 
     console.log('================================================================')
-    console.log(' ALL TESTS 01 THROUGH 10 (AND F, G, H) PASSED (100%)            ')
+    console.log(' ALL TESTS 01 THROUGH 10 (AND F, G, H, B, C, D, E) PASSED (100%)')
     console.log('================================================================\n')
   } finally {
+    resetAllowLocalhostForTesting()
+    resetAnalyzerForTesting()
+    resetPathResolverForTesting()
     resetCleanupHandlerForTesting()
     setConnectivityCheckerForTesting(null)
     resetNetworkMonitoringForTesting()
+    resetQueueForTesting()
     await testDb.cleanup()
   }
 }

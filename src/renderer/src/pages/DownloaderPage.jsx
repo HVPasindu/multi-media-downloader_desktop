@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from 'react'
+import { useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import {
   Zap,
   ShieldCheck,
@@ -769,7 +769,8 @@ export default function DownloaderPage() {
   // Step 03 & 04: Format & Quality availability extraction (using verified MP4 qualities)
   const formatAvailability = getMediaFormatAvailability(analyzedMedia)
   const { mp4Available, mp3Available } = formatAvailability
-  const mp4Qualities = extractMp4Qualities(analyzedMedia)
+  // eslint-disable-next-line react-hooks/preserve-manual-memoization
+  const mp4Qualities = useMemo(() => extractMp4Qualities(analyzedMedia), [analyzedMedia])
   const highestAvailableQuality = mp4Qualities.length > 0 ? mp4Qualities[0] : null
 
   // Visual isolation states between MP4 and MP3 configurations

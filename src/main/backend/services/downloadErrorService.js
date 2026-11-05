@@ -9,6 +9,7 @@ export const DOWNLOAD_ERROR_CODES = Object.freeze({
   YT_DLP_NOT_FOUND: 'YT_DLP_NOT_FOUND',
   FFMPEG_NOT_FOUND: 'FFMPEG_NOT_FOUND',
   FFPROBE_NOT_FOUND: 'FFPROBE_NOT_FOUND',
+  FFPROBE_FAILED: 'FFPROBE_FAILED',
   YT_DLP_FAILED: 'YT_DLP_FAILED',
   FFMPEG_FAILED: 'FFMPEG_FAILED',
   DISK_FULL: 'DISK_FULL',
@@ -36,6 +37,8 @@ export const DEFAULT_ERROR_MESSAGES = Object.freeze({
     'FFmpeg executable was not found. Please ensure FFmpeg is installed and available in PATH.',
   [DOWNLOAD_ERROR_CODES.FFPROBE_NOT_FOUND]:
     'FFprobe executable was not found. FFmpeg tools must be available in PATH.',
+  [DOWNLOAD_ERROR_CODES.FFPROBE_FAILED]:
+    'FFprobe could not inspect the downloaded file. The output has been preserved for another verification attempt.',
   [DOWNLOAD_ERROR_CODES.YT_DLP_FAILED]:
     'Download engine encountered an error while processing the media.',
   [DOWNLOAD_ERROR_CODES.FFMPEG_FAILED]: 'Audio or video processing failed.',
@@ -184,6 +187,7 @@ export function classifyDownloadError(error, context = {}) {
       'ECONNREFUSED',
       'ENOTFOUND',
       'EAI_AGAIN',
+      'DNS_LOOKUP_FAILED',
       'ENETUNREACH',
       'EHOSTUNREACH',
       'EPIPE'
@@ -358,10 +362,16 @@ export function classifyDownloadError(error, context = {}) {
   // Network Error in stderr
   if (
     lowerText.includes('unable to download webpage') ||
+    lowerText.includes('temporary failure in name resolution') ||
+    lowerText.includes('name or service not known') ||
     lowerText.includes('getaddrinfo failed') ||
+    lowerText.includes('getaddrinfo enotfound') ||
+    lowerText.includes('unable to connect') ||
     lowerText.includes('failed to resolve') ||
     lowerText.includes('network is unreachable') ||
     lowerText.includes('connection reset by peer') ||
+    lowerText.includes('connection refused') ||
+    lowerText.includes('econnrefused') ||
     lowerText.includes('remote end closed connection') ||
     lowerText.includes('incompleteread') ||
     lowerText.includes('network error')
@@ -402,9 +412,35 @@ export function classifyDownloadError(error, context = {}) {
   if (
     error?.name === 'SequelizeTimeoutError' ||
     error?.name === 'SequelizeDatabaseError' ||
+    error?.name === 'SequelizeConnectionError' ||
+    error?.name === 'SequelizeUniqueConstraintError' ||
+    error?.name === 'SequelizeForeignKeyConstraintError' ||
+    [
+      'SQLITE_BUSY',
+      'SQLITE_LOCKED',
+      'SQLITE_CONSTRAINT',
+      'SQLITE_IOERR',
+      'SQLITE_CORRUPT'
+    ].includes(systemCode) ||
+    [
+      'SQLITE_BUSY',
+      'SQLITE_LOCKED',
+      'SQLITE_CONSTRAINT',
+      'SQLITE_IOERR',
+      'SQLITE_CORRUPT'
+    ].includes(error?.parent?.code) ||
+    [
+      'SQLITE_BUSY',
+      'SQLITE_LOCKED',
+      'SQLITE_CONSTRAINT',
+      'SQLITE_IOERR',
+      'SQLITE_CORRUPT'
+    ].includes(error?.original?.code) ||
     lowerText.includes('sqlite_busy') ||
     lowerText.includes('database is locked') ||
-    lowerText.includes('database locked')
+    lowerText.includes('database locked') ||
+    lowerText.includes('sqlite_') ||
+    lowerText.includes('sqlite error')
   ) {
     return {
       code: DOWNLOAD_ERROR_CODES.DATABASE_ERROR,
@@ -523,6 +559,8 @@ export function isTransientNetworkError(error, context = {}) {
     text.includes('failed to resolve') ||
     text.includes('the read operation timed out') ||
     text.includes('remote end closed connection') ||
-    text.includes('incompleteread')
+    text.includes('incompleteread') ||
+    text.includes('giving up after') ||
+    text.includes('bytes read')
   )
 }

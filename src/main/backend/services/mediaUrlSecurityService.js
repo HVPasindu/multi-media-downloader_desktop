@@ -6,6 +6,16 @@ import { PLATFORM_DOMAINS } from '../providers/providerManager.js'
  * Maximum permitted URL length to prevent memory exhaustion and abusive inputs
  * while safely accommodating signed media URLs and long query parameter strings.
  */
+let allowLocalhostForTesting = false
+
+export function setAllowLocalhostForTesting(allow) {
+  allowLocalhostForTesting = Boolean(allow)
+}
+
+export function resetAllowLocalhostForTesting() {
+  allowLocalhostForTesting = false
+}
+
 export const MAX_URL_LENGTH = 2048
 
 /**
@@ -269,6 +279,17 @@ export function validateMediaUrlSyntax(sourceUrl) {
     throw new UrlSecurityError('INVALID_HOSTNAME', 'URL hostname cannot be empty')
   }
 
+  if (
+    allowLocalhostForTesting &&
+    (normalizedHost === '127.0.0.1' || normalizedHost === 'localhost')
+  ) {
+    return {
+      sourceUrl: cleanUrl,
+      platform: 'youtube',
+      hostname: normalizedHost
+    }
+  }
+
   // 10. Localhost destination rejection
   if (hostname === 'localhost' || hostname.endsWith('.localhost')) {
     throw new UrlSecurityError(
@@ -424,7 +445,13 @@ export async function validateMediaUrl(sourceUrl, options = {}) {
   const validated = validateMediaUrlSyntax(sourceUrl)
 
   // 2. Perform DNS resolution preflight check unless explicitly skipped
-  if (options.checkDns !== false) {
+  if (
+    options.checkDns !== false &&
+    !(
+      allowLocalhostForTesting &&
+      (validated.hostname === '127.0.0.1' || validated.hostname === 'localhost')
+    )
+  ) {
     await validateHostDns(validated.hostname, options.dnsLookup)
   }
 

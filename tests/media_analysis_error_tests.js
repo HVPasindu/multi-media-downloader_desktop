@@ -107,6 +107,25 @@ async function runErrorClassificationTests() {
     assert.equal(c8.code, 'ANALYSIS_FAILED')
     console.log('✓ Test 1.7 Passed: General yt-dlp error -> ANALYSIS_FAILED')
 
+    // 1.8 Non-YouTube Rate Limit (HTTP 429) -> generic RATE_LIMITED
+    const twRateLimit = {
+      message: 'HTTP Error 429: Too Many Requests',
+      stderr: 'Rate limit exceeded on api.twitter.com'
+    }
+    const cTw = classifyAnalysisError(twRateLimit, 'twitter')
+    assert.equal(cTw.code, 'RATE_LIMITED')
+    assert.equal(cTw.retryAfterSeconds, 60)
+    console.log('✓ Test 1.8 Passed: Non-YouTube 429 -> generic RATE_LIMITED with 60s cooldown')
+
+    // 1.9 Non-YouTube Authentication Required -> generic AUTH_REQUIRED
+    const igAuth = {
+      message: 'Login required',
+      stderr: 'This post is private. Sign in to view this video.'
+    }
+    const cIg = classifyAnalysisError(igAuth, 'instagram')
+    assert.equal(cIg.code, 'AUTH_REQUIRED')
+    console.log('✓ Test 1.9 Passed: Non-YouTube private/login -> generic AUTH_REQUIRED')
+
     // ------------------------------------------------------------------------
     // Group 2: Combined Error Output (PO Token & Auth Priority Over 429)
     // ------------------------------------------------------------------------
@@ -506,6 +525,74 @@ async function runErrorClassificationTests() {
     console.log('✓ Test 5.3 Passed: Normal public domains with trailing dot remain allowed.')
     console.log(
       '✓ Test 5.4 Passed: Private IPv4, IPv6, loopback, and dangerous schemes remain blocked.'
+    )
+
+    // ------------------------------------------------------------------------
+    // Group 6: Multi-Platform Error Classification Isolation
+    // ------------------------------------------------------------------------
+    console.log('\n--- 6. Testing Multi-Platform Error Classification Isolation ---')
+
+    const nonYtPlatforms = ['facebook', 'instagram', 'tiktok', 'twitter', 'x']
+
+    for (const plat of nonYtPlatforms) {
+      // 6.1 PO Token message on non-YouTube platform must NOT produce YOUTUBE_PO_TOKEN_REQUIRED
+      const poSim = {
+        message: 'Extractor error: visitor_data / po_token required',
+        stderr: 'Please provide po_token for extraction'
+      }
+      const cPo = classifyAnalysisError(poSim, plat)
+      assert.notEqual(
+        cPo.code,
+        'YOUTUBE_PO_TOKEN_REQUIRED',
+        `Platform ${plat} must NEVER receive YOUTUBE_PO_TOKEN_REQUIRED`
+      )
+      assert.equal(
+        cPo.code,
+        'ANALYSIS_FAILED',
+        `Platform ${plat} should fall through to ANALYSIS_FAILED for unknown token errors`
+      )
+
+      // 6.2 Auth error on non-YouTube platform must return generic AUTH_REQUIRED
+      const authSim = {
+        message: 'Login required',
+        stderr: 'This media is private. Sign in to view this video.'
+      }
+      const cAuth = classifyAnalysisError(authSim, plat)
+      assert.equal(
+        cAuth.code,
+        'AUTH_REQUIRED',
+        `Platform ${plat} must receive generic AUTH_REQUIRED`
+      )
+      assert.notEqual(
+        cAuth.code,
+        'YOUTUBE_AUTH_REQUIRED',
+        `Platform ${plat} must NOT receive YOUTUBE_AUTH_REQUIRED`
+      )
+
+      // 6.3 Rate limit on non-YouTube platform must return generic RATE_LIMITED
+      const rateSim = {
+        message: 'HTTP Error 429: Too Many Requests',
+        stderr: 'Rate limited by server'
+      }
+      const cRate = classifyAnalysisError(rateSim, plat)
+      assert.equal(cRate.code, 'RATE_LIMITED', `Platform ${plat} must receive generic RATE_LIMITED`)
+      assert.equal(cRate.retryAfterSeconds, 60)
+      assert.notEqual(
+        cRate.code,
+        'YOUTUBE_RATE_LIMITED',
+        `Platform ${plat} must NOT receive YOUTUBE_RATE_LIMITED`
+      )
+
+      // 6.4 Network errors return generic NETWORK_ERROR across all platforms
+      const netSim = {
+        message: 'getaddrinfo ENOTFOUND api.service.com',
+        stderr: ''
+      }
+      const cNet = classifyAnalysisError(netSim, plat)
+      assert.equal(cNet.code, 'NETWORK_ERROR', `Platform ${plat} must receive NETWORK_ERROR`)
+    }
+    console.log(
+      '✓ Test 6 Passed: Multi-platform error isolation verified across Facebook, Instagram, TikTok, Twitter/X.'
     )
 
     console.log('\n================================================================')

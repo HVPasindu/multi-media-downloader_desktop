@@ -1,7 +1,6 @@
 import https from 'node:https'
 import { getDatabase } from '../config/database.js'
-import { getSavedDownloadPath } from './downloadSettingsService.js'
-import { getDefaultDownloadPath } from './downloadPathService.js'
+import { resolveValidatedDownloadPath } from './downloadPathService.js'
 import {
   verifyJobPartialDownload,
   cleanupJobTemporaryFiles,
@@ -56,31 +55,22 @@ function probeHttpsEndpoint(endpointUrl, timeoutMs = 3000) {
       req = https.get(
         endpointUrl,
         {
-          timeout: timeoutMs,
           headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) MultiMediaDownloader/1.0'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
           }
         },
         (res) => {
-          // Drain response to ensure socket is returned/freed
-          res.resume()
           if (!settled) {
             settled = true
             cleanup()
-            const isSuccess = Boolean(res.statusCode >= 200 && res.statusCode < 400)
+            // Drain data to free socket resources cleanly
+            res.resume()
+            const isSuccess =
+              typeof res.statusCode === 'number' && res.statusCode >= 200 && res.statusCode < 400
             resolve(isSuccess)
           }
         }
       )
-
-      req.on('timeout', () => {
-        if (!settled) {
-          settled = true
-          cleanup()
-          req.destroy()
-          resolve(false)
-        }
-      })
 
       req.on('error', () => {
         if (!settled) {
@@ -100,63 +90,67 @@ function probeHttpsEndpoint(endpointUrl, timeoutMs = 3000) {
 }
 
 /**
- * Step 09 Section B - Bounded network connectivity checker.
- * Uses Node.js built-in HTTPS to test genuine external connectivity against
- * fixed, trusted endpoints with a fallback, reasonable timeout, and complete socket cleanup.
+ * Checks live internet connectivity using genuine HTTPS requests.
+ * Uses primary Google generate_204 endpoint and falls back to Cloudflare trace endpoint.
  *
  * @param {object} [options={}]
  * @param {number} [options.timeoutMs=3000]
  * @returns {Promise<boolean>}
  */
-export async function checkNetworkConnectivity({ timeoutMs = 3000 } = {}) {
+export async function checkNetworkConnectivity(options = {}) {
   if (typeof customConnectivityChecker === 'function') {
     return await customConnectivityChecker()
   }
 
-  // 1. Primary endpoint check (Google generate_204)
-  const primaryOk = await probeHttpsEndpoint(PRIMARY_CONNECTIVITY_ENDPOINT, timeoutMs)
-  if (primaryOk) {
+  const timeoutMs = options.timeoutMs || 3000
+
+  // 1. Check primary endpoint
+  const primaryOnline = await probeHttpsEndpoint(PRIMARY_CONNECTIVITY_ENDPOINT, timeoutMs)
+  if (primaryOnline) {
     return true
   }
 
-  // 2. Fallback endpoint check (Cloudflare trace)
-  const fallbackOk = await probeHttpsEndpoint(FALLBACK_CONNECTIVITY_ENDPOINT, timeoutMs)
-  return fallbackOk
+  // 2. Check fallback endpoint
+  const fallbackOnline = await probeHttpsEndpoint(FALLBACK_CONNECTIVITY_ENDPOINT, timeoutMs)
+  return fallbackOnline
 }
 
 /**
- * Allows automated tests to simulate network disconnection and reconnection deterministically.
- * Pass null to restore real network checks.
+ * Test hook to inject simulated connectivity state.
  *
- * @param {Function|null} checkerFn
+ * @param {Function|null} checker - Async function returning boolean, or null to reset
  */
-export function setConnectivityCheckerForTesting(checkerFn) {
-  customConnectivityChecker = checkerFn
+export function setConnectivityCheckerForTesting(checker) {
+  customConnectivityChecker = checker
 }
 
 /**
- * Step 09 Section B - Finds all 'interrupted' jobs in SQLite, verifies their
- * physical partial files on disk, preserves progress and downloaded bytes,
- * restores them to 'queued' status, and enqueues them in FIFO order using the SAME Job ID.
+ * Step 09.B (Phase 04) — Resume Interrupted Network Jobs.
  *
- * Guaranteed non-overlapping execution via an internal isRecovering lock.
+ * Scans SQLite for jobs stuck in 'interrupted' status and transitions them back to 'queued'
+ * for execution by the FIFO download queue once internet connectivity is confirmed.
+ *
+ * Enforces Global FIFO ordering (createdAt ASC, id ASC).
+ * Adheres strictly to Option A: Resume Existing Job (preserves original Job ID,
+ * does not create duplicates, preserves valid partial progress).
  *
  * @param {object} [options={}]
- * @param {Function} [options.enqueue] - Custom enqueue callback for testing/dependency injection
- * @returns {Promise<{ resumedCount: number, resumedJobIds: Array<number>, jobIds: Array<number> }>}
+ * @param {Function} [options.enqueue] - Custom queue enqueue function for testing
+ * @param {boolean} [options.autoEnqueue=true]
+ * @returns {Promise<{ resumedCount: number, resumedJobIds: number[], jobIds: number[] }>}
  */
 export async function resumeInterruptedNetworkJobs(options = {}) {
   if (isRecovering) {
+    console.log('[network-recovery] Recovery cycle already in progress, skipping duplicate pass')
     return { resumedCount: 0, resumedJobIds: [], jobIds: [] }
   }
+
   isRecovering = true
 
   try {
     const isOnline = await checkNetworkConnectivity()
     if (!isOnline) {
-      console.log(
-        '[network-recovery] Internet connection still unavailable. Interrupted jobs remain safe.'
-      )
+      console.log('[network-recovery] Internet is still offline. Cannot resume downloads.')
       return { resumedCount: 0, resumedJobIds: [], jobIds: [] }
     }
 
@@ -170,8 +164,7 @@ export async function resumeInterruptedNetworkJobs(options = {}) {
 
     let downloadPath = null
     try {
-      const savedPath = await getSavedDownloadPath(AppSetting)
-      downloadPath = savedPath || (await getDefaultDownloadPath())
+      downloadPath = await resolveValidatedDownloadPath(AppSetting)
     } catch {
       downloadPath = null
     }
@@ -201,6 +194,17 @@ export async function resumeInterruptedNetworkJobs(options = {}) {
 
     for (const job of interruptedJobs) {
       if (alreadyScheduled.has(job.id)) {
+        continue
+      }
+
+      if (!downloadPath) {
+        await job.update({
+          status: 'failed',
+          error_message: 'Network recovery failed: Unable to resolve valid download folder path'
+        })
+        console.warn(
+          `[network-recovery] Job ${job.id} failed: Unable to resolve valid download folder path.`
+        )
         continue
       }
 
@@ -373,6 +377,7 @@ export function stopNetworkMonitoring() {
  */
 export function resetNetworkMonitoringForTesting() {
   stopNetworkMonitoring()
+  resetJobRetryStateForTesting()
   lastKnownOnline = null
   currentBackoffMs = 5000
   isRecovering = false
@@ -384,6 +389,171 @@ export function resetNetworkMonitoringForTesting() {
  *
  * @returns {boolean}
  */
+const jobRetryState = new Map()
+
+/**
+ * Resumes a single interrupted job by ID, validating partial files and re-enqueueing.
+ *
+ * @param {number} jobId
+ * @returns {Promise<boolean>} True if resumed, false otherwise
+ */
+export async function resumeSingleInterruptedJob(jobId) {
+  const sequelize = getDatabase()
+  if (!sequelize?.models?.DownloadJob) return false
+  const { DownloadJob, AppSetting } = sequelize.models
+  const job = await DownloadJob.findByPk(jobId)
+  if (!job || job.status !== 'interrupted') return false
+
+  let downloadPath = null
+  try {
+    downloadPath = await resolveValidatedDownloadPath(AppSetting)
+  } catch {
+    downloadPath = null
+  }
+
+  if (!downloadPath) {
+    await job.update({
+      status: 'failed',
+      error_message: 'Network recovery failed: Unable to resolve valid download folder path'
+    })
+    return false
+  }
+
+  let hasValidPartial = false
+  let reconciledBytes = 0
+  try {
+    const partialResult = await verifyJobPartialDownload(job.id, downloadPath, {
+      savedDownloadedBytes: job.downloaded_bytes,
+      savedProgress: job.progress
+    })
+    hasValidPartial = isPartialDownloadResumable(partialResult)
+    if (hasValidPartial) {
+      reconciledBytes = partialResult.reconciledBytes
+    }
+  } catch {
+    hasValidPartial = false
+  }
+
+  if (hasValidPartial) {
+    await job.update({
+      status: 'queued',
+      downloaded_bytes: reconciledBytes,
+      error_message: null
+    })
+  } else {
+    await job.update({
+      status: 'queued',
+      progress: 0,
+      downloaded_bytes: 0,
+      error_message: null
+    })
+  }
+
+  enqueueDownloadJob(job.id)
+  return true
+}
+
+/**
+ * Schedules an exponential backoff retry for an interrupted job.
+ * Avoids continuous retry loops by capping retries at 5.
+ *
+ * @param {number} jobId
+ * @param {number|null} [customDelayMs=null]
+ */
+export function scheduleJobRetry(jobId, customDelayMs = null) {
+  if (!Number.isSafeInteger(jobId) || jobId <= 0) return
+
+  const existing = jobRetryState.get(jobId) || { retryCount: 0, timer: null }
+  if (existing.timer) {
+    clearTimeout(existing.timer)
+    existing.timer = null
+  }
+
+  existing.retryCount += 1
+  const backoffPower = Math.min(existing.retryCount, 5)
+  const delayMs = customDelayMs ?? Math.min(2000 * Math.pow(2, backoffPower - 1), 30000)
+
+  console.log(
+    `[network-recovery] Scheduling retry for job ${jobId} in ${delayMs}ms (attempt ${existing.retryCount}, delay capped at 30s)`
+  )
+
+  existing.timer = setTimeout(async () => {
+    existing.timer = null
+    try {
+      const DownloadJob = getDatabase()?.models?.DownloadJob
+      if (!DownloadJob) return
+
+      const job = await DownloadJob.findByPk(jobId)
+      if (!job || job.status !== 'interrupted') {
+        jobRetryState.delete(jobId)
+        return
+      }
+
+      const online = await checkNetworkConnectivity({ timeoutMs: 2000 }).catch(() => false)
+      if (!online) {
+        console.log(
+          `[network-recovery] Network remains offline during retry check for job ${jobId}. Rescheduling next check...`
+        )
+        scheduleJobRetry(jobId)
+        return
+      }
+
+      await resumeSingleInterruptedJob(jobId)
+    } catch (err) {
+      console.warn(`[network-recovery] Auto-retry check failed for job ${jobId}: ${err.message}`)
+      try {
+        const DownloadJob = getDatabase()?.models?.DownloadJob
+        const j = await DownloadJob?.findByPk(jobId)
+        if (j && j.status === 'interrupted') {
+          scheduleJobRetry(jobId)
+        } else {
+          jobRetryState.delete(jobId)
+        }
+      } catch {
+        jobRetryState.delete(jobId)
+      }
+    }
+  }, delayMs)
+
+  jobRetryState.set(jobId, existing)
+  return { retryCount: existing.retryCount, delayMs }
+}
+
+/**
+ * Returns current retry state for a job (or null if not tracked).
+ *
+ * @param {number} jobId
+ * @returns {{ retryCount: number, hasTimer: boolean }|null}
+ */
+export function getJobRetryState(jobId) {
+  const existing = jobRetryState.get(jobId)
+  if (!existing) return null
+  return { retryCount: existing.retryCount, hasTimer: !!existing.timer }
+}
+
+/**
+ * Clears retry tracking state for a specific job.
+ *
+ * @param {number} jobId
+ */
+export function clearJobRetryState(jobId) {
+  const existing = jobRetryState.get(jobId)
+  if (existing?.timer) {
+    clearTimeout(existing.timer)
+  }
+  jobRetryState.delete(jobId)
+}
+
+/**
+ * Resets all retry tracking state for testing.
+ */
+export function resetJobRetryStateForTesting() {
+  for (const [, state] of jobRetryState) {
+    if (state.timer) clearTimeout(state.timer)
+  }
+  jobRetryState.clear()
+}
+
 export function isNetworkOnline() {
   return lastKnownOnline === true
 }

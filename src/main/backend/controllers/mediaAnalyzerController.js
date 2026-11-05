@@ -26,7 +26,7 @@ export async function analyzeMediaController(req, res, next) {
         analysisError.userMessage || analysisError.message || 'Failed to analyze media link'
       const retryAfterSeconds = analysisError.retryAfterSeconds || null
 
-      if (code === 'YOUTUBE_RATE_LIMITED') {
+      if (code === 'YOUTUBE_RATE_LIMITED' || code === 'RATE_LIMITED') {
         return res.status(429).json({
           success: false,
           code,
