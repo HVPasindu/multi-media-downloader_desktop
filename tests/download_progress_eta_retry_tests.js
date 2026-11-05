@@ -277,13 +277,196 @@ async function runProgressEtaRetryTests() {
   const interruptedJobRaw = {
     id: 101,
     status: 'interrupted',
+    progress: 48,
     downloaded_bytes: 25 * 1024 * 1024,
     total_bytes: 52 * 1024 * 1024
   }
   const normInterrupted = normalizeDownloadJob(interruptedJobRaw, speedTracker)
   assert.equal(speedTracker.has(101), false, 'Speed sample deleted when not downloading')
   assert.equal(normInterrupted.speedText, '0 KB/s')
+  assert.equal(normInterrupted.etaText, 'Waiting for connection')
   assert.equal(normInterrupted.etaDisplay, 'Waiting for connection')
+  assert.equal(normInterrupted.displayStatus, 'interrupted')
+  assert.equal(normInterrupted.statusText, 'Interrupted – Waiting for internet connection')
+  assert.equal(normInterrupted.progress, 48, 'Interrupted progress is preserved')
+
+  // 4.6 Estimated Total Size Indicator (ORDER 01)
+  // Case A: Live estimated total (total_bytes_is_estimate: true)
+  const estJob = {
+    id: 103,
+    status: 'downloading',
+    downloaded_bytes: 25 * 1024 * 1024,
+    total_bytes: 52 * 1024 * 1024,
+    total_bytes_is_estimate: true
+  }
+  const normEst = normalizeDownloadJob(estJob)
+  assert.equal(normEst.totalBytesIsEstimate, true, '4.6A: totalBytesIsEstimate is true')
+  assert.equal(normEst.totalBytesFormatted, '~52 MB', '4.6A: totalBytesFormatted has tilde prefix')
+  assert.equal(normEst.progressText, '25 MB / ~52 MB', '4.6A: progressText is 25 MB / ~52 MB')
+
+  // Case B: Integer 1 estimate flag
+  const estIntJob = {
+    id: 104,
+    status: 'downloading',
+    downloaded_bytes: 10 * 1024 * 1024,
+    total_bytes: 50 * 1024 * 1024,
+    total_bytes_is_estimate: 1
+  }
+  const normEstInt = normalizeDownloadJob(estIntJob)
+  assert.equal(normEstInt.totalBytesIsEstimate, true, '4.6B: integer 1 parsed as estimate')
+  assert.equal(normEstInt.totalBytesFormatted, '~50 MB', '4.6B: ~50 MB formatted')
+
+  // Case C: Exact total size (total_bytes_is_estimate: false)
+  const exactJob = {
+    id: 105,
+    status: 'downloading',
+    downloaded_bytes: 25 * 1024 * 1024,
+    total_bytes: 52 * 1024 * 1024,
+    total_bytes_is_estimate: false
+  }
+  const normExact = normalizeDownloadJob(exactJob)
+  assert.equal(
+    normExact.totalBytesIsEstimate,
+    false,
+    '4.6C: exact job totalBytesIsEstimate is false'
+  )
+  assert.equal(normExact.totalBytesFormatted, '52 MB', '4.6C: totalBytesFormatted has NO tilde')
+  assert.equal(normExact.progressText, '25 MB / 52 MB', '4.6C: progressText is 25 MB / 52 MB')
+
+  // Case D: Estimated total with 0 downloaded bytes
+  const zeroEstJob = {
+    id: 106,
+    status: 'queued',
+    downloaded_bytes: 0,
+    total_bytes: 52 * 1024 * 1024,
+    total_bytes_is_estimate: true
+  }
+  const normZeroEst = normalizeDownloadJob(zeroEstJob)
+  assert.equal(
+    normZeroEst.progressText,
+    '~52 MB',
+    '4.6D: 0 downloaded displays estimated total size'
+  )
+
+  // Case E: Unknown total with downloaded bytes > 0
+  const unknownTotalJob = {
+    id: 107,
+    status: 'downloading',
+    downloaded_bytes: 25 * 1024 * 1024,
+    total_bytes: null
+  }
+  const normUnknown = normalizeDownloadJob(unknownTotalJob)
+  assert.equal(normUnknown.totalBytes, null, '4.6E: totalBytes is null')
+  assert.equal(normUnknown.totalBytesFormatted, null, '4.6E: totalBytesFormatted is null')
+  assert.equal(
+    normUnknown.progressText,
+    '25 MB downloaded',
+    '4.6E: progressText displays X downloaded'
+  )
+
+  // Case F: Completed job fallback to file.file_size (exact, no tilde even if flag was 1)
+  const completedFallbackJob = {
+    id: 108,
+    status: 'completed',
+    total_bytes: null,
+    total_bytes_is_estimate: 1, // should be ignored when total_bytes is null and file.file_size is used
+    file: { file_size: 52 * 1024 * 1024 }
+  }
+  const normFallback = normalizeDownloadJob(completedFallbackJob)
+  assert.equal(
+    normFallback.totalBytesIsEstimate,
+    false,
+    '4.6F: fallback file size is never estimated'
+  )
+  assert.equal(normFallback.totalBytesFormatted, '52 MB', '4.6F: completed file size has no tilde')
+
+  // 4.7 Resuming State UI Normalization (ORDER 02)
+  // Derived resuming from queued with existing progress
+  const queuedWithProgressJob = {
+    id: 109,
+    status: 'queued',
+    progress: 48,
+    downloaded_bytes: 25 * 1024 * 1024,
+    total_bytes: 52 * 1024 * 1024
+  }
+  const normResumingDerived = normalizeDownloadJob(queuedWithProgressJob, speedTracker)
+  assert.equal(normResumingDerived.displayStatus, 'resuming', '4.7A: displayStatus is resuming')
+  assert.equal(
+    normResumingDerived.status,
+    'queued',
+    '4.7A: underlying backend status remains queued'
+  )
+  assert.equal(
+    normResumingDerived.statusText,
+    'Resuming (48% saved)',
+    '4.7A: statusText shows saved progress'
+  )
+  assert.equal(
+    normResumingDerived.speedText,
+    null,
+    '4.7A: speedText is null while waiting to resume'
+  )
+  assert.equal(normResumingDerived.etaText, 'Resuming...', '4.7A: etaText is Resuming...')
+  assert.equal(normResumingDerived.etaDisplay, 'Resuming...', '4.7A: etaDisplay is Resuming...')
+  assert.equal(normResumingDerived.progress, 48, '4.7A: progress is preserved')
+
+  // Fresh queued job with progress 0
+  const freshQueuedJob = {
+    id: 110,
+    status: 'queued',
+    progress: 0
+  }
+  const normFreshQueued = normalizeDownloadJob(freshQueuedJob)
+  assert.equal(normFreshQueued.displayStatus, 'queued', '4.7B: fresh queued remains queued')
+  assert.equal(normFreshQueued.statusText, 'Queued', '4.7B: fresh queued statusText is Queued')
+  assert.equal(normFreshQueued.speedText, null)
+  assert.equal(normFreshQueued.etaDisplay, null)
+
+  // 4.8 Fresh Reconnection & Speed Invalidation Flow
+  const reconJob = {
+    id: 111,
+    status: 'downloading',
+    downloaded_bytes: 20 * 1024 * 1024,
+    total_bytes: 100 * 1024 * 1024
+  }
+  normalizeDownloadJob(reconJob, speedTracker)
+  assert.ok(speedTracker.has(111), '4.8: speedTracker has entry during download')
+
+  // Network drops -> interrupted
+  normalizeDownloadJob({ ...reconJob, status: 'interrupted' }, speedTracker)
+  assert.equal(speedTracker.has(111), false, '4.8: speedTracker cleared on interrupt')
+
+  // Network restored -> resumes downloading
+  // Tick 1 after restore: baseline created
+  const reconNorm1 = normalizeDownloadJob(
+    { ...reconJob, downloaded_bytes: 20 * 1024 * 1024 },
+    speedTracker
+  )
+  assert.equal(
+    reconNorm1.etaDisplay,
+    'Calculating...',
+    '4.8: First sample after resume is Calculating...'
+  )
+
+  // Tick 2 (1 second later, +2 MB downloaded):
+  const sampleRecon = speedTracker.get(111)
+  sampleRecon.timestamp = Date.now() - 1000
+  sampleRecon.bytes = 18 * 1024 * 1024
+  speedTracker.set(111, sampleRecon)
+
+  const reconNorm2 = normalizeDownloadJob(
+    { ...reconJob, downloaded_bytes: 20 * 1024 * 1024 },
+    speedTracker
+  )
+  assert.equal(
+    reconNorm2.speedText,
+    '2 MB/s',
+    '4.8: Fresh speed accurately computed at 2 MB/s without spike'
+  )
+  assert.ok(
+    reconNorm2.etaDisplay.includes('seconds') || reconNorm2.etaDisplay.includes('m'),
+    '4.8: Clean ETA computed'
+  )
 
   console.log('✓ Section 4 Passed: Live speed, ETA and presentation normalization verified.\n')
 

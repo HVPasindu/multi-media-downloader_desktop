@@ -315,7 +315,9 @@ export function getQueueStatus() {
   return {
     maxConcurrency: MAX_CONCURRENT_DOWNLOADS,
     activeCount: activeDownloadCount,
+    activeJobs: activeDownloadCount,
     waitingCount: waitingJobIds.length,
+    waitingJobs: waitingJobIds.length,
     waitingJobIds: [...waitingJobIds],
     scheduledJobIds: [...scheduledJobIds]
   }

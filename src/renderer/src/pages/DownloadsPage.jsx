@@ -379,7 +379,10 @@ export default function DownloadsPage() {
             <tbody className="divide-y divide-primary/10 text-xs">
               {downloadsList.map((item, idx) => {
                 const isDownloading = item.status === 'downloading'
-                const isQueued = item.status === 'queued'
+                const isInterrupted = item.status === 'interrupted'
+                const isResuming = item.displayStatus === 'resuming'
+                const isQueued = item.status === 'queued' && !isResuming
+                const showRecoveryInfo = isDownloading || isInterrupted || isResuming
                 const itemIndex = offset + idx + 1
 
                 return (
@@ -445,23 +448,41 @@ export default function DownloadsPage() {
                         <div className="w-full h-2 rounded-full bg-[#040B1C] overflow-hidden border border-primary/10">
                           <div
                             className={`h-full rounded-full transition-all duration-300 ${
-                              isDownloading
-                                ? 'bg-gradient-to-r from-[#19D8FF] to-[#3388FF]'
-                                : 'bg-primary/20'
+                              isInterrupted
+                                ? 'bg-amber-400/80'
+                                : isDownloading || isResuming
+                                  ? 'bg-gradient-to-r from-[#19D8FF] to-[#3388FF]'
+                                  : 'bg-primary/20'
                             }`}
                             style={{ width: `${item.progress}%` }}
                           />
                         </div>
 
-                        {/* Live Speed & ETA when downloading */}
-                        {isDownloading && (item.speedText || item.etaText) && (
+                        {/* Live Speed & ETA when downloading, interrupted, or resuming */}
+                        {showRecoveryInfo && (
                           <div className="flex items-center justify-between text-[10px] text-text-muted mt-0.5">
-                            <span className="text-cyan-400 font-semibold">
-                              {item.speedText || '—'}
-                            </span>
-                            <span className="text-text-muted/80">
-                              {item.etaText || 'Calculating...'}
-                            </span>
+                            {isInterrupted ? (
+                              <>
+                                <span className="text-amber-400 font-semibold">0 KB/s</span>
+                                <span className="text-amber-400 font-medium">
+                                  Waiting for connection
+                                </span>
+                              </>
+                            ) : isResuming ? (
+                              <>
+                                <span className="text-cyan-400 font-semibold">—</span>
+                                <span className="text-cyan-400 font-medium">Resuming...</span>
+                              </>
+                            ) : (
+                              <>
+                                <span className="text-cyan-400 font-semibold">
+                                  {item.speedText || '—'}
+                                </span>
+                                <span className="text-text-muted/80">
+                                  {item.etaText || 'Calculating...'}
+                                </span>
+                              </>
+                            )}
                           </div>
                         )}
                       </div>

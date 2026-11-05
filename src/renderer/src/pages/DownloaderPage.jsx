@@ -595,7 +595,11 @@ export default function DownloaderPage() {
           .map((job) => normalizeDownloadJob(job, speedTrackerRef.current))
           .filter(Boolean)
         hasActiveRecentRef.current = normalized.some(
-          (i) => i.status === 'downloading' || i.status === 'queued'
+          (i) =>
+            i.status === 'downloading' ||
+            i.status === 'queued' ||
+            i.status === 'interrupted' ||
+            i.displayStatus === 'resuming'
         )
         setRecentDownloads(normalized)
       }
@@ -1476,9 +1480,12 @@ export default function DownloaderPage() {
               ) : (
                 recentDownloads.map((item) => {
                   const isDownloading = item.status === 'downloading'
-                  const isQueued = item.status === 'queued'
+                  const isInterrupted = item.status === 'interrupted'
+                  const isResuming = item.displayStatus === 'resuming'
+                  const isQueued = item.status === 'queued' && !isResuming
                   const isCompleted = item.status === 'completed'
                   const isFailed = item.status === 'failed'
+                  const showProgress = isDownloading || isInterrupted || isResuming
 
                   return (
                     <div
@@ -1509,10 +1516,13 @@ export default function DownloaderPage() {
                           {isDownloading && item.speedText && item.speedText !== '—' && (
                             <span className="text-cyan-400 font-semibold">{item.speedText}</span>
                           )}
+                          {isInterrupted && (
+                            <span className="text-amber-400 font-semibold">0 KB/s</span>
+                          )}
                         </div>
 
-                        {/* Downloading state: active progress bar */}
-                        {isDownloading && (
+                        {/* Downloading, Interrupted & Resuming state: active progress bar */}
+                        {showProgress && (
                           <div className="mt-1.5 flex flex-col gap-1">
                             <div className="flex items-center justify-between text-[10px]">
                               <span className="text-text-muted">
@@ -1524,16 +1534,30 @@ export default function DownloaderPage() {
                             </div>
                             <div className="w-full h-1.5 rounded-full bg-[#0B1C38] overflow-hidden">
                               <div
-                                className="h-full bg-gradient-to-r from-[#19D8FF] to-[#3388FF] rounded-full transition-all duration-300"
+                                className={`h-full rounded-full transition-all duration-300 ${
+                                  isInterrupted
+                                    ? 'bg-amber-400/80'
+                                    : 'bg-gradient-to-r from-[#19D8FF] to-[#3388FF]'
+                                }`}
                                 style={{ width: `${item.progress}%` }}
                               />
                             </div>
-                            {item.etaDisplay && (
+                            {isInterrupted ? (
+                              <div className="text-[10px] text-amber-400 font-medium flex items-center gap-1.5">
+                                <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+                                Waiting for connection
+                              </div>
+                            ) : isResuming ? (
+                              <div className="text-[10px] text-cyan-400 font-medium flex items-center gap-1.5">
+                                <span className="inline-block w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
+                                Resuming...
+                              </div>
+                            ) : item.etaDisplay ? (
                               <div className="text-[10px] text-text-muted/80">
                                 Estimated time remaining:{' '}
                                 <span className="text-white font-medium">{item.etaDisplay}</span>
                               </div>
-                            )}
+                            ) : null}
                           </div>
                         )}
 
