@@ -28,7 +28,8 @@ import {
   checkDownloadDiskSpace,
   assertNoJobOutputFileConflict,
   assertPathInsideDirectory,
-  assertRealPathInsideDirectory
+  assertRealPathInsideDirectory,
+  removeJobOwnedOutputFile
 } from './downloadFileSafetyService.js'
 import {
   resolveYtDlpPath,
@@ -36,6 +37,7 @@ import {
   resolveFFmpegLocationDirectory,
   resolveJavaScriptRuntimeOption
 } from './executablePathService.js'
+import { scheduleJobRetry } from './networkRecoveryService.js'
 
 export {
   DownloadError,
@@ -48,7 +50,9 @@ export {
   checkDownloadDiskSpace,
   assertNoJobOutputFileConflict,
   assertPathInsideDirectory,
-  assertRealPathInsideDirectory
+  assertRealPathInsideDirectory,
+  removeJobOwnedOutputFile,
+  resolveMp4FormatSelector
 }
 
 const execFileAsync = promisify(execFile)
@@ -780,6 +784,101 @@ export async function cancelRunningDownload(jobId) {
   }
 }
 
+/**
+ * Universal MP4 format selector across all supported platforms.
+ * Resolves optimal format selector string and calculates estimated required disk space.
+ *
+ * @param {object} availableFormats - Available formats object from mediaAnalyzerService
+ * @param {string} requestedQuality - Target quality (e.g. '1080p', '720p')
+ * @param {string|null} [platform=null] - Optional platform identifier (kept for backwards compatibility)
+ * @returns {{ selector: string, type: 'separate_merge'|'combined_stream', formatSelector: string, estimatedRequiredBytes: number|null, videoFormat: object, audioFormat: object|null }}
+ */
+function resolveMp4FormatSelector(availableFormats, requestedQuality) {
+  const mp4Formats = Array.isArray(availableFormats?.mp4Formats) ? availableFormats.mp4Formats : []
+  const audioFormats = Array.isArray(availableFormats?.audioFormats)
+    ? availableFormats.audioFormats
+    : []
+
+  const hasFormatId = (format) =>
+    typeof format?.formatId === 'string' && format.formatId.trim().length > 0
+
+  const matchingVideos = mp4Formats.filter(
+    (format) => format?.quality === requestedQuality && hasFormatId(format)
+  )
+
+  // 1. Prefer video-only MP4 with separate compatible audio
+  const videoOnly = [...matchingVideos].reverse().find((format) => format.audioIncluded === false)
+
+  const isPreferredAudio = (format) => {
+    if (!hasFormatId(format)) return false
+    const ext = String(format.extension || '').toLowerCase()
+    const codec = String(format.audioCodec || '').toLowerCase()
+    return (
+      ext === 'm4a' ||
+      ext === 'mp4' ||
+      ext === 'aac' ||
+      codec.includes('aac') ||
+      codec.includes('mp4a')
+    )
+  }
+
+  const compatibleAudio =
+    [...audioFormats].reverse().find(isPreferredAudio) ||
+    [...audioFormats].reverse().find(hasFormatId)
+
+  // 2. Otherwise use a combined MP4 stream containing audio
+  const combinedVideo = [...matchingVideos]
+    .reverse()
+    .find((format) => format.audioIncluded === true)
+
+  if (videoOnly && compatibleAudio) {
+    const selector = `${videoOnly.formatId}+${compatibleAudio.formatId}`
+    const vSize = Number(videoOnly.fileSize) || 0
+    const aSize = Number(compatibleAudio.fileSize) || 0
+    const estimatedRequiredBytes = vSize > 0 || aSize > 0 ? Math.ceil((vSize + aSize) * 2.5) : null
+
+    return {
+      selector,
+      type: 'separate_merge',
+      formatSelector: selector,
+      estimatedRequiredBytes,
+      videoFormat: videoOnly,
+      audioFormat: compatibleAudio
+    }
+  } else if (combinedVideo) {
+    const selector = combinedVideo.formatId
+    const cSize = Number(combinedVideo.fileSize) || 0
+    const estimatedRequiredBytes = cSize > 0 ? Math.ceil(cSize * 2.0) : null
+
+    return {
+      selector,
+      type: 'combined_stream',
+      formatSelector: selector,
+      estimatedRequiredBytes,
+      videoFormat: combinedVideo,
+      audioFormat: null
+    }
+  }
+
+  // 3. Reject unsupported quality with descriptive error
+  const qualityExists = mp4Formats.some((format) => format?.quality === requestedQuality)
+  if (!qualityExists) {
+    const availableQualities = Array.isArray(availableFormats?.mp4Qualities)
+      ? availableFormats.mp4Qualities
+      : []
+    const qualityList = availableQualities.length ? availableQualities.join(', ') : 'None available'
+    throw new DownloadError(
+      DOWNLOAD_ERROR_CODES.FORMAT_UNAVAILABLE,
+      `Unsupported MP4 quality "${requestedQuality}". Available MP4 qualities: ${qualityList}`
+    )
+  }
+
+  throw new DownloadError(
+    DOWNLOAD_ERROR_CODES.FORMAT_UNAVAILABLE,
+    `No compatible MP4 video/audio format found for quality "${requestedQuality}"`
+  )
+}
+
 export async function prepareDownloadJobExecution(jobId) {
   if (!Number.isInteger(jobId) || jobId <= 0) {
     throw new Error('A valid Download Job ID is required')
@@ -817,8 +916,11 @@ export async function prepareDownloadJobExecution(jobId) {
   await validateDownloadFolder(downloadPath)
   await verifyDownloadFolderWritable(downloadPath)
 
-  // Step 04.37 - Output file conflict protection before starting download
-  await assertNoJobOutputFileConflict(downloadPath, job.id)
+  // Check for existing valid job output for adoption or conflict
+  const existingValidFile = await assertNoJobOutputFileConflict(downloadPath, job.id, {
+    allowAdoption: true,
+    expectedFormat: job.output_format
+  })
 
   // Select exact MP4 video and audio source formats
   let mp4FormatSelector = null
@@ -826,76 +928,11 @@ export async function prepareDownloadJobExecution(jobId) {
 
   if (job.output_format === 'mp4') {
     const analysis = await analyzeMedia(media.source_url)
-
     const availableFormats = analysis.availableFormats ?? {}
 
-    const mp4Formats = Array.isArray(availableFormats.mp4Formats) ? availableFormats.mp4Formats : []
-
-    const audioFormats = Array.isArray(availableFormats.audioFormats)
-      ? availableFormats.audioFormats
-      : []
-
-    const hasFormatId = (format) =>
-      typeof format?.formatId === 'string' && format.formatId.trim().length > 0
-
-    const matchingVideos = mp4Formats.filter(
-      (format) => format?.quality === job.quality && hasFormatId(format)
-    )
-
-    const isTwitter = media?.platform === 'twitter' || analysis?.platform === 'twitter'
-
-    // Prefer video-only MP4 with separate M4A audio
-    const videoOnly = [...matchingVideos].reverse().find((format) => format.audioIncluded === false)
-
-    const compatibleAudio = [...audioFormats]
-      .reverse()
-      .find((format) => (isTwitter ? true : format?.extension === 'm4a') && hasFormatId(format))
-
-    // Otherwise use an MP4 source containing audio
-    const combinedVideo = [...matchingVideos]
-      .reverse()
-      .find((format) => format.audioIncluded === true)
-
-    if (videoOnly && compatibleAudio) {
-      mp4FormatSelector = `${videoOnly.formatId}+${compatibleAudio.formatId}`
-      const vSize = Number(videoOnly.fileSize) || 0
-      const aSize = Number(compatibleAudio.fileSize) || 0
-      if (vSize > 0 || aSize > 0) {
-        // Factor 2.5x to conservatively cover video fragment + audio fragment + merged mp4 file
-        estimatedRequiredBytes = Math.ceil((vSize + aSize) * 2.5)
-      }
-    } else if (combinedVideo) {
-      mp4FormatSelector = combinedVideo.formatId
-      const cSize = Number(combinedVideo.fileSize) || 0
-      if (cSize > 0) {
-        estimatedRequiredBytes = Math.ceil(cSize * 2.0)
-      }
-    }
-
-    // Step 04.26 - Unsupported MP4 quality handling
-    if (!mp4FormatSelector) {
-      const availableQualities = Array.isArray(availableFormats.mp4Qualities)
-        ? availableFormats.mp4Qualities
-        : []
-
-      const qualityExists = mp4Formats.some((format) => format?.quality === job.quality)
-
-      if (!qualityExists) {
-        const qualityList = availableQualities.length
-          ? availableQualities.join(', ')
-          : 'None available'
-
-        throw new DownloadError(
-          DOWNLOAD_ERROR_CODES.FORMAT_UNAVAILABLE,
-          `Unsupported MP4 quality "${job.quality}". Available MP4 qualities: ${qualityList}`
-        )
-      }
-
-      throw new DownloadError(
-        DOWNLOAD_ERROR_CODES.FORMAT_UNAVAILABLE,
-        `No compatible MP4 video/audio format found for quality "${job.quality}"`
-      )
-    }
+    const resolved = resolveMp4FormatSelector(availableFormats, job.quality)
+    mp4FormatSelector = resolved.selector
+    estimatedRequiredBytes = resolved.estimatedRequiredBytes
   } else if (job.output_format === 'mp3') {
     if (Number.isFinite(media.duration_seconds) && media.duration_seconds > 0) {
       // Audio stream size estimation: duration (seconds) * bitrate (kbps * 1000 / 8)
@@ -919,9 +956,6 @@ export async function prepareDownloadJobExecution(jobId) {
       'Not enough disk space to complete the download.'
     )
   }
-
-  // Record job execution start time for output file verification
-  const jobStartTime = Date.now()
 
   // Create a dedicated temporary workspace for this download job
   const tempPath = await prepareJobTemporaryWorkspace(job.id, downloadPath)
@@ -949,7 +983,7 @@ export async function prepareDownloadJobExecution(jobId) {
     downloadPath,
     tempPath,
     args,
-    jobStartTime
+    existingValidFile
   }
 }
 
@@ -1030,13 +1064,24 @@ export async function verifyDownloadedFile(finalFilePath, options = {}) {
     )
   }
 
-  // Step 04.37 - Verify output file was newly created during this job execution (not pre-existing)
-  if (options?.jobStartTime && typeof options.jobStartTime === 'number') {
-    // 2000ms margin for filesystem clock granularity
-    if (fileStats.mtimeMs < options.jobStartTime - 2000) {
+  // Verify ownership via job marker [job-ID]
+  if (options?.jobId) {
+    const marker = `[job-${options.jobId}]`
+    if (!basename(filePath).includes(marker)) {
       throw new DownloadError(
         DOWNLOAD_ERROR_CODES.OUTPUT_VERIFICATION_FAILED,
-        'Downloaded output file appears to be a pre-existing file'
+        `Downloaded file does not belong to job ${options.jobId}`
+      )
+    }
+  }
+
+  // Verify expected output format extension if provided
+  if (options?.expectedFormat) {
+    const ext = extname(filePath).slice(1).toLowerCase()
+    if (ext !== options.expectedFormat.toLowerCase()) {
+      throw new DownloadError(
+        DOWNLOAD_ERROR_CODES.OUTPUT_VERIFICATION_FAILED,
+        `Downloaded file format does not match the job (expected: ${options.expectedFormat}, got: ${ext})`
       )
     }
   }
@@ -1223,7 +1268,41 @@ export async function executeDownloadJob(jobId, options = {}) {
   try {
     execution = await prepareDownloadJobExecution(jobId)
   } catch (error) {
-    // Clean up any partially created temporary workspace if preparation failed
+    const isTransient =
+      isTransientNetworkError(error) ||
+      error?.code === 'NETWORK_ERROR' ||
+      error?.code === 'DNS_LOOKUP_FAILED' ||
+      /\b(?:ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH)\b|network is unreachable|timed out|Temporary failure in name resolution|getaddrinfo\s+(?:ENOTFOUND|failed)|unable to connect/i.test(
+        String(error?.message || '') + ' ' + String(error?.stderr || '')
+      )
+
+    if (isTransient) {
+      console.warn(
+        `[download] Job ${jobId} encountered transient network/DNS error during preparation. Transitioning to 'interrupted' and scheduling retry.`
+      )
+      try {
+        const DownloadJob = getDatabase().models.DownloadJob
+        await DownloadJob.update(
+          {
+            status: 'interrupted',
+            error_message:
+              'Internet connection or DNS was lost during preparation. Retrying automatically...'
+          },
+          {
+            where: { id: jobId }
+          }
+        )
+        scheduleJobRetry(jobId)
+      } catch (statusError) {
+        console.error(
+          `[download] Failed to persist interrupted state for job ${jobId}:`,
+          statusError
+        )
+      }
+      throw error
+    }
+
+    // Clean up any partially created temporary workspace if non-transient preparation failed
     try {
       const fallbackPath =
         execution?.downloadPath ||
@@ -1256,6 +1335,61 @@ export async function executeDownloadJob(jobId, options = {}) {
   if (!claimedJob) {
     throw new Error('Download Job is no longer queued')
   }
+
+  // Step 04.38 - Adopt pre-existing valid output file if application previously stopped after yt-dlp moved file
+  if (execution.existingValidFile) {
+    let candidateVerified = null
+    try {
+      candidateVerified = await verifyDownloadedFile(execution.existingValidFile, {
+        downloadPath: execution.downloadPath,
+        jobId,
+        expectedFormat: claimedJob.output_format
+      })
+      await verifyFinalMediaContent(candidateVerified.filePath, claimedJob.output_format)
+    } catch (adoptionErr) {
+      console.warn(
+        `[download] Job ${jobId} candidate output file failed adoption: ${adoptionErr.message}. Removing invalid orphan.`
+      )
+      await removeJobOwnedOutputFile(execution.existingValidFile, execution.downloadPath, jobId)
+      candidateVerified = null
+    }
+
+    if (candidateVerified) {
+      console.log(
+        `[download] Job ${jobId} adopted valid pre-existing final output file: ${candidateVerified.filePath}`
+      )
+      const completionResult = await withCompletionWriteLock(async () => {
+        return await getDatabase().transaction(
+          { type: Transaction.TYPES.IMMEDIATE },
+          async (transaction) => {
+            const saved = await saveDownloadedFile(
+              jobId,
+              candidateVerified.filePath,
+              transaction,
+              candidateVerified
+            )
+            const completed = await markDownloadJobCompleted(jobId, transaction)
+            return { savedFile: saved, completedJob: completed }
+          }
+        )
+      })
+
+      try {
+        await cleanupJobTemporaryFiles(jobId, execution.downloadPath)
+      } catch {
+        // ignore
+      }
+
+      return {
+        job: completionResult.completedJob,
+        file: completionResult.savedFile
+      }
+    }
+  }
+
+  // Tracking final file path and verification failure for safe orphan cleanup
+  let finalFilePath = null
+  let verificationFailed = false
 
   // 3. Prepare ordered progress database updates
   let progressWriteChain = Promise.resolve()
@@ -1417,21 +1551,30 @@ export async function executeDownloadJob(jobId, options = {}) {
       )
     }
 
+    finalFilePath = result.finalFilePath
+
     // Verify final media file outside any transaction to avoid holding database locks during ffprobe
-    const verifiedFile = await verifyDownloadedFile(result.finalFilePath, {
-      downloadPath: execution.downloadPath,
-      jobStartTime: execution.jobStartTime
-    })
-    const fileFormat = extname(verifiedFile.filePath).slice(1).toLowerCase()
+    let verifiedFile
+    try {
+      verifiedFile = await verifyDownloadedFile(finalFilePath, {
+        downloadPath: execution.downloadPath,
+        jobId,
+        expectedFormat: claimedJob.output_format
+      })
+      const fileFormat = extname(verifiedFile.filePath).slice(1).toLowerCase()
 
-    if (fileFormat !== claimedJob.output_format) {
-      throw new DownloadError(
-        DOWNLOAD_ERROR_CODES.OUTPUT_VERIFICATION_FAILED,
-        'Downloaded file format does not match the job'
-      )
+      if (fileFormat !== claimedJob.output_format) {
+        throw new DownloadError(
+          DOWNLOAD_ERROR_CODES.OUTPUT_VERIFICATION_FAILED,
+          'Downloaded file format does not match the job'
+        )
+      }
+
+      await verifyFinalMediaContent(verifiedFile.filePath, claimedJob.output_format)
+    } catch (verifyErr) {
+      verificationFailed = true
+      throw verifyErr
     }
-
-    await verifyFinalMediaContent(verifiedFile.filePath, claimedJob.output_format)
 
     // 9. Save file record and complete job atomically with serialized write and bounded retries
     const MAX_COMPLETION_RETRIES = 5
@@ -1514,6 +1657,18 @@ export async function executeDownloadJob(jobId, options = {}) {
   } catch (error) {
     // Complete any pending progress database writes
     await progressWriteChain
+
+    // Step 04.38 - Remove invalid orphan output file if verification failed
+    if (verificationFailed && finalFilePath && execution?.downloadPath) {
+      try {
+        console.warn(
+          `[download] Output verification failed for job ${jobId}. Removing invalid output file: ${finalFilePath}`
+        )
+        await removeJobOwnedOutputFile(finalFilePath, execution.downloadPath, jobId)
+      } catch (cleanErr) {
+        console.warn(`[download] Failed to remove invalid output file for job ${jobId}:`, cleanErr)
+      }
+    }
 
     // Step 09.G - Handle application shutdown interruption
     if (error instanceof DownloadInterruptedError) {

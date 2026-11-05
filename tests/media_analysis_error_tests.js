@@ -107,6 +107,25 @@ async function runErrorClassificationTests() {
     assert.equal(c8.code, 'ANALYSIS_FAILED')
     console.log('✓ Test 1.7 Passed: General yt-dlp error -> ANALYSIS_FAILED')
 
+    // 1.8 Non-YouTube Rate Limit (HTTP 429) -> generic RATE_LIMITED
+    const twRateLimit = {
+      message: 'HTTP Error 429: Too Many Requests',
+      stderr: 'Rate limit exceeded on api.twitter.com'
+    }
+    const cTw = classifyAnalysisError(twRateLimit, 'twitter')
+    assert.equal(cTw.code, 'RATE_LIMITED')
+    assert.equal(cTw.retryAfterSeconds, 60)
+    console.log('✓ Test 1.8 Passed: Non-YouTube 429 -> generic RATE_LIMITED with 60s cooldown')
+
+    // 1.9 Non-YouTube Authentication Required -> generic AUTH_REQUIRED
+    const igAuth = {
+      message: 'Login required',
+      stderr: 'This post is private. Sign in to view this video.'
+    }
+    const cIg = classifyAnalysisError(igAuth, 'instagram')
+    assert.equal(cIg.code, 'AUTH_REQUIRED')
+    console.log('✓ Test 1.9 Passed: Non-YouTube private/login -> generic AUTH_REQUIRED')
+
     // ------------------------------------------------------------------------
     // Group 2: Combined Error Output (PO Token & Auth Priority Over 429)
     // ------------------------------------------------------------------------

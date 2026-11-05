@@ -377,6 +377,7 @@ export function stopNetworkMonitoring() {
  */
 export function resetNetworkMonitoringForTesting() {
   stopNetworkMonitoring()
+  resetJobRetryStateForTesting()
   lastKnownOnline = null
   currentBackoffMs = 5000
   isRecovering = false
@@ -388,6 +389,152 @@ export function resetNetworkMonitoringForTesting() {
  *
  * @returns {boolean}
  */
+const jobRetryState = new Map()
+
+/**
+ * Resumes a single interrupted job by ID, validating partial files and re-enqueueing.
+ *
+ * @param {number} jobId
+ * @returns {Promise<boolean>} True if resumed, false otherwise
+ */
+export async function resumeSingleInterruptedJob(jobId) {
+  const sequelize = getDatabase()
+  if (!sequelize?.models?.DownloadJob) return false
+  const { DownloadJob, AppSetting } = sequelize.models
+  const job = await DownloadJob.findByPk(jobId)
+  if (!job || job.status !== 'interrupted') return false
+
+  let downloadPath = null
+  try {
+    downloadPath = await resolveValidatedDownloadPath(AppSetting)
+  } catch {
+    downloadPath = null
+  }
+
+  if (!downloadPath) {
+    await job.update({
+      status: 'failed',
+      error_message: 'Network recovery failed: Unable to resolve valid download folder path'
+    })
+    return false
+  }
+
+  let hasValidPartial = false
+  let reconciledBytes = 0
+  try {
+    const partialResult = await verifyJobPartialDownload(job.id, downloadPath, {
+      savedDownloadedBytes: job.downloaded_bytes,
+      savedProgress: job.progress
+    })
+    hasValidPartial = isPartialDownloadResumable(partialResult)
+    if (hasValidPartial) {
+      reconciledBytes = partialResult.reconciledBytes
+    }
+  } catch {
+    hasValidPartial = false
+  }
+
+  if (hasValidPartial) {
+    await job.update({
+      status: 'queued',
+      downloaded_bytes: reconciledBytes,
+      error_message: null
+    })
+  } else {
+    await job.update({
+      status: 'queued',
+      progress: 0,
+      downloaded_bytes: 0,
+      error_message: null
+    })
+  }
+
+  enqueueDownloadJob(job.id)
+  return true
+}
+
+/**
+ * Schedules an exponential backoff retry for an interrupted job.
+ * Avoids continuous retry loops by capping retries at 5.
+ *
+ * @param {number} jobId
+ * @param {number|null} [customDelayMs=null]
+ */
+export function scheduleJobRetry(jobId, customDelayMs = null) {
+  if (!Number.isSafeInteger(jobId) || jobId <= 0) return
+
+  const existing = jobRetryState.get(jobId) || { retryCount: 0, timer: null }
+  if (existing.timer) {
+    clearTimeout(existing.timer)
+    existing.timer = null
+  }
+
+  const MAX_RETRIES = 5
+  if (existing.retryCount >= MAX_RETRIES) {
+    console.warn(
+      `[network-recovery] Job ${jobId} exceeded max DNS/network preparation retries (${MAX_RETRIES}).`
+    )
+    try {
+      const DownloadJob = getDatabase()?.models?.DownloadJob
+      if (DownloadJob) {
+        void DownloadJob.findByPk(jobId).then((j) => {
+          if (j && j.status === 'interrupted') {
+            void j.update({
+              status: 'failed',
+              error_message:
+                'Download preparation failed after multiple retries: DNS or network unreachable'
+            })
+          }
+        })
+      }
+    } catch {
+      // ignore
+    }
+    jobRetryState.delete(jobId)
+    return
+  }
+
+  existing.retryCount += 1
+  const delayMs = customDelayMs ?? Math.min(2000 * Math.pow(2, existing.retryCount - 1), 30000)
+  console.log(
+    `[network-recovery] Scheduling retry for job ${jobId} in ${delayMs}ms (attempt ${existing.retryCount}/${MAX_RETRIES})`
+  )
+
+  existing.timer = setTimeout(async () => {
+    existing.timer = null
+    try {
+      await resumeSingleInterruptedJob(jobId)
+    } catch (err) {
+      console.warn(`[network-recovery] Auto-retry failed for job ${jobId}: ${err.message}`)
+    }
+  }, delayMs)
+
+  jobRetryState.set(jobId, existing)
+}
+
+/**
+ * Clears retry tracking state for a specific job.
+ *
+ * @param {number} jobId
+ */
+export function clearJobRetryState(jobId) {
+  const existing = jobRetryState.get(jobId)
+  if (existing?.timer) {
+    clearTimeout(existing.timer)
+  }
+  jobRetryState.delete(jobId)
+}
+
+/**
+ * Resets all retry tracking state for testing.
+ */
+export function resetJobRetryStateForTesting() {
+  for (const [, state] of jobRetryState) {
+    if (state.timer) clearTimeout(state.timer)
+  }
+  jobRetryState.clear()
+}
+
 export function isNetworkOnline() {
   return lastKnownOnline === true
 }

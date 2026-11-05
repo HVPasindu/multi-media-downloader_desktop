@@ -91,29 +91,43 @@ export function classifyAnalysisError(error, platform) {
     }
   }
 
-  // 2. YouTube Bot Verification / Authentication Required (Priority 2)
+  // 2. Bot Verification / Authentication Required (Priority 2)
   if (
     /sign in to confirm (?:you(?:'|’)?re not a bot|your age)|confirm you(?:'|’)?re not a bot|bot verification|this video is private|private video|sign in to view this video|requires authentication|login required|members-only/i.test(
       combined
     )
   ) {
+    if (platform === 'youtube') {
+      return {
+        code: 'YOUTUBE_AUTH_REQUIRED',
+        userMessage:
+          'YouTube requires authentication or bot verification. This video cannot be analyzed directly.',
+        retryAfterSeconds: null
+      }
+    }
     return {
-      code: 'YOUTUBE_AUTH_REQUIRED',
-      userMessage:
-        'YouTube requires authentication or bot verification. This video cannot be analyzed directly.',
+      code: 'AUTH_REQUIRED',
+      userMessage: 'This media requires authentication, login, or is private.',
       retryAfterSeconds: null
     }
   }
 
-  // 3. YouTube HTTP 429 Rate Limiting (Priority 3 - Must match explicit HTTP 429 / Rate limit, not arbitrary 429 numbers)
+  // 3. HTTP 429 Rate Limiting (Priority 3 - Must match explicit HTTP 429 / Rate limit, not arbitrary 429 numbers)
   if (
     /(?:http\s*error\s*429|429\s*too\s*many\s*requests|too\s*many\s*requests|\brate[- ]limit(?:ed|ing)?\b|\b429\s+error\b)/i.test(
       combined
     )
   ) {
+    if (platform === 'youtube') {
+      return {
+        code: 'YOUTUBE_RATE_LIMITED',
+        userMessage: 'YouTube rate limit encountered (HTTP 429). Please wait before retrying.',
+        retryAfterSeconds: 60
+      }
+    }
     return {
-      code: 'YOUTUBE_RATE_LIMITED',
-      userMessage: 'YouTube rate limit encountered (HTTP 429). Please wait before retrying.',
+      code: 'RATE_LIMITED',
+      userMessage: 'Rate limit encountered (HTTP 429). Please wait before retrying.',
       retryAfterSeconds: 60
     }
   }
@@ -180,9 +194,14 @@ export async function analyzeMedia(sourceUrl) {
   const cooldownUntil = rateLimitCooldowns.get(platform) || 0
   if (Date.now() < cooldownUntil) {
     const remainingSeconds = Math.max(1, Math.ceil((cooldownUntil - Date.now()) / 1000))
-    const err = new Error('YouTube rate limit cooldown active. Please wait before retrying.')
-    err.code = 'YOUTUBE_RATE_LIMITED'
-    err.userMessage = 'YouTube rate limit cooldown active. Please wait before retrying.'
+    const isYt = platform === 'youtube'
+    const err = new Error(
+      isYt
+        ? 'YouTube rate limit cooldown active. Please wait before retrying.'
+        : 'Rate limit cooldown active. Please wait before retrying.'
+    )
+    err.code = isYt ? 'YOUTUBE_RATE_LIMITED' : 'RATE_LIMITED'
+    err.userMessage = err.message
     err.retryAfterSeconds = remainingSeconds
     throw err
   }
@@ -231,7 +250,7 @@ export async function analyzeMedia(sourceUrl) {
 
       if (!stdout) {
         const classified = classifyAnalysisError(lastExecError, platform)
-        if (classified.code === 'YOUTUBE_RATE_LIMITED') {
+        if (classified.code === 'YOUTUBE_RATE_LIMITED' || classified.code === 'RATE_LIMITED') {
           rateLimitCooldowns.set(platform, Date.now() + 60_000)
         }
         const err = new Error(classified.userMessage)
@@ -301,50 +320,68 @@ export function parseMediaMetadata(metadata, platform, sourceUrl) {
 
   const formats = Array.isArray(metadata.formats) ? metadata.formats : []
 
-  //quality_video
+  const isAudioOnlyFormat = (format) => {
+    if (!format || typeof format !== 'object') return false
+    const vcodec = typeof format.vcodec === 'string' ? format.vcodec.toLowerCase() : ''
+    const acodec = typeof format.acodec === 'string' ? format.acodec.toLowerCase() : ''
+    const resolution = typeof format.resolution === 'string' ? format.resolution.toLowerCase() : ''
+    const formatNote =
+      typeof format.format_note === 'string' ? format.format_note.toLowerCase() : ''
+    const formatId = typeof format.format_id === 'string' ? format.format_id.toLowerCase() : ''
+
+    if (Number.isInteger(format.height) && format.height > 0) {
+      return false
+    }
+
+    if (resolution === 'audio only') return true
+    if (formatId.startsWith('hls-audio-')) return true
+    if (format.audio_ext === 'mp4' && (!vcodec || vcodec === 'none')) return true
+
+    const hasNoVideo = !vcodec || vcodec === 'none'
+    const hasAudio =
+      (acodec && acodec !== 'none') ||
+      formatNote.includes('audio') ||
+      (Number.isFinite(format.abr) && format.abr > 0)
+
+    return hasNoVideo && hasAudio
+  }
+
+  const isVideoFormat = (format) => {
+    if (!format || typeof format !== 'object') return false
+    const vcodec = typeof format.vcodec === 'string' ? format.vcodec.toLowerCase() : ''
+    if (vcodec === 'none') return false
+    if (Number.isInteger(format.height) && format.height > 0) return true
+    return Boolean(vcodec && vcodec !== 'none')
+  }
+
+  const hasAudioTrack = (format) => {
+    if (!format || typeof format !== 'object') return false
+    if (isAudioOnlyFormat(format)) return true
+    const acodec = typeof format.acodec === 'string' ? format.acodec.toLowerCase() : ''
+    if (acodec && acodec !== 'none') return true
+    if (
+      (!format.vcodec || format.vcodec === 'none') &&
+      Number.isFinite(format.abr) &&
+      format.abr > 0
+    ) {
+      return true
+    }
+    return false
+  }
+
+  // Quality heights
   const qualityHeights = new Set()
 
   for (const format of formats) {
-    const isTwitterHttp =
-      platform === 'twitter' &&
-      format &&
-      typeof format === 'object' &&
-      typeof format.format_id === 'string' &&
-      format.format_id.startsWith('http-')
-
-    if (
-      format &&
-      typeof format === 'object' &&
-      ((typeof format.vcodec === 'string' && format.vcodec !== 'none') || isTwitterHttp) &&
-      Number.isInteger(format.height) &&
-      format.height > 0
-    ) {
+    if (isVideoFormat(format) && Number.isInteger(format.height) && format.height > 0) {
       qualityHeights.add(format.height)
     }
   }
 
   const videoQualities = [...qualityHeights].sort((a, b) => b - a).map((height) => `${height}p`)
 
-  const isTwitterAudioFormat = (format) =>
-    platform === 'twitter' &&
-    format &&
-    typeof format === 'object' &&
-    format.vcodec === 'none' &&
-    (format.resolution === 'audio only' ||
-      (typeof format.format_id === 'string' && format.format_id.startsWith('hls-audio-')) ||
-      format.audio_ext === 'mp4' ||
-      (typeof format.format_note === 'string' &&
-        format.format_note.toLowerCase().includes('audio')) ||
-      (Number.isFinite(format.abr) && format.abr > 0))
-
-  //MP3 option
-  const hasAudioStream = formats.some(
-    (format) =>
-      format &&
-      typeof format === 'object' &&
-      ((typeof format.acodec === 'string' && format.acodec !== 'none') ||
-        isTwitterAudioFormat(format))
-  )
+  // MP3 option
+  const hasAudioStream = formats.some((format) => hasAudioTrack(format))
 
   const audioOptions = hasAudioStream ? ['mp3'] : []
 
@@ -355,66 +392,52 @@ export function parseMediaMetadata(metadata, platform, sourceUrl) {
 
   // Audio-only source formats
   const audioFormats = validFormats
-    .filter(
-      (format) =>
-        (format.vcodec === 'none' &&
-          typeof format.acodec === 'string' &&
-          format.acodec !== 'none') ||
-        isTwitterAudioFormat(format)
-    )
+    .filter((format) => isAudioOnlyFormat(format))
     .map((format) => ({
       formatId: format.format_id ?? null,
       extension: format.ext ?? null,
       audioCodec:
         typeof format.acodec === 'string' && format.acodec !== 'none'
           ? format.acodec
-          : platform === 'twitter'
+          : format.audio_ext === 'mp4' || format.ext === 'mp4' || format.ext === 'm4a'
             ? 'aac'
             : null,
       fileSize: format.filesize ?? format.filesize_approx ?? null
     }))
 
-  // Our current MP4 download selector uses M4A audio
-  const hasM4aAudio = audioFormats.some((format) => format.extension === 'm4a')
-  const hasTwitterAudio = platform === 'twitter' && audioFormats.length > 0
+  const hasSeparateAudio = audioFormats.length > 0
 
-  // Find MP4 video sources compatible with our selector
+  // Find MP4 video sources compatible with universal selector
   const mp4Formats = validFormats
     .filter((format) => {
-      const isTwitterHttp =
-        platform === 'twitter' &&
-        typeof format.format_id === 'string' &&
-        format.format_id.startsWith('http-')
+      if (format.ext !== 'mp4') return false
+      if (!isVideoFormat(format)) return false
+      if (!Number.isInteger(format.height) || format.height <= 0) return false
 
-      const hasVideo =
-        (typeof format.vcodec === 'string' && format.vcodec !== 'none') || isTwitterHttp
+      const acodec = typeof format.acodec === 'string' ? format.acodec.toLowerCase() : ''
+      const isExplicitCombined = Boolean(acodec && acodec !== 'none')
+      const isProgressiveCombined =
+        !acodec &&
+        hasAudioStream &&
+        (format.protocol === 'https' || format.protocol === 'http' || !format.protocol)
 
-      const hasAudio =
-        (typeof format.acodec === 'string' && format.acodec !== 'none') ||
-        (isTwitterHttp && hasAudioStream)
-
-      return (
-        format.ext === 'mp4' &&
-        hasVideo &&
-        Number.isInteger(format.height) &&
-        format.height > 0 &&
-        (hasAudio || hasM4aAudio || hasTwitterAudio)
-      )
+      return isExplicitCombined || isProgressiveCombined || hasSeparateAudio
     })
     .map((format) => {
-      const isTwitterHttp =
-        platform === 'twitter' &&
-        typeof format.format_id === 'string' &&
-        format.format_id.startsWith('http-')
+      const acodec = typeof format.acodec === 'string' ? format.acodec.toLowerCase() : ''
+      const isExplicitCombined = Boolean(acodec && acodec !== 'none')
+      const isProgressiveCombined =
+        !acodec &&
+        hasAudioStream &&
+        (format.protocol === 'https' || format.protocol === 'http' || !format.protocol)
+      const audioIncluded = isExplicitCombined || isProgressiveCombined
 
       return {
         formatId: format.format_id ?? null,
         quality: `${format.height}p`,
         height: format.height,
-        videoCodec: format.vcodec ?? (isTwitterHttp ? 'h264' : null),
-        audioIncluded:
-          (typeof format.acodec === 'string' && format.acodec !== 'none') ||
-          (isTwitterHttp && hasAudioStream),
+        videoCodec: format.vcodec ?? 'h264',
+        audioIncluded,
         fileSize: format.filesize ?? format.filesize_approx ?? null
       }
     })
