@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict'
+import fs from 'node:fs/promises'
+import path from 'node:path'
+import os from 'node:os'
 import {
   enqueueDownloadJob,
   cancelDownloadJob,
@@ -41,7 +44,7 @@ async function runDownloadQueueTests() {
   console.log(`[setup] Isolated test database ready: ${testDb.databasePath}\n`)
 
   try {
-    const { MediaItem, DownloadJob } = testDb.sequelize.models
+    const { MediaItem, DownloadJob, AppSetting } = testDb.sequelize.models
 
     const media = await MediaItem.create({
       source_url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
@@ -612,6 +615,152 @@ async function runDownloadQueueTests() {
     console.log(
       '✓ Section 5: Real concurrency (max 2), FIFO order, and queue lifecycle verified.\n'
     )
+
+    // ------------------------------------------------------------------------
+    // Section 6: Same-Job Retry for Preserved Output (Scenarios A, B, C, D)
+    // ------------------------------------------------------------------------
+    console.log('--- 6. Testing Same-Job Retry for Preserved Output ---')
+
+    const tempDlDir = path.join(os.tmpdir(), `queue-retry-test-${Date.now()}`)
+    await fs.mkdir(tempDlDir, { recursive: true })
+    await AppSetting.create({ key: 'download_path', value: tempDlDir })
+
+    const media6 = await MediaItem.create({
+      source_url: 'https://www.youtube.com/watch?v=s4m3J0bR3tRy',
+      platform: 'youtube',
+      title: 'Same-Job Retry Media'
+    })
+
+    // Use test executor to prevent background download execution from running past teardown
+    setExecutorForTesting(async () => {})
+
+    try {
+      // Scenario A: Job failed with FFPROBE_FAILED and preserved output file
+      const jobA = await createDownloadJob({
+        mediaItemId: media6.id,
+        outputFormat: 'mp4',
+        quality: '720p'
+      })
+      await DownloadJob.update(
+        {
+          status: 'failed',
+          error_message: '[FFPROBE_FAILED] FFprobe inspection timed out'
+        },
+        { where: { id: jobA.id } }
+      )
+      const fileA = path.join(tempDlDir, `Media Output [job-${jobA.id}].mp4`)
+      await fs.writeFile(fileA, Buffer.from('preserved valid media stream'))
+
+      clearRetryJobTracking()
+      resetQueueForTesting()
+      const enqueuedA = []
+      const resA = await retryDownloadJob(jobA.id, { enqueue: (id) => enqueuedA.push(id) })
+      assert.equal(resA.outcome, 'created', 'Scenario A: outcome is created')
+      assert.equal(resA.originalJobId, jobA.id, 'Scenario A: originalJobId matches')
+      assert.equal(
+        resA.retryJobId,
+        jobA.id,
+        'Scenario A: retryJobId strictly matches original Job ID'
+      )
+      assert.equal(resA.status, 'queued', 'Scenario A: status is queued')
+      assert.deepEqual(enqueuedA, [jobA.id], 'Scenario A: original Job ID enqueued')
+
+      const reloadedA = await DownloadJob.findByPk(jobA.id)
+      assert.equal(reloadedA.status, 'queued', 'Scenario A: original job status updated to queued')
+      assert.equal(reloadedA.error_message, null, 'Scenario A: previous error message cleared')
+      console.log('✓ Scenario A: FFprobe failure with preserved output enables same-job retry.')
+
+      // Scenario B: Job failed with DATABASE_ERROR and preserved output file
+      const jobB = await createDownloadJob({
+        mediaItemId: media6.id,
+        outputFormat: 'mp4',
+        quality: '1080p'
+      })
+      await DownloadJob.update(
+        {
+          status: 'failed',
+          error_message: '[DATABASE_ERROR] SQLite database insertion failed'
+        },
+        { where: { id: jobB.id } }
+      )
+      const fileB = path.join(tempDlDir, `Media Output [job-${jobB.id}].mp4`)
+      await fs.writeFile(fileB, Buffer.from('preserved video stream'))
+
+      clearRetryJobTracking()
+      resetQueueForTesting()
+      const enqueuedB = []
+      const resB = await retryDownloadJob(jobB.id, { enqueue: (id) => enqueuedB.push(id) })
+      assert.equal(resB.originalJobId, jobB.id, 'Scenario B: originalJobId matches')
+      assert.equal(resB.retryJobId, jobB.id, 'Scenario B: same Job ID reused')
+      const reloadedB = await DownloadJob.findByPk(jobB.id)
+      assert.equal(reloadedB.status, 'queued', 'Scenario B: job transitioned to queued')
+      assert.deepEqual(enqueuedB, [jobB.id], 'Scenario B: original Job ID enqueued')
+      console.log('✓ Scenario B: Database error with preserved output enables same-job retry.')
+
+      // Scenario C: Job failed with FFPROBE_NOT_FOUND and preserved output file
+      const jobC = await createDownloadJob({
+        mediaItemId: media6.id,
+        outputFormat: 'mp3',
+        audioBitrateKbps: 320
+      })
+      await DownloadJob.update(
+        {
+          status: 'failed',
+          error_message: '[FFPROBE_NOT_FOUND] FFprobe executable was not found'
+        },
+        { where: { id: jobC.id } }
+      )
+      const fileC = path.join(tempDlDir, `Media Audio [job-${jobC.id}].mp3`)
+      await fs.writeFile(fileC, Buffer.from('preserved audio stream'))
+
+      clearRetryJobTracking()
+      resetQueueForTesting()
+      const enqueuedC = []
+      const resC = await retryDownloadJob(jobC.id, { enqueue: (id) => enqueuedC.push(id) })
+      assert.equal(resC.retryJobId, jobC.id, 'Scenario C: same Job ID reused for FFPROBE_NOT_FOUND')
+      assert.deepEqual(enqueuedC, [jobC.id], 'Scenario C: original Job ID enqueued')
+      console.log('✓ Scenario C: FFprobe missing with preserved output enables same-job retry.')
+
+      // Scenario D: Normal failed download without preserved output -> creates NEW job ID
+      const jobD = await createDownloadJob({
+        mediaItemId: media6.id,
+        outputFormat: 'mp4',
+        quality: '480p'
+      })
+      await DownloadJob.update(
+        {
+          status: 'failed',
+          error_message: '[NETWORK_ERROR] Connection reset by peer'
+        },
+        { where: { id: jobD.id } }
+      )
+      // No file created on disk for jobD
+
+      clearRetryJobTracking()
+      resetQueueForTesting()
+      const enqueuedD = []
+      const resD = await retryDownloadJob(jobD.id, { enqueue: (id) => enqueuedD.push(id) })
+      assert.equal(resD.outcome, 'created', 'Scenario D: outcome is created')
+      assert.equal(resD.originalJobId, jobD.id, 'Scenario D: originalJobId matches')
+      assert.notEqual(resD.retryJobId, jobD.id, 'Scenario D: new distinct Job ID created')
+      assert.deepEqual(enqueuedD, [resD.retryJobId], 'Scenario D: new distinct Job ID enqueued')
+
+      const reloadedD = await DownloadJob.findByPk(jobD.id)
+      assert.equal(
+        reloadedD.status,
+        'failed',
+        'Scenario D: original failed job preserved as failed'
+      )
+      console.log('✓ Scenario D: Normal failed download creates new Job ID and preserves original.')
+    } finally {
+      resetQueueForTesting()
+      stopQueueForShutdown()
+      try {
+        await fs.rm(tempDlDir, { recursive: true, force: true })
+      } catch {
+        // ignore
+      }
+    }
 
     console.log('================================================================')
     console.log(' ALL DOWNLOAD QUEUE & RETRY TESTS PASSED SUCCESSFULLY (100%)    ')

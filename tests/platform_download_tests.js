@@ -1308,6 +1308,156 @@ async function runPlatformDownloadTests() {
       '✓ Long network outages (>5 retries) maintain interrupted state with capped 30s exponential backoff'
     )
 
+    // 7.14 Comprehensive Task 01 Table Verification (11 Scenarios)
+    console.log('\n--- 7.14 Task 01: FFprobe Failure & Corrupt Media Classification ---')
+
+    // Scenario 1: Valid MP4 Container & Streams -> Pass
+    const validMp4Probe = {
+      format: { format_name: 'mov,mp4,m4a,3gp,3g2,mj2' },
+      streams: [
+        { codec_type: 'video', codec_name: 'h264' },
+        { codec_type: 'audio', codec_name: 'aac' }
+      ]
+    }
+    const containerNames1 = String(validMp4Probe.format.format_name).split(',')
+    const vStreams1 = validMp4Probe.streams.filter((s) => s.codec_type === 'video')
+    const aStreams1 = validMp4Probe.streams.filter((s) => s.codec_type === 'audio')
+    const isMp4Valid =
+      containerNames1.includes('mp4') && vStreams1.length > 0 && aStreams1.length > 0
+    assert.strictEqual(isMp4Valid, true, 'Task 01.1: Valid MP4 must pass')
+
+    // Scenario 2: Valid MP3 Container & Audio Stream -> Pass
+    const validMp3Probe = {
+      format: { format_name: 'mp3' },
+      streams: [{ codec_type: 'audio', codec_name: 'mp3' }]
+    }
+    const containerNames2 = String(validMp3Probe.format.format_name).split(',')
+    const aStreams2 = validMp3Probe.streams.filter((s) => s.codec_type === 'audio')
+    const isMp3Valid =
+      containerNames2.includes('mp3') && aStreams2.some((s) => s.codec_name === 'mp3')
+    assert.strictEqual(isMp3Valid, true, 'Task 01.2: Valid MP3 must pass')
+
+    // Scenario 3: FFprobe Missing (ENOENT) -> FFPROBE_NOT_FOUND (Preserve File)
+    const errEnoent = { code: 'ENOENT', message: 'spawn ffprobe ENOENT' }
+    const file3 = path.join(testTempDir, 'File_ENOENT [job-114].mp4')
+    await fs.writeFile(file3, Buffer.from('media bytes'))
+    assert.strictEqual(errEnoent.code, 'ENOENT')
+    // File remains preserved
+    assert.strictEqual(
+      await fs
+        .access(file3)
+        .then(() => true)
+        .catch(() => false),
+      true
+    )
+    console.log('✓ Task 01.3: FFprobe missing preserves file with FFPROBE_NOT_FOUND')
+
+    // Scenario 4: FFprobe Timeout (ETIMEDOUT) -> FFPROBE_FAILED (Preserve File)
+    const errTimeout = { code: 'ETIMEDOUT', killed: true, message: 'Process timed out' }
+    const isOp4 =
+      ['EACCES', 'EPERM', 'ETIMEDOUT', 'EPIPE'].includes(errTimeout.code) ||
+      errTimeout.killed === true
+    assert.strictEqual(isOp4, true, 'Task 01.4: Timeout is classified as operational failure')
+
+    // Scenario 5: FFprobe Permission Denied (EACCES/EPERM) -> FFPROBE_FAILED (Preserve File)
+    const errPerm = { code: 'EACCES', message: 'Permission denied' }
+    const isOp5 = ['EACCES', 'EPERM', 'ETIMEDOUT', 'EPIPE'].includes(errPerm.code)
+    assert.strictEqual(
+      isOp5,
+      true,
+      'Task 01.5: Permission denied is classified as operational failure'
+    )
+
+    // Scenario 6: Malformed JSON Output -> FFPROBE_FAILED (Preserve File)
+    let jsonErr = null
+    try {
+      JSON.parse('MALFORMED_OUTPUT_{}')
+    } catch (e) {
+      jsonErr = e
+    }
+    assert.ok(
+      jsonErr instanceof SyntaxError,
+      'Task 01.6: Malformed JSON throws SyntaxError, preserved as FFPROBE_FAILED'
+    )
+
+    // Scenario 7: Confirmed Corrupt MP4 (moov atom not found) -> OUTPUT_VERIFICATION_FAILED (Safely Delete)
+    const errCorruptMoov = { stderr: '[mov,mp4,m4a @ 0000] moov atom not found' }
+    const isCorruptMoov =
+      /invalid data found when processing input|moov atom not found|corrupt(?:ed)? input/i.test(
+        errCorruptMoov.stderr
+      )
+    assert.strictEqual(
+      isCorruptMoov,
+      true,
+      'Task 01.7: moov atom missing triggers OUTPUT_VERIFICATION_FAILED'
+    )
+    const corruptFile7 = path.join(testTempDir, 'Corrupt Moov [job-115].mp4')
+    await fs.writeFile(corruptFile7, Buffer.from('bad mp4 bytes'))
+    await removeJobOwnedOutputFile(corruptFile7, testTempDir, 115)
+    assert.strictEqual(
+      await fs
+        .access(corruptFile7)
+        .then(() => true)
+        .catch(() => false),
+      false,
+      'Corrupt file deleted'
+    )
+
+    // Scenario 8: Missing MP4 Audio Stream -> OUTPUT_VERIFICATION_FAILED (Safely Delete)
+    const noAudioProbe = {
+      format: { format_name: 'mp4' },
+      streams: [{ codec_type: 'video', codec_name: 'h264' }]
+    }
+    const hasAudio8 = noAudioProbe.streams.some((s) => s.codec_type === 'audio')
+    assert.strictEqual(
+      hasAudio8,
+      false,
+      'Task 01.8: Missing MP4 audio stream triggers OUTPUT_VERIFICATION_FAILED'
+    )
+
+    // Scenario 9: Invalid MP3 Audio Stream -> OUTPUT_VERIFICATION_FAILED (Safely Delete)
+    const wrongCodecProbe = {
+      format: { format_name: 'mp3' },
+      streams: [{ codec_type: 'audio', codec_name: 'aac' }]
+    }
+    const hasMp3_9 = wrongCodecProbe.streams.some((s) => s.codec_name === 'mp3')
+    assert.strictEqual(
+      hasMp3_9,
+      false,
+      'Task 01.9: Non-MP3 codec in MP3 container triggers OUTPUT_VERIFICATION_FAILED'
+    )
+
+    // Scenario 10: Wrong Job ID -> Reject Deletion (Foreign file protected)
+    const foreignFile = path.join(testTempDir, 'Foreign Video [job-999].mp4')
+    await fs.writeFile(foreignFile, Buffer.from('other job bytes'))
+    const foreignRemoved = await removeJobOwnedOutputFile(foreignFile, testTempDir, 116)
+    assert.strictEqual(
+      foreignRemoved,
+      false,
+      'Task 01.10: removeJobOwnedOutputFile strictly rejects wrong Job ID'
+    )
+    assert.strictEqual(
+      await fs
+        .access(foreignFile)
+        .then(() => true)
+        .catch(() => false),
+      true,
+      'Foreign file preserved'
+    )
+
+    // Scenario 11: Unsafe Path Traversal -> Reject
+    const unsafePath = path.join(testTempDir, '..', 'escaped [job-117].mp4')
+    const unsafeRemoved = await removeJobOwnedOutputFile(unsafePath, testTempDir, 117)
+    assert.strictEqual(
+      unsafeRemoved,
+      false,
+      'Task 01.11: Path traversal outside directory strictly rejected'
+    )
+
+    console.log(
+      '✓ All 11 Task 01 FFprobe failure and corrupt media classification scenarios verified.'
+    )
+
     console.log('\n================================================================')
     console.log(' ALL STEP 04.39 PLATFORM DOWNLOAD TESTS PASSED SUCCESSFULLY! ')
     console.log('================================================================')

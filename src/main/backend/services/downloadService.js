@@ -1153,6 +1153,26 @@ export async function verifyFinalMediaContent(filePath, expectedFormat) {
       )
     }
 
+    const isOperationalFailure =
+      ['EACCES', 'EPERM', 'ETIMEDOUT', 'EPIPE'].includes(error?.code) ||
+      error?.killed === true ||
+      Boolean(error?.signal)
+
+    if (!isOperationalFailure) {
+      const stderr = String(error?.stderr || error?.message || '')
+      if (
+        /invalid data found when processing input|moov atom not found|corrupt(?:ed)? input|error reading header|end of file/i.test(
+          stderr
+        )
+      ) {
+        throw new DownloadError(
+          DOWNLOAD_ERROR_CODES.OUTPUT_VERIFICATION_FAILED,
+          `Media file is corrupted or invalid: ${stderr.trim().split('\n')[0]}`,
+          { cause: error }
+        )
+      }
+    }
+
     throw new DownloadError(
       DOWNLOAD_ERROR_CODES.FFPROBE_FAILED,
       `FFprobe inspection failed: ${error.message}`,
@@ -1389,10 +1409,18 @@ export async function executeDownloadJob(jobId, options = {}) {
         await removeJobOwnedOutputFile(execution.existingValidFile, execution.downloadPath, jobId)
         candidateVerified = null
       } else {
-        // Operational verification failure (e.g. FFprobe missing/failed) -> preserve output file and abort adoption
+        // Operational verification failure (e.g. FFprobe missing/failed) -> preserve output file and mark job failed
         console.warn(
           `[download] Job ${jobId} candidate output file inspection error: ${adoptionErr.message}. Output preserved.`
         )
+        try {
+          await markDownloadJobFailed(jobId, adoptionErr)
+        } catch (statusErr) {
+          console.error(
+            `[download] Failed to persist failed state for job ${jobId} during adoption error:`,
+            statusErr
+          )
+        }
         throw adoptionErr
       }
     }
@@ -1401,21 +1429,43 @@ export async function executeDownloadJob(jobId, options = {}) {
       console.log(
         `[download] Job ${jobId} adopted valid pre-existing final output file: ${candidateVerified.filePath}`
       )
-      const completionResult = await withCompletionWriteLock(async () => {
-        return await getDatabase().transaction(
-          { type: Transaction.TYPES.IMMEDIATE },
-          async (transaction) => {
-            const saved = await saveDownloadedFile(
-              jobId,
-              candidateVerified.filePath,
-              transaction,
-              candidateVerified
-            )
-            const completed = await markDownloadJobCompleted(jobId, transaction)
-            return { savedFile: saved, completedJob: completed }
-          }
+      let completionResult
+      try {
+        completionResult = await withCompletionWriteLock(async () => {
+          return await getDatabase().transaction(
+            { type: Transaction.TYPES.IMMEDIATE },
+            async (transaction) => {
+              const saved = await saveDownloadedFile(
+                jobId,
+                candidateVerified.filePath,
+                transaction,
+                candidateVerified
+              )
+              const completed = await markDownloadJobCompleted(jobId, transaction)
+              return { savedFile: saved, completedJob: completed }
+            }
+          )
+        })
+      } catch (dbError) {
+        console.error(
+          `[download] Database failure recording adopted job ${jobId} completion:`,
+          dbError
         )
-      })
+        const classifiedDbError = new DownloadError(
+          DOWNLOAD_ERROR_CODES.DATABASE_ERROR,
+          `Failed to record download completion in database: ${dbError.message}`,
+          { cause: dbError }
+        )
+        try {
+          await markDownloadJobFailed(jobId, classifiedDbError)
+        } catch (statusErr) {
+          console.error(
+            `[download] Failed to persist failed state for job ${jobId} after adoption DB error:`,
+            statusErr
+          )
+        }
+        throw classifiedDbError
+      }
 
       try {
         await cleanupJobTemporaryFiles(jobId, execution.downloadPath)
@@ -1670,11 +1720,17 @@ export async function executeDownloadJob(jobId, options = {}) {
           continue
         }
 
-        // If it's an SQLite lock error that exhausted all retries, classify clearly
-        if (isSqliteBusyError(completionError)) {
+        // If it's an SQLite lock or engine error, classify clearly as DATABASE_ERROR
+        if (
+          isSqliteBusyError(completionError) ||
+          completionError?.name?.startsWith?.('Sequelize') ||
+          completionError?.code?.startsWith?.('SQLITE_') ||
+          completionError?.original?.code?.startsWith?.('SQLITE_') ||
+          completionError?.parent?.code?.startsWith?.('SQLITE_')
+        ) {
           throw new DownloadError(
             DOWNLOAD_ERROR_CODES.DATABASE_ERROR,
-            'The database was temporarily busy and could not record download completion. Please retry.',
+            `Database error recording download completion: ${completionError.message}`,
             { cause: completionError }
           )
         }

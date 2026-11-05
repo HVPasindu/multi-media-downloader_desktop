@@ -3,6 +3,10 @@ import { createDownloadJob, markDownloadJobFailed } from './downloadService.js'
 import { enqueueDownloadJob } from './downloadQueueService.js'
 import { findActiveDuplicateDownload } from './downloadDuplicateService.js'
 import { validateMediaUrl } from './mediaUrlSecurityService.js'
+import { resolveValidatedDownloadPath } from './downloadPathService.js'
+import { assertNoJobOutputFileConflict } from './downloadFileSafetyService.js'
+
+const SAME_JOB_RECOVERY_ERRORS = new Set(['FFPROBE_FAILED', 'FFPROBE_NOT_FOUND', 'DATABASE_ERROR'])
 
 // Track currently processing retry requests to prevent concurrent double-click requests
 const retryRequestsInProgress = new Set()
@@ -106,6 +110,76 @@ export async function retryDownloadJob(originalJobId, options = {}) {
       return {
         outcome: 'retry_in_progress',
         message: 'An equivalent download is already in progress'
+      }
+    }
+
+    // Step 04.46 - Narrowly scoped same-job retry for verified preserved outputs
+    let isSameJobRecovery = false
+    if (originalJob.status === 'failed') {
+      const errorMatch = /^\[([A-Z0-9_]+)\]/.exec(originalJob.error_message || '')
+      const errorCode = errorMatch?.[1] || null
+
+      if (errorCode && SAME_JOB_RECOVERY_ERRORS.has(errorCode)) {
+        try {
+          const { AppSetting } = getDatabase().models
+          const downloadPath = await resolveValidatedDownloadPath(AppSetting)
+          if (downloadPath) {
+            const candidate = await assertNoJobOutputFileConflict(downloadPath, originalJob.id, {
+              allowAdoption: true,
+              expectedFormat: originalJob.output_format
+            })
+            if (candidate) {
+              isSameJobRecovery = true
+            }
+          }
+        } catch {
+          isSameJobRecovery = false
+        }
+      }
+    }
+
+    if (isSameJobRecovery) {
+      // Update original job from 'failed' to 'queued' using conditional database update
+      const [updatedCount] = await DownloadJob.update(
+        {
+          status: 'queued',
+          error_message: null
+        },
+        {
+          where: {
+            id: originalJob.id,
+            status: 'failed'
+          }
+        }
+      )
+
+      if (updatedCount !== 1) {
+        return {
+          outcome: 'retry_in_progress',
+          message: 'Download job is no longer eligible for retry'
+        }
+      }
+
+      try {
+        enqueue(originalJob.id)
+      } catch (queueError) {
+        console.error(`Failed to enqueue same-job retry ${originalJob.id}:`, queueError)
+        try {
+          await markDownloadJobFailed(originalJob.id, queueError, 'queued')
+        } catch (markError) {
+          console.error(`Could not mark same-job retry ${originalJob.id} as failed:`, markError)
+        }
+        throw queueError
+      }
+
+      activeRetryJobs.set(originalJobId, originalJob.id)
+
+      return {
+        outcome: 'created',
+        originalJobId: originalJob.id,
+        retryJobId: originalJob.id,
+        status: 'queued',
+        message: 'Existing output will be verified again using the original download job.'
       }
     }
 

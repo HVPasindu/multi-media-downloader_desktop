@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
 import fsSync from 'node:fs'
+import path from 'node:path'
+import { resumeSingleInterruptedJob } from '../src/main/backend/services/networkRecoveryService.js'
 import { createE2eEnvironment, YOUTUBE_SYNTHETIC_FIXTURE } from './helpers/e2eTestEnvironment.js'
 import { getDatabase } from '../src/main/backend/config/database.js'
 import { recoverInterruptedDownloadJobs } from '../src/main/backend/services/downloadRecoveryService.js'
@@ -659,6 +661,192 @@ async function runAllE2eTests() {
     assertNotFoundResponse(notFoundRes.status, notFoundRes.body)
 
     console.log('✓ Group L: Comprehensive API response contracts confirmed.\n')
+
+    // ========================================================================
+    // GROUP M — REAL SQLITE FAILURE VIA TRIGGER & SAME-JOB RECOVERY (TASK 03)
+    // ========================================================================
+    console.log('--- GROUP M: Real SQLite Failure via Trigger & Same-Job Recovery ---')
+
+    const dbSequelize = env.testDb.sequelize
+    const downloadFilesTable = DownloadFile.getTableName()
+
+    // 1. Install SQLite trigger that deliberately raises abort on DownloadFile insert
+    await dbSequelize.query(`
+      CREATE TRIGGER test_fail_download_file_insert
+      BEFORE INSERT ON ${downloadFilesTable}
+      BEGIN
+        SELECT RAISE(ABORT, 'simulated SQLite insertion failure');
+      END;
+    `)
+
+    // 2. Create MP4 DownloadJob
+    const mRes = await env.request({
+      path: '/api/media/analyze',
+      method: 'POST',
+      body: { url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ' }
+    })
+    const mMediaId = mRes.body.data.mediaItemId
+
+    const createSqliteFailJobRes = await env.request({
+      path: '/api/downloads',
+      method: 'POST',
+      body: {
+        mediaItemId: mMediaId,
+        outputFormat: 'mp4',
+        quality: '480p'
+      }
+    })
+    const sqliteFailJobId = createSqliteFailJobRes.body.data.id
+
+    // 3. Wait for job to fail through the production pipeline
+    const sqliteFailedJob = await env.waitForJobState(sqliteFailJobId, (j) => j.status === 'failed')
+    assert.equal(sqliteFailedJob.status, 'failed', 'Job must fail when SQLite insertion is aborted')
+    assert.ok(
+      sqliteFailedJob.error_message.includes('DATABASE_ERROR'),
+      'Error message must be classified as DATABASE_ERROR'
+    )
+
+    // 4. Verify physical media file remains preserved on disk
+    const expectedSqliteFile = path.join(
+      env.downloadFolder,
+      `download_output_[job-${sqliteFailJobId}].mp4`
+    )
+    assert.ok(
+      fsSync.existsSync(expectedSqliteFile),
+      'Valid physical output file must be preserved on disk despite database failure'
+    )
+
+    // 5. Verify no incomplete DownloadFile record remains
+    const rolledBackFileRecord = await DownloadFile.findOne({
+      where: { download_job_id: sqliteFailJobId }
+    })
+    assert.equal(
+      rolledBackFileRecord,
+      null,
+      'DownloadFile transaction must have rolled back completely'
+    )
+
+    // 6. Remove the deliberate SQLite trigger
+    await dbSequelize.query('DROP TRIGGER IF EXISTS test_fail_download_file_insert')
+
+    // 7. Retry using the original Job ID via POST /api/downloads/:id/retry
+    const sqliteRetryRes = await env.request({
+      path: `/api/downloads/${sqliteFailJobId}/retry`,
+      method: 'POST'
+    })
+    assert.equal(sqliteRetryRes.status, 201, 'Retry request accepted')
+    assert.equal(
+      sqliteRetryRes.body.data.originalJobId,
+      sqliteFailJobId,
+      'originalJobId must match'
+    )
+    assert.equal(
+      sqliteRetryRes.body.data.retryJobId,
+      sqliteFailJobId,
+      'Same Job ID must be reused for retry of preserved output'
+    )
+
+    // 8. Wait for adopted job to complete without running a new download
+    const sqliteCompletedJob = await env.waitForJobState(
+      sqliteFailJobId,
+      (j) => j.status === 'completed'
+    )
+    assert.equal(sqliteCompletedJob.id, sqliteFailJobId, 'Original Job ID strictly preserved')
+    assert.equal(
+      sqliteCompletedJob.status,
+      'completed',
+      'Job adopted existing output and completed'
+    )
+
+    const newFileRecord = await DownloadFile.findOne({
+      where: { download_job_id: sqliteFailJobId }
+    })
+    assert.ok(newFileRecord !== null, 'DownloadFile record created upon adopted completion')
+
+    console.log(
+      '✓ Group M: Real SQLite failure via trigger, output preservation, rollback & same-job recovery verified.\n'
+    )
+
+    // ========================================================================
+    // GROUP N — REAL NETWORK DISCONNECT -> RETRY -> RESUME INTEGRATION (TASK 04)
+    // ========================================================================
+    console.log('--- GROUP N: Real Network Disconnect -> Retry -> Resume Integration ---')
+
+    // 1. Analyze media
+    const netMediaRes = await env.request({
+      path: '/api/media/analyze',
+      method: 'POST',
+      body: { url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ' }
+    })
+    const netMediaId = netMediaRes.body.data.mediaItemId
+
+    // 2. Create job with 360p (so it doesn't conflict with earlier formats)
+    const createNetJobRes = await env.request({
+      path: '/api/downloads',
+      method: 'POST',
+      body: {
+        mediaItemId: netMediaId,
+        outputFormat: 'mp4',
+        quality: '360p'
+      }
+    })
+    const netJobId = createNetJobRes.body.data.id
+
+    // Configure failure rule: fail once on network DNS error
+    env.setFailureRules({ networkFailOnceJobs: [netJobId] })
+
+    // 3. Wait for job to encounter network failure and transition to interrupted
+    const interruptedJob = await env.waitForJobState(netJobId, (j) => j.status === 'interrupted')
+    assert.equal(
+      interruptedJob.status,
+      'interrupted',
+      'Job must transition to interrupted on network loss'
+    )
+    assert.equal(
+      interruptedJob.id,
+      netJobId,
+      'Original Job ID maintained during network interruption'
+    )
+    assert.equal(env.getJobSpawnAttempts(netJobId), 1, 'Exactly one process attempt on first phase')
+
+    // 4. Verify partial file was created and preserved
+    const expectedPartialPath = path.join(
+      env.downloadFolder,
+      '.applan2-partial-downloads',
+      `job-${netJobId}`,
+      `download_output_[job-${netJobId}].mp4.part`
+    )
+    assert.ok(
+      fsSync.existsSync(expectedPartialPath),
+      'Partial file must be preserved in job temporary workspace'
+    )
+
+    // 5. Clear failure rule (network restored) and resume job
+    env.setFailureRules({})
+    await resumeSingleInterruptedJob(netJobId)
+
+    // 6. Wait for job to resume and complete via real queue
+    const resumedCompletedJob = await env.waitForJobState(
+      netJobId,
+      (j) => j.status === 'completed' && j.progress === 100
+    )
+    assert.equal(resumedCompletedJob.id, netJobId, 'Same Job ID strictly preserved upon resume')
+    assert.equal(resumedCompletedJob.status, 'completed', 'Job reached completed status')
+    assert.ok(
+      env.getJobSpawnAttempts(netJobId) >= 2,
+      'Process must have spawned at least 2 attempts (initial + resume)'
+    )
+
+    // Verify exactly one job and one file record
+    const allJobsForNet = await DownloadJob.findAll({ where: { id: netJobId } })
+    assert.equal(allJobsForNet.length, 1, 'Exactly one DownloadJob database row exists')
+
+    const allFilesForNet = await DownloadFile.findAll({ where: { download_job_id: netJobId } })
+    assert.equal(allFilesForNet.length, 1, 'Exactly one DownloadFile record exists')
+
+    console.log(
+      '✓ Group N: Real network disconnect, partial file preservation & resume integration verified.\n'
+    )
 
     console.log('======================================================================')
     console.log(' ALL STEP 04.45 BACKEND E2E TEST SCENARIOS PASSED (100% PASS)         ')

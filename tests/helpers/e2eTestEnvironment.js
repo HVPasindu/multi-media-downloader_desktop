@@ -133,6 +133,7 @@ export async function createE2eEnvironment(prefix = 'applan2-e2e-') {
 
   // Mock tool controller configuration
   const activeMockProcesses = new Map()
+  const jobSpawnAttempts = new Map()
   let simulatedFailureRules = {}
   let spawnDelayMs = 10
 
@@ -236,6 +237,17 @@ export async function createE2eEnvironment(prefix = 'applan2-e2e-') {
       const argsList = Array.isArray(args) ? args : []
 
       if (!jobId) {
+        const templateArg = argsList[argsList.indexOf('-o') + 1]
+        const match = /\[job-(\d+)\]/.exec(templateArg || '')
+        if (match) {
+          jobId = Number(match[1])
+        }
+      }
+
+      const currentAttempt = (jobSpawnAttempts.get(jobId) || 0) + 1
+      jobSpawnAttempts.set(jobId, currentAttempt)
+
+      if (!jobId) {
         // Find jobId from output template if embedded
         const templateArg = argsList[argsList.indexOf('-o') + 1]
         const match = /\[job-(\d+)\]/.exec(templateArg || '')
@@ -255,6 +267,32 @@ export async function createE2eEnvironment(prefix = 'applan2-e2e-') {
         }
 
         if (child.killed) return
+
+        // Simulated transient network failure once
+        if (simulatedFailureRules.networkFailOnceJobs?.includes(jobId) && currentAttempt === 1) {
+          const isMp3 = argsList.includes('-x') || argsList.includes('--extract-audio')
+          const ext = isMp3 ? 'mp3' : 'mp4'
+          const partialDir = path.join(downloadFolder, '.applan2-partial-downloads', `job-${jobId}`)
+          await fs.mkdir(partialDir, { recursive: true })
+          const partialFileName = `download_output_[job-${jobId}].${ext}.part`
+          const partialFilePath = path.join(partialDir, partialFileName)
+          await fs.writeFile(partialFilePath, Buffer.alloc(5242880, 0x5a))
+
+          const progressPayload = JSON.stringify({
+            filename: partialFilePath,
+            status: 'downloading',
+            downloaded_bytes: 5242880,
+            total_bytes: 10485760
+          })
+          child.stdout.write(
+            `[download]  50.0% of ~ 10.00MiB at  2.00MiB/s ETA 00:05 APPLAN2_PROGRESS: ${progressPayload}\n`
+          )
+          child.stderr.write('ERROR: Temporary failure in name resolution\n')
+          child.stderr.end()
+          child.stdout.end()
+          child.emit('close', 1, null)
+          return
+        }
 
         // Simulated yt-dlp failure
         if (simulatedFailureRules.ytDlpFailJobs?.includes(jobId)) {
@@ -390,6 +428,8 @@ export async function createE2eEnvironment(prefix = 'applan2-e2e-') {
     setFailureRules: (rules) => {
       simulatedFailureRules = { ...rules }
     },
+    getJobSpawnAttempts: (jobId) => jobSpawnAttempts.get(jobId) || 0,
+    resetJobSpawnAttempts: () => jobSpawnAttempts.clear(),
     getActiveMockProcess: (jobId) => activeMockProcesses.get(jobId),
     async cleanup() {
       const cleanupErrors = []

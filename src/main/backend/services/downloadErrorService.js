@@ -362,10 +362,16 @@ export function classifyDownloadError(error, context = {}) {
   // Network Error in stderr
   if (
     lowerText.includes('unable to download webpage') ||
+    lowerText.includes('temporary failure in name resolution') ||
+    lowerText.includes('name or service not known') ||
     lowerText.includes('getaddrinfo failed') ||
+    lowerText.includes('getaddrinfo enotfound') ||
+    lowerText.includes('unable to connect') ||
     lowerText.includes('failed to resolve') ||
     lowerText.includes('network is unreachable') ||
     lowerText.includes('connection reset by peer') ||
+    lowerText.includes('connection refused') ||
+    lowerText.includes('econnrefused') ||
     lowerText.includes('remote end closed connection') ||
     lowerText.includes('incompleteread') ||
     lowerText.includes('network error')
@@ -406,9 +412,35 @@ export function classifyDownloadError(error, context = {}) {
   if (
     error?.name === 'SequelizeTimeoutError' ||
     error?.name === 'SequelizeDatabaseError' ||
+    error?.name === 'SequelizeConnectionError' ||
+    error?.name === 'SequelizeUniqueConstraintError' ||
+    error?.name === 'SequelizeForeignKeyConstraintError' ||
+    [
+      'SQLITE_BUSY',
+      'SQLITE_LOCKED',
+      'SQLITE_CONSTRAINT',
+      'SQLITE_IOERR',
+      'SQLITE_CORRUPT'
+    ].includes(systemCode) ||
+    [
+      'SQLITE_BUSY',
+      'SQLITE_LOCKED',
+      'SQLITE_CONSTRAINT',
+      'SQLITE_IOERR',
+      'SQLITE_CORRUPT'
+    ].includes(error?.parent?.code) ||
+    [
+      'SQLITE_BUSY',
+      'SQLITE_LOCKED',
+      'SQLITE_CONSTRAINT',
+      'SQLITE_IOERR',
+      'SQLITE_CORRUPT'
+    ].includes(error?.original?.code) ||
     lowerText.includes('sqlite_busy') ||
     lowerText.includes('database is locked') ||
-    lowerText.includes('database locked')
+    lowerText.includes('database locked') ||
+    lowerText.includes('sqlite_') ||
+    lowerText.includes('sqlite error')
   ) {
     return {
       code: DOWNLOAD_ERROR_CODES.DATABASE_ERROR,
