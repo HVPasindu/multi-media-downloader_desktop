@@ -91,7 +91,7 @@ async function runNetworkRecoveryTests() {
   await mkdir(testDownloadDir, { recursive: true })
 
   try {
-    const { MediaItem, DownloadJob, AppSetting } = testDb.sequelize.models
+    const { MediaItem, DownloadJob, DownloadFile, AppSetting } = testDb.sequelize.models
 
     await AppSetting.create({
       key: 'download_path',
@@ -2046,32 +2046,53 @@ async function runNetworkRecoveryTests() {
       )
       assert.equal(interruptedJobA.id, e2eJobA.id, 'Scenario A: Original Job ID preserved')
 
-      // Phase 2: Resume via real startup recovery service (no mocked queue!)
-      e2eShouldDisconnect = false
-      e2eRangeRequests = []
+      // Record original Job ID and verify partial workspace exists
+      const originalJobId = e2eJobA.id
+      const partialWorkspaceDir = join(
+        testDownloadDir,
+        '.applan2-partial-downloads',
+        `job-${originalJobId}`
+      )
+      const partialEntries = await fs.readdir(partialWorkspaceDir).catch(() => [])
+      assert.ok(
+        partialEntries.length > 0,
+        'Scenario A: Partial file exists before cold-start restart'
+      )
+
+      // Phase B: Simulate application shutdown & cold start (persist SQLite & partial files, clear in-memory state)
+      stopQueueForShutdown()
+      resetQueueForTesting()
+      resetNetworkMonitoringForTesting()
       resetRecoveryTrackingForTesting()
 
-      console.log('    Triggering recoverInterruptedDownloadJobs() with real production queue...')
+      // Phase C: Application startup recovery
+      e2eShouldDisconnect = false
+      e2eRangeRequests = []
+
+      console.log(
+        '    Triggering recoverInterruptedDownloadJobs() with real production queue on cold start...'
+      )
       const startupRecRes = await recoverInterruptedDownloadJobs({
         autoEnqueue: true,
         isOnline: true
       })
       assert.ok(
-        startupRecRes.recoveredJobIds.includes(e2eJobA.id),
-        'Scenario A: Job recovered and auto-enqueued'
+        startupRecRes.recoveredJobIds.includes(originalJobId),
+        'Scenario A: Job recovered and auto-enqueued upon cold-start startup'
       )
 
-      // Wait until real queue and yt-dlp finish download and ffprobe completes
+      // Phase D: Wait until real queue and yt-dlp finish download and ffprobe completes
       const startWaitA2 = Date.now()
       while (Date.now() - startWaitA2 < 25000) {
-        const j = await DownloadJob.findByPk(e2eJobA.id)
+        const j = await DownloadJob.findByPk(originalJobId)
         if (j.status === 'completed' || j.status === 'failed') {
           break
         }
         await new Promise((r) => setTimeout(r, 100))
       }
 
-      const completedJobA = await DownloadJob.findByPk(e2eJobA.id)
+      // Phase E: Required assertions for cold-start recovery
+      const completedJobA = await DownloadJob.findByPk(originalJobId)
       assert.equal(
         completedJobA.status,
         'completed',
@@ -2079,10 +2100,16 @@ async function runNetworkRecoveryTests() {
       )
       assert.equal(
         completedJobA.id,
-        e2eJobA.id,
+        originalJobId,
         'Scenario A: Original Job ID strictly preserved throughout'
       )
       assert.equal(completedJobA.progress, 100, 'Scenario A: Progress reached 100%')
+
+      const e2eJobRows = await DownloadJob.findAll({ where: { id: originalJobId } })
+      assert.equal(e2eJobRows.length, 1, 'Scenario A: Exactly one DownloadJob row exists')
+
+      const e2eFileRows = await DownloadFile.findAll({ where: { download_job_id: originalJobId } })
+      assert.equal(e2eFileRows.length, 1, 'Scenario A: Exactly one DownloadFile row exists')
 
       // Scenario B assertions: HTTP Range Header Verification
       assert.ok(e2eRangeRequests.length > 0, 'Scenario B: Real yt-dlp sent HTTP Range request')
