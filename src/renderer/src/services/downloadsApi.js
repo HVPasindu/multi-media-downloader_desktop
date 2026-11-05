@@ -88,6 +88,18 @@ export function listDownloads(filters = {}) {
 }
 
 /**
+ * Retrieves aggregate summary counts and metrics from SQLite across all downloads and history.
+ *
+ * @returns {Promise<{ status: number, ok: boolean, data: { success: boolean, data?: { downloads: object, history: object } } }>}
+ */
+export function getDownloadSummary() {
+  return apiRequest({
+    path: '/api/downloads/summary',
+    method: 'GET'
+  })
+}
+
+/**
  * Retrieves full details and status for a single download job.
  *
  * @param {number|string} id - Download job ID

@@ -9,7 +9,8 @@ import {
   validateHistoryFilters,
   getDownloadHistoryDetails,
   deleteDownloadHistoryRecord,
-  clearDownloadHistory
+  clearDownloadHistory,
+  getDownloadSummary
 } from '../services/downloadHistoryService.js'
 
 import { enqueueDownloadJob, cancelDownloadJob } from '../services/downloadQueueService.js'
@@ -626,6 +627,18 @@ export async function clearDownloadHistoryController(req, res, next) {
         message: error.message
       })
     }
+    next(error)
+  }
+}
+
+export async function getDownloadSummaryController(req, res, next) {
+  try {
+    const summary = await getDownloadSummary()
+    return res.status(200).json({
+      success: true,
+      data: summary
+    })
+  } catch (error) {
     next(error)
   }
 }

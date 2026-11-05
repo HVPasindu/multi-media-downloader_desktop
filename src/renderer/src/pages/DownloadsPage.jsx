@@ -22,7 +22,7 @@ import PlatformBadge from '../components/ui/PlatformBadge'
 import StatusBadge from '../components/ui/StatusBadge'
 import Pagination from '../components/common/Pagination'
 import { useDownloadsManager } from '../hooks/useDownloadsManager'
-import { retryDownload, clearDownloadHistory, listDownloads } from '../services/downloadsApi'
+import { retryDownload, clearDownloadHistory, getDownloadSummary } from '../services/downloadsApi'
 import { showError, showToast, showConfirm } from '../utils/notificationService'
 
 /**
@@ -60,25 +60,29 @@ export default function DownloadsPage() {
   const statusFilter = activeTab === 'all' || activeTab === 'failed' ? null : activeTab
   const statusesFilter = activeTab === 'failed' ? ['failed', 'cancelled'] : null
 
-  // Auto-clamp current page if total pages decreases (e.g. after deletion or filter change)
-  const totalPages = Math.max(1, Math.ceil(totalMatchingRecords / pageSize))
-  const safeCurrentPage = totalMatchingRecords > 0 ? Math.min(currentPage, totalPages) : 1
-  const offset = (safeCurrentPage - 1) * pageSize
-
   // Step 12: Server-side paginated & filtered Downloads Manager state
   const {
     downloadsList,
     isLoading,
     error,
     retry,
-    total: totalMatchingRecords
+    total: totalMatchingRecords = 0
   } = useDownloadsManager({
     limit: pageSize,
-    offset,
+    offset: Math.max(0, (currentPage - 1) * pageSize),
     search: searchQuery,
     status: statusFilter,
     statuses: statusesFilter
   })
+
+  // Auto-clamp current page if total pages decreases (e.g. after deletion or filter change)
+  const totalPages = Math.max(1, Math.ceil(totalMatchingRecords / pageSize))
+  const safeCurrentPage = Math.min(Math.max(currentPage, 1), totalPages)
+  const offset = (safeCurrentPage - 1) * pageSize
+
+  if (totalMatchingRecords > 0 && currentPage > totalPages) {
+    setCurrentPage(totalPages)
+  }
 
   // Global counts for StatCards and FilterTabs (genuine SQLite totals across entire database)
   const [globalCounts, setGlobalCounts] = useState({
@@ -92,36 +96,34 @@ export default function DownloadsPage() {
 
   const fetchGlobalCounts = useCallback(async () => {
     try {
-      const [dlRes, qRes, intRes, compRes, failRes, allRes] = await Promise.all([
-        listDownloads({ status: 'downloading', limit: 1 }),
-        listDownloads({ status: 'queued', limit: 1 }),
-        listDownloads({ status: 'interrupted', limit: 1 }),
-        listDownloads({ status: 'completed', limit: 1 }),
-        listDownloads({ statuses: ['failed', 'cancelled'], limit: 1 }),
-        listDownloads({ limit: 1 })
-      ])
-
-      setGlobalCounts({
-        downloading: Number(dlRes.data?.pagination?.total) || 0,
-        queued: Number(qRes.data?.pagination?.total) || 0,
-        interrupted: Number(intRes.data?.pagination?.total) || 0,
-        completed: Number(compRes.data?.pagination?.total) || 0,
-        failed: Number(failRes.data?.pagination?.total) || 0,
-        total: Number(allRes.data?.pagination?.total) || 0
-      })
+      const res = await getDownloadSummary()
+      if (res.ok && res.data?.success && res.data?.data?.downloads) {
+        setGlobalCounts(res.data.data.downloads)
+      }
     } catch {
       // Ignore count fetch errors
     }
   }, [])
 
+  // Adaptive background polling & immediate refresh on mutation events
   useEffect(() => {
     let isMounted = true
+    let timerId = null
 
-    async function loadCounts() {
+    async function pollLoop() {
       await fetchGlobalCounts()
-    }
+      if (!isMounted) return
 
-    void loadCounts()
+      const hasActive =
+        globalCounts.downloading > 0 || globalCounts.queued > 0 || globalCounts.interrupted > 0
+
+      const interval = hasActive ? 2000 : 8000
+      timerId = setTimeout(() => {
+        if (isMounted) {
+          void pollLoop()
+        }
+      }, interval)
+    }
 
     const onStateChanged = () => {
       if (isMounted) {
@@ -130,11 +132,15 @@ export default function DownloadsPage() {
     }
 
     window.addEventListener('applan2:download-state-changed', onStateChanged)
+
+    void pollLoop()
+
     return () => {
       isMounted = false
+      if (timerId) clearTimeout(timerId)
       window.removeEventListener('applan2:download-state-changed', onStateChanged)
     }
-  }, [fetchGlobalCounts])
+  }, [fetchGlobalCounts, globalCounts.downloading, globalCounts.queued, globalCounts.interrupted])
 
   const handleSelectTab = (tabId) => {
     setActiveTab(tabId)
