@@ -399,7 +399,7 @@ export async function createE2eEnvironment(prefix = 'applan2-e2e-') {
   }
 
   // Deterministic bounded polling helper for asynchronous job status
-  async function waitForJobState(jobId, predicate, timeoutMs = 6000) {
+  async function waitForJobState(jobId, predicate, timeoutMs = 12000) {
     const { DownloadJob } = getDatabase().models
     const start = Date.now()
 

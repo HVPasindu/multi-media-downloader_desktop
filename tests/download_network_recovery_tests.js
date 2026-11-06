@@ -4,7 +4,7 @@ import crypto from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { mkdir, writeFile, symlink } from 'node:fs/promises'
+import { mkdir, writeFile, symlink, stat } from 'node:fs/promises'
 import { createTestDatabase } from './helpers/testDatabase.js'
 import {
   resolveValidatedDownloadPath,
@@ -58,6 +58,7 @@ import {
   VALID_JOB_STATUSES,
   listDownloadHistory
 } from '../src/main/backend/services/downloadHistoryService.js'
+import { normalizeDownloadJob } from '../src/renderer/src/utils/downloadPresentation.js'
 
 /**
  * ============================================================================
@@ -1113,6 +1114,464 @@ async function runNetworkRecoveryTests() {
     assert.equal(seqAfterRestart.id, seqJob.id, 'Test 2.6: Same Job ID maintained')
     console.log(
       '✓ Test 2.3-2.6 passed: Startup & Network recovery sequences and idempotency verified\n'
+    )
+
+    // ========================================================================
+    // STARTUP RACE & SERIALIZED NETWORK MONITORING TESTS (ORDER 02)
+    // ========================================================================
+    console.log('--- Order 02: Startup Race & Serialized Network Monitoring Tests (1-7) ---')
+
+    // ------------------------------------------------------------------------
+    // Test 1 – Exact startup race reproduction
+    // Cold start recovery marked job as interrupted while offline.
+    // Internet becomes available before monitor starts.
+    // Monitor starts with initial check = ONLINE.
+    // It must perform initial recovery scan and queue the interrupted job.
+    // ------------------------------------------------------------------------
+    console.log('  [Race 1] Exact startup race reproduction (Online on initial monitor probe)...')
+    resetRecoveryTrackingForTesting()
+    resetNetworkMonitoringForTesting()
+    await DownloadJob.destroy({ where: {} })
+
+    const raceJob1 = await DownloadJob.create({
+      media_id: media.id,
+      output_format: 'mp4',
+      quality: '1080p',
+      status: 'downloading',
+      progress: 50,
+      downloaded_bytes: 5000000
+    })
+    const racePartPath1 = join(testDownloadDir, `race-clip-1 [job-${raceJob1.id}].mp4.part`)
+    await writeFile(racePartPath1, Buffer.alloc(5000000, 0x11))
+
+    // Cold-start recovery runs while offline
+    const startupEnqRace1 = []
+    await recoverInterruptedDownloadJobs({
+      isOnline: false,
+      enqueue: (id) => startupEnqRace1.push(id)
+    })
+    assert.equal(startupEnqRace1.length, 0, 'Race 1: Nothing enqueued during offline cold start')
+
+    const reloadedRace1Interrupted = await DownloadJob.findByPk(raceJob1.id)
+    assert.equal(
+      reloadedRace1Interrupted.status,
+      'interrupted',
+      'Race 1: Job transitioned to interrupted on offline startup'
+    )
+
+    // Internet becomes ONLINE before startNetworkMonitoring() is called
+    setConnectivityCheckerForTesting(async () => true)
+
+    const monitorEnqRace1 = []
+    await startNetworkMonitoring({
+      baseIntervalMs: 100,
+      initialDelayMs: 50,
+      enqueue: (id) => monitorEnqRace1.push(id)
+    })
+
+    const reloadedRace1Resumed = await DownloadJob.findByPk(raceJob1.id)
+    assert.equal(reloadedRace1Resumed.id, raceJob1.id, 'Race 1: Original Job ID strictly preserved')
+    assert.equal(
+      reloadedRace1Resumed.status,
+      'queued',
+      'Race 1: Job resumed to queued without waiting for 0->1 transition'
+    )
+    assert.equal(reloadedRace1Resumed.progress, 50, 'Race 1: Progress strictly preserved')
+    assert.equal(
+      reloadedRace1Resumed.downloaded_bytes,
+      5000000,
+      'Race 1: Downloaded bytes strictly preserved'
+    )
+    assert.deepEqual(monitorEnqRace1, [raceJob1.id], 'Race 1: Exactly 1 recovery enqueue occurred')
+
+    const race1JobCount = await DownloadJob.count({ where: { id: raceJob1.id } })
+    assert.equal(race1JobCount, 1, 'Race 1: Zero duplicate jobs created')
+    stopNetworkMonitoring()
+    console.log('  ✓ Race 1 passed: Interrupted job resumed on initial online monitor check\n')
+
+    // ------------------------------------------------------------------------
+    // Test 2 – Offline startup remains offline
+    // Start monitoring while connectivity checker returns false.
+    // Job remains interrupted, speed 0 KB/s, ETA Waiting for connection.
+    // ------------------------------------------------------------------------
+    console.log('  [Race 2] Offline startup remains offline...')
+    resetRecoveryTrackingForTesting()
+    resetNetworkMonitoringForTesting()
+    await DownloadJob.destroy({ where: {} })
+
+    const raceJob2 = await DownloadJob.create({
+      media_id: media.id,
+      output_format: 'mp4',
+      quality: '720p',
+      status: 'downloading',
+      progress: 40,
+      downloaded_bytes: 4000000
+    })
+    const racePartPath2 = join(testDownloadDir, `race-clip-2 [job-${raceJob2.id}].mp4.part`)
+    await writeFile(racePartPath2, Buffer.alloc(4000000, 0x22))
+
+    setConnectivityCheckerForTesting(async () => false)
+    await recoverInterruptedDownloadJobs({
+      isOnline: false,
+      enqueue: () => {}
+    })
+
+    const monitorEnqRace2 = []
+    await startNetworkMonitoring({
+      baseIntervalMs: 50,
+      initialDelayMs: 20,
+      enqueue: (id) => monitorEnqRace2.push(id)
+    })
+
+    const reloadedRace2 = await DownloadJob.findByPk(raceJob2.id)
+    assert.equal(reloadedRace2.status, 'interrupted', 'Race 2: Status remains interrupted')
+    assert.equal(reloadedRace2.progress, 40, 'Race 2: Progress preserved')
+    assert.equal(reloadedRace2.downloaded_bytes, 4000000, 'Race 2: Downloaded bytes preserved')
+    assert.equal(monitorEnqRace2.length, 0, 'Race 2: Zero enqueued while offline')
+
+    const normRace2 = normalizeDownloadJob(reloadedRace2.toJSON())
+    assert.equal(normRace2.speedText, '0 KB/s', 'Race 2: Speed is 0 KB/s')
+    assert.equal(
+      normRace2.etaDisplay,
+      'Waiting for connection',
+      'Race 2: ETA is Waiting for connection'
+    )
+    stopNetworkMonitoring()
+    console.log(
+      '  ✓ Race 2 passed: Offline startup correctly remains offline with proper presentation\n'
+    )
+
+    // ------------------------------------------------------------------------
+    // Test 3 – Offline startup followed by reconnect
+    // Start offline, let initial probe complete, then reconnect.
+    // ------------------------------------------------------------------------
+    console.log('  [Race 3] Offline startup followed by reconnect...')
+    resetRecoveryTrackingForTesting()
+    resetNetworkMonitoringForTesting()
+    await DownloadJob.destroy({ where: {} })
+
+    const raceJob3 = await DownloadJob.create({
+      media_id: media.id,
+      output_format: 'mp4',
+      quality: '1080p',
+      status: 'downloading',
+      progress: 25,
+      downloaded_bytes: 2500000
+    })
+    const racePartPath3 = join(testDownloadDir, `race-clip-3 [job-${raceJob3.id}].mp4.part`)
+    await writeFile(racePartPath3, Buffer.alloc(2500000, 0x33))
+
+    let race3Connectivity = false
+    setConnectivityCheckerForTesting(async () => race3Connectivity)
+
+    await recoverInterruptedDownloadJobs({ isOnline: false, enqueue: () => {} })
+
+    const monitorEnqRace3 = []
+    await startNetworkMonitoring({
+      baseIntervalMs: 40,
+      initialDelayMs: 20,
+      enqueue: (id) => monitorEnqRace3.push(id)
+    })
+
+    // Assert initial state is offline
+    assert.equal(monitorEnqRace3.length, 0, 'Race 3: Nothing enqueued while offline initially')
+
+    // Reconnect
+    race3Connectivity = true
+    await new Promise((r) => setTimeout(r, 100))
+
+    const reloadedRace3 = await DownloadJob.findByPk(raceJob3.id)
+    assert.equal(reloadedRace3.id, raceJob3.id, 'Race 3: Same Job ID preserved')
+    assert.equal(reloadedRace3.status, 'queued', 'Race 3: Resumed to queued after reconnect')
+    assert.equal(reloadedRace3.progress, 25, 'Race 3: Progress preserved')
+    assert.equal(reloadedRace3.downloaded_bytes, 2500000, 'Race 3: Bytes preserved')
+    assert.deepEqual(monitorEnqRace3, [raceJob3.id], 'Race 3: Exactly 1 enqueue occurred')
+    stopNetworkMonitoring()
+    console.log('  ✓ Race 3 passed: Offline startup transitions cleanly to queued on reconnect\n')
+
+    // ------------------------------------------------------------------------
+    // Test 4 – Delayed initial connectivity probe
+    // Simulate an initial probe that takes longer than initialDelayMs.
+    // No periodic checks should run before initial probe finishes.
+    // ------------------------------------------------------------------------
+    console.log('  [Race 4] Delayed initial connectivity probe serialization...')
+    resetRecoveryTrackingForTesting()
+    resetNetworkMonitoringForTesting()
+    await DownloadJob.destroy({ where: {} })
+
+    const raceJob4 = await DownloadJob.create({
+      media_id: media.id,
+      output_format: 'mp4',
+      quality: '720p',
+      status: 'interrupted',
+      progress: 60,
+      downloaded_bytes: 6000000
+    })
+    const racePartPath4 = join(testDownloadDir, `race-clip-4 [job-${raceJob4.id}].mp4.part`)
+    await writeFile(racePartPath4, Buffer.alloc(6000000, 0x44))
+
+    let resolveDelayedProbe
+    const delayedProbePromise = new Promise((resolve) => {
+      resolveDelayedProbe = resolve
+    })
+    let probeCallCount = 0
+    setConnectivityCheckerForTesting(() => {
+      probeCallCount++
+      return delayedProbePromise
+    })
+
+    const monitorEnqRace4 = []
+    const monitorPromise4 = startNetworkMonitoring({
+      baseIntervalMs: 30,
+      initialDelayMs: 15,
+      enqueue: (id) => monitorEnqRace4.push(id)
+    })
+
+    // Wait longer than initialDelayMs (40ms > 15ms)
+    await new Promise((r) => setTimeout(r, 40))
+    // Verify periodic check has NOT fired because initialization was pending
+    assert.equal(
+      probeCallCount,
+      1,
+      'Race 4: Exactly one in-flight connectivity check while pending'
+    )
+    assert.equal(
+      monitorEnqRace4.length,
+      0,
+      'Race 4: Nothing enqueued while initial probe is pending'
+    )
+
+    // Now resolve probe as online
+    resolveDelayedProbe(true)
+    await monitorPromise4
+
+    const reloadedRace4 = await DownloadJob.findByPk(raceJob4.id)
+    assert.equal(
+      reloadedRace4.status,
+      'queued',
+      'Race 4: Job resumed upon delayed probe resolution'
+    )
+    assert.deepEqual(monitorEnqRace4, [raceJob4.id], 'Race 4: Exactly 1 enqueue')
+    stopNetworkMonitoring()
+    console.log(
+      '  ✓ Race 4 passed: Delayed initial probe completes cleanly without race or duplicate checks\n'
+    )
+
+    // ------------------------------------------------------------------------
+    // Test 5 – Repeated monitor startup idempotency
+    // ------------------------------------------------------------------------
+    console.log('  [Race 5] Repeated monitor startup idempotency...')
+    resetRecoveryTrackingForTesting()
+    resetNetworkMonitoringForTesting()
+    await DownloadJob.destroy({ where: {} })
+
+    const raceJob5 = await DownloadJob.create({
+      media_id: media.id,
+      output_format: 'mp4',
+      quality: '1080p',
+      status: 'interrupted',
+      progress: 70,
+      downloaded_bytes: 7000000
+    })
+    const racePartPath5 = join(testDownloadDir, `race-clip-5 [job-${raceJob5.id}].mp4.part`)
+    await writeFile(racePartPath5, Buffer.alloc(7000000, 0x55))
+
+    setConnectivityCheckerForTesting(async () => true)
+    const monitorEnqRace5 = []
+
+    // Call startNetworkMonitoring 3 times concurrently
+    const p1 = startNetworkMonitoring({
+      baseIntervalMs: 50,
+      enqueue: (id) => monitorEnqRace5.push(id)
+    })
+    const p2 = startNetworkMonitoring({
+      baseIntervalMs: 50,
+      enqueue: (id) => monitorEnqRace5.push(id)
+    })
+    const p3 = startNetworkMonitoring({
+      baseIntervalMs: 50,
+      enqueue: (id) => monitorEnqRace5.push(id)
+    })
+
+    await Promise.all([p1, p2, p3])
+
+    const reloadedRace5 = await DownloadJob.findByPk(raceJob5.id)
+    assert.equal(reloadedRace5.status, 'queued', 'Race 5: Job resumed')
+    assert.deepEqual(
+      monitorEnqRace5,
+      [raceJob5.id],
+      'Race 5: Exactly 1 enqueue despite multiple start calls'
+    )
+    stopNetworkMonitoring()
+    console.log(
+      '  ✓ Race 5 passed: Repeated startNetworkMonitoring calls are strictly idempotent\n'
+    )
+
+    // ------------------------------------------------------------------------
+    // Test 6 – Recovery failure and subsequent retry
+    // ------------------------------------------------------------------------
+    console.log('  [Race 6] Recovery failure and subsequent retry...')
+    resetRecoveryTrackingForTesting()
+    resetNetworkMonitoringForTesting()
+    await DownloadJob.destroy({ where: {} })
+
+    const raceJob6 = await DownloadJob.create({
+      media_id: media.id,
+      output_format: 'mp4',
+      quality: '1080p',
+      status: 'interrupted',
+      progress: 80,
+      downloaded_bytes: 8000000
+    })
+    const racePartPath6 = join(testDownloadDir, `race-clip-6 [job-${raceJob6.id}].mp4.part`)
+    await writeFile(racePartPath6, Buffer.alloc(8000000, 0x66))
+
+    let shouldFailFindAllOnce = true
+    const realFindAll = DownloadJob.findAll
+    DownloadJob.findAll = async function (...args) {
+      if (shouldFailFindAllOnce) {
+        shouldFailFindAllOnce = false
+        throw new Error('Simulated transient SQLite lock during recovery')
+      }
+      return realFindAll.apply(this, args)
+    }
+
+    // Cycle 1: starts offline initially
+    let race6Connectivity = false
+    setConnectivityCheckerForTesting(async () => race6Connectivity)
+
+    const monitorEnqRace6 = []
+    await startNetworkMonitoring({
+      baseIntervalMs: 30,
+      initialDelayMs: 15,
+      enqueue: (id) => monitorEnqRace6.push(id)
+    })
+
+    // Internet reconnects; first recovery attempt throws simulated DB error
+    race6Connectivity = true
+    await new Promise((r) => setTimeout(r, 45))
+
+    // Next cycle runs (shouldFailFindAllOnce is false), recovery succeeds and enqueues job
+    await new Promise((r) => setTimeout(r, 80))
+
+    DownloadJob.findAll = realFindAll
+
+    const reloadedRace6 = await DownloadJob.findByPk(raceJob6.id)
+    assert.equal(reloadedRace6.status, 'queued', 'Race 6: Job resumed to queued on retry cycle')
+    assert.equal(reloadedRace6.progress, 80, 'Race 6: 80% progress strictly preserved')
+    assert.equal(
+      reloadedRace6.downloaded_bytes,
+      8000000,
+      'Race 6: Downloaded bytes strictly preserved'
+    )
+    assert.deepEqual(
+      monitorEnqRace6,
+      [raceJob6.id],
+      'Race 6: Subsequent cycle retried recovery and enqueued successfully'
+    )
+    stopNetworkMonitoring()
+    console.log(
+      '  ✓ Race 6 passed: Monitoring remains alive after recovery failure and retries successfully\n'
+    )
+
+    // ------------------------------------------------------------------------
+    // Test 7 – Initial Online Recovery Failure → Automatic Retry
+    // Application starts with Internet ON, but initial recovery scan fails due
+    // to temporary SQLite error. Next monitoring cycle must automatically retry
+    // and recover the interrupted job without manual intervention.
+    // ------------------------------------------------------------------------
+    console.log('  [Race 7] Initial Online Recovery Failure → Automatic Retry...')
+    resetRecoveryTrackingForTesting()
+    resetNetworkMonitoringForTesting()
+    await DownloadJob.destroy({ where: {} })
+
+    const raceJob7 = await DownloadJob.create({
+      media_id: media.id,
+      output_format: 'mp4',
+      quality: '1080p',
+      status: 'interrupted',
+      progress: 80,
+      downloaded_bytes: 8000000
+    })
+    const racePartPath7 = join(testDownloadDir, `race-clip-7 [job-${raceJob7.id}].mp4.part`)
+    await writeFile(racePartPath7, Buffer.alloc(8000000, 0x77))
+
+    let race7FindAllCalls = 0
+    const originalFindAll7 = DownloadJob.findAll
+
+    DownloadJob.findAll = async function (...args) {
+      race7FindAllCalls++
+      if (race7FindAllCalls === 1) {
+        throw new Error('Simulated transient SQLite lock during initial recovery')
+      }
+      return originalFindAll7.apply(this, args)
+    }
+
+    try {
+      setConnectivityCheckerForTesting(async () => true)
+
+      const monitorEnqRace7 = []
+      await startNetworkMonitoring({
+        baseIntervalMs: 50,
+        initialDelayMs: 30,
+        enqueue: (id) => {
+          monitorEnqRace7.push(id)
+          return true
+        }
+      })
+
+      // The initial recovery scan failed due to the simulated SQLite error.
+      // Monitoring remains active and retries on the next checkCycle while still ONLINE.
+      let reloadedRace7 = null
+      for (let poll = 0; poll < 40; poll++) {
+        reloadedRace7 = await DownloadJob.findByPk(raceJob7.id)
+        if (reloadedRace7 && reloadedRace7.status === 'queued') {
+          break
+        }
+        await new Promise((r) => setTimeout(r, 25))
+      }
+
+      assert.equal(
+        race7FindAllCalls >= 2,
+        true,
+        'Race 7: Recovery scan retried after initial SQLite failure'
+      )
+      assert.equal(reloadedRace7.id, raceJob7.id, 'Race 7: Original Job ID preserved')
+      assert.equal(reloadedRace7.status, 'queued', 'Race 7: Original job recovered to queued')
+      assert.equal(reloadedRace7.progress, 80, 'Race 7: Original progress preserved')
+      assert.equal(
+        reloadedRace7.downloaded_bytes,
+        8000000,
+        'Race 7: Original downloaded bytes preserved'
+      )
+      assert.deepEqual(monitorEnqRace7, [raceJob7.id], 'Race 7: Exactly one queue enqueue')
+
+      // Verify partial file and DB invariants
+      const partStat7 = await stat(racePartPath7)
+      assert.equal(
+        partStat7.size,
+        8000000,
+        'Race 7: Valid partial file still exists and size remains 8 MB'
+      )
+
+      const totalJobCount7 = await DownloadJob.count({ where: { id: raceJob7.id } })
+      assert.equal(
+        totalJobCount7,
+        1,
+        'Race 7: Exactly one database job exists for original ID (no replacement job created)'
+      )
+
+      const allJobs7 = await DownloadJob.findAll()
+      assert.equal(allJobs7.length, 1, 'Race 7: No duplicate jobs exist in database')
+    } finally {
+      DownloadJob.findAll = originalFindAll7
+      stopNetworkMonitoring()
+      resetNetworkMonitoringForTesting()
+      resetRecoveryTrackingForTesting()
+    }
+
+    console.log(
+      '  ✓ Race 7 passed: Initial online recovery failure automatically retries and succeeds\n'
     )
 
     // ========================================================================

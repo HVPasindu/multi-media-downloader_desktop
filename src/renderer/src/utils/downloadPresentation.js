@@ -1,7 +1,7 @@
-import { formatMediaDuration, formatBytes } from './mediaMetadata'
-import { getFriendlyErrorInfo } from './errorPresentation'
+import { formatMediaDuration, formatBytes } from './mediaMetadata.js'
+import { getFriendlyErrorInfo } from './errorPresentation.js'
 
-export { formatBytes } from './mediaMetadata'
+export { formatBytes } from './mediaMetadata.js'
 
 /**
  * Formats download speed into readable string (e.g. "12.5 MB/s", "450 KB/s").
@@ -183,19 +183,36 @@ export function normalizeDownloadJob(job, speedTracker = null) {
     qualityLabel = job.quality
   }
 
-  // Determine total bytes (preferring live total_bytes from yt-dlp streams, falling back to file_size)
-  const totalBytes =
+  // Determine total bytes (preferring actual output file_size once completed,
+  // otherwise live total_bytes from yt-dlp streams, falling back to file_size)
+  const hasLiveTotal =
     job.total_bytes !== null &&
     job.total_bytes !== undefined &&
     Number.isFinite(Number(job.total_bytes)) &&
     Number(job.total_bytes) > 0
+
+  const validFileSizeFallback =
+    job.file?.file_size !== null &&
+    job.file?.file_size !== undefined &&
+    Number.isFinite(Number(job.file.file_size)) &&
+    Number(job.file.file_size) > 0
+      ? Number(job.file.file_size)
+      : null
+
+  const hasCompletedOutputFileSize = isCompleted && validFileSizeFallback !== null
+
+  const totalBytes = hasCompletedOutputFileSize
+    ? validFileSizeFallback
+    : hasLiveTotal
       ? Number(job.total_bytes)
-      : job.file?.file_size !== null &&
-          job.file?.file_size !== undefined &&
-          Number.isFinite(Number(job.file.file_size)) &&
-          Number(job.file.file_size) > 0
-        ? Number(job.file.file_size)
-        : null
+      : validFileSizeFallback
+
+  const totalBytesIsEstimate =
+    !hasCompletedOutputFileSize &&
+    hasLiveTotal &&
+    (job.total_bytes_is_estimate === true ||
+      job.total_bytes_is_estimate === 1 ||
+      job.total_bytes_is_estimate === '1')
 
   const downloadedBytes =
     job.downloaded_bytes !== null &&
@@ -205,15 +222,19 @@ export function normalizeDownloadJob(job, speedTracker = null) {
       : 0
 
   const downloadedBytesFormatted = formatBytes(downloadedBytes)
-  const totalBytesFormatted = totalBytes ? formatBytes(totalBytes) : null
+  const totalBytesFormatted = totalBytes
+    ? `${totalBytesIsEstimate ? '~' : ''}${formatBytes(totalBytes)}`
+    : null
 
   // Size display
   const fileSizeFormatted =
     totalBytesFormatted || (downloadedBytes > 0 ? downloadedBytesFormatted : '—')
 
-  // Progress text (e.g. "25 MB / 52 MB" or "25 MB downloaded" or "0 B")
+  // Progress text (e.g. "25 MB / ~52 MB" or "25 MB downloaded" or "0 B" or "52 MB" on completion)
   let progressText = '0 B'
-  if (totalBytes && downloadedBytes > 0) {
+  if (hasCompletedOutputFileSize) {
+    progressText = formatBytes(validFileSizeFallback)
+  } else if (totalBytes && downloadedBytes > 0) {
     progressText = `${downloadedBytesFormatted} / ${totalBytesFormatted}`
   } else if (downloadedBytes > 0) {
     progressText = `${downloadedBytesFormatted} downloaded`
@@ -224,8 +245,9 @@ export function normalizeDownloadJob(job, speedTracker = null) {
   // Progress percentage (0 - 100)
   const progress = Math.min(100, Math.max(0, Math.round(Number(job.progress) || 0)))
 
-  // Step 09.J - Distinguish resuming state for recovered downloads waiting in queue
-  const isResuming = isQueued && progress > 0
+  // Distinguish resuming state for recovered downloads waiting in queue or reporting resuming status
+  const isResuming = job.status === 'resuming' || (isQueued && progress > 0)
+  const isInterrupted = job.status === 'interrupted'
 
   // Download speed & ETA computation (only when downloading)
   let speedText = null
@@ -259,13 +281,20 @@ export function normalizeDownloadJob(job, speedTracker = null) {
       etaText = 'Calculating...'
       etaDisplay = 'Calculating...'
     }
-  } else if (job.status === 'interrupted') {
-    speedText = '0 KB/s'
-    etaText = 'Waiting for connection'
-    etaDisplay = 'Waiting for connection'
-  } else if (isResuming) {
-    etaText = 'Resuming...'
-    etaDisplay = 'Resuming...'
+  } else {
+    // Invalidate stale speed samples when not actively downloading so recovery/restart recalculates cleanly
+    if (speedTracker && typeof speedTracker.delete === 'function') {
+      speedTracker.delete(job.id)
+    }
+    if (isInterrupted) {
+      speedText = '0 KB/s'
+      etaText = 'Waiting for connection'
+      etaDisplay = 'Waiting for connection'
+    } else if (isResuming) {
+      speedText = null
+      etaText = 'Resuming...'
+      etaDisplay = 'Resuming...'
+    }
   }
 
   // Build user-friendly status text and display status
@@ -283,7 +312,7 @@ export function normalizeDownloadJob(job, speedTracker = null) {
   } else if (isResuming) {
     statusText = `Resuming (${progress}% saved)`
     displayStatus = 'resuming'
-  } else if (job.status === 'interrupted') {
+  } else if (isInterrupted) {
     statusText = job.error_message || 'Interrupted – Waiting for internet connection'
     displayStatus = 'interrupted'
   } else if (isQueued) {
@@ -320,6 +349,7 @@ export function normalizeDownloadJob(job, speedTracker = null) {
     filePath: job.file?.file_path || null,
     totalBytes,
     totalBytesFormatted,
+    totalBytesIsEstimate,
     downloadedBytes,
     downloadedBytesFormatted,
     progress,
