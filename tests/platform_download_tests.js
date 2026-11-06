@@ -777,7 +777,108 @@ async function runPlatformDownloadTests() {
       '~37 MB',
       'Facebook 970s 320 kbps should estimate ~37 MB'
     )
-    console.log('✓ Facebook: formats without filesize, approx size, and MP3 calculations verified')
+
+    // A4. Real-world Facebook sanitized metadata (from live yt-dlp output)
+    // No format height, audio_ext: 'none', format_id: 'hd' & 'sd', URL query bitrate=580000 & 127000
+    const fbRealWorldFixture = {
+      id: '10153231379946729',
+      title: 'How to Share With Just Friends',
+      duration: 74.304,
+      duration_string: '1:14',
+      formats: [
+        {
+          format_id: 'sd',
+          ext: 'mp4',
+          video_ext: 'mp4',
+          audio_ext: 'none',
+          protocol: 'https',
+          url: 'https://video.fna.fbcdn.net/v/test.mp4?bitrate=127000&tag=sd'
+        },
+        {
+          format_id: 'hd',
+          ext: 'mp4',
+          video_ext: 'mp4',
+          audio_ext: 'none',
+          protocol: 'https',
+          url: 'https://video.fna.fbcdn.net/v/test.mp4?bitrate=580000&tag=hd'
+        }
+      ]
+    }
+    const fbRealAnalysis = parseSyntheticMetadata(
+      fbRealWorldFixture,
+      'facebook',
+      'https://www.facebook.com/facebook/videos/10153231379946729/'
+    )
+    assert.strictEqual(fbRealAnalysis.durationSeconds, 74, 'Duration 74.304 normalized to 74s')
+    assert.deepStrictEqual(
+      fbRealAnalysis.videoQualities,
+      ['720p', '360p'],
+      'Facebook heights inferred from format_id/URL'
+    )
+    assert.deepStrictEqual(
+      fbRealAnalysis.audioOptions,
+      ['mp3'],
+      'Facebook progressive format supports MP3 extraction'
+    )
+    assert.strictEqual(
+      fbRealAnalysis.availableFormats.mp4Formats.length,
+      2,
+      'Both HD and SD formats recognized'
+    )
+    assert.strictEqual(
+      fbRealAnalysis.availableFormats.mp4Formats[0].totalBitrateKbps,
+      127,
+      'SD bitrate 127 kbps extracted from URL'
+    )
+    assert.strictEqual(
+      fbRealAnalysis.availableFormats.mp4Formats[1].totalBitrateKbps,
+      580,
+      'HD bitrate 580 kbps extracted from URL'
+    )
+    // (580 * 74 * 1000) / 8 = 5,365,000 bytes = ~5.1 MB
+    assert.strictEqual(
+      estimateMp4QualitySize(fbRealAnalysis, '720p'),
+      '~5.1 MB',
+      'Facebook HD MP4 estimated ~5.1 MB'
+    )
+    assert.strictEqual(
+      estimateMp4QualitySize(fbRealAnalysis, 'best'),
+      '~5.1 MB',
+      'Facebook best quality MP4 estimated ~5.1 MB'
+    )
+    // (127 * 74 * 1000) / 8 = 1,174,750 bytes = ~1.1 MB
+    assert.strictEqual(
+      estimateMp4QualitySize(fbRealAnalysis, '360p'),
+      '~1.1 MB',
+      'Facebook SD MP4 estimated ~1.1 MB'
+    )
+    // MP3 for 74s:
+    // (74 * 128 * 1000) / 8 = 1,184,000 bytes = ~1.1 MB
+    assert.strictEqual(
+      estimateMp3BitrateSize(fbRealAnalysis, 128),
+      '~1.1 MB',
+      'Facebook 74s 128 kbps MP3 estimated ~1.1 MB'
+    )
+    assert.strictEqual(
+      estimateMp3BitrateSize(fbRealAnalysis, 192),
+      '~1.7 MB',
+      'Facebook 74s 192 kbps MP3 estimated ~1.7 MB'
+    )
+    assert.strictEqual(
+      estimateMp3BitrateSize(fbRealAnalysis, 320),
+      '~2.8 MB',
+      'Facebook 74s 320 kbps MP3 estimated ~2.8 MB'
+    )
+    // Selector resolution for real Facebook:
+    const fbRealSel720 = resolveMp4FormatSelector(fbRealAnalysis.availableFormats, '720p')
+    assert.strictEqual(fbRealSel720.selector, 'hd')
+    assert.strictEqual(fbRealSel720.type, 'combined_stream')
+    const fbRealSel360 = resolveMp4FormatSelector(fbRealAnalysis.availableFormats, '360p')
+    assert.strictEqual(fbRealSel360.selector, 'sd')
+    assert.strictEqual(fbRealSel360.type, 'combined_stream')
+    console.log(
+      '✓ Facebook: formats without filesize, real-world URL bitrate, approx size, and MP3 calculations verified'
+    )
 
     // B. Instagram tests:
     // B1. Missing exact and approximate filesize, bitrate-based MP4 estimation
@@ -884,8 +985,143 @@ async function runPlatformDownloadTests() {
       'Size unavailable',
       'Instagram without duration cannot estimate MP3 size'
     )
+
+    // B4. Instagram Reel with numeric string duration e.g. "30"
+    const igNumStrFixture = {
+      id: 'ig-numstr-1',
+      title: 'Instagram Reel Numeric String Duration',
+      duration: '30',
+      formats: [
+        {
+          format_id: '0',
+          ext: 'mp4',
+          height: 1080,
+          vcodec: 'h264',
+          acodec: 'aac',
+          tbr: 2500
+        }
+      ]
+    }
+    const igNumStrAnalysis = parseSyntheticMetadata(
+      igNumStrFixture,
+      'instagram',
+      'https://www.instagram.com/reel/4'
+    )
+    assert.strictEqual(igNumStrAnalysis.durationSeconds, 30, 'Numeric string duration normalized')
+    assert.strictEqual(estimateMp4QualitySize(igNumStrAnalysis, '1080p'), '~8.9 MB')
+    assert.strictEqual(estimateMp3BitrateSize(igNumStrAnalysis, 128), '~468.8 KB')
+
+    // B5. Instagram Reel with URL bitrate
+    const igUrlBitrateFixture = {
+      id: 'ig-urlbr-1',
+      title: 'Instagram Reel URL Bitrate',
+      duration: 15,
+      formats: [
+        {
+          format_id: '0',
+          ext: 'mp4',
+          height: 1080,
+          url: 'https://scontent.cdninstagram.com/v/t50.2886-16/reel.mp4?bitrate=3200000'
+        }
+      ]
+    }
+    const igUrlBrAnalysis = parseSyntheticMetadata(
+      igUrlBitrateFixture,
+      'instagram',
+      'https://www.instagram.com/reel/5'
+    )
+    assert.strictEqual(
+      igUrlBrAnalysis.availableFormats.mp4Formats[0].totalBitrateKbps,
+      3200,
+      'Instagram bitrate 3200 kbps extracted from URL'
+    )
+    // (3200 * 15 * 1000) / 8 = 6,000,000 bytes = ~5.7 MB
+    assert.strictEqual(estimateMp4QualitySize(igUrlBrAnalysis, '1080p'), '~5.7 MB')
+
+    // B6. Instagram Reel with exact file size
+    const igExactFixture = {
+      id: 'ig-exact-1',
+      title: 'Instagram Reel Exact Size',
+      duration: 15,
+      formats: [
+        {
+          format_id: '0',
+          ext: 'mp4',
+          height: 1080,
+          filesize: 12000000
+        }
+      ]
+    }
+    const igExactAnalysis = parseSyntheticMetadata(
+      igExactFixture,
+      'instagram',
+      'https://www.instagram.com/reel/6'
+    )
+    assert.strictEqual(
+      estimateMp4QualitySize(igExactAnalysis, '1080p'),
+      '11.4 MB',
+      'Exact size must not contain tilde'
+    )
     console.log(
-      '✓ Instagram: missing filesize, duration_string fallback, and unavailable duration verified'
+      '✓ Instagram: missing filesize, duration_string fallback, URL bitrate, exact size, and unavailable duration verified'
+    )
+
+    // D. Future / Platform-Neutral Extractor Metadata Tests (Section 8.5)
+    // Verifies that a generic/new platform requires NO platform-specific code in estimator
+    console.log('\n--- 2.2 Testing Platform-Neutral Future Platform Compatibility ---')
+    const genericPlatformFixture = {
+      id: 'generic-media-100',
+      title: 'New Video Platform Stream',
+      duration: 120,
+      formats: [
+        {
+          format_id: 'vid-1080',
+          ext: 'mp4',
+          height: 1080,
+          vcodec: 'avc1',
+          acodec: 'none',
+          tbr: 4000
+        },
+        {
+          format_id: 'audio-256',
+          ext: 'm4a',
+          vcodec: 'none',
+          acodec: 'mp4a.40.2',
+          abr: 256,
+          resolution: 'audio only'
+        }
+      ]
+    }
+    const genericAnalysis = parseSyntheticMetadata(
+      genericPlatformFixture,
+      'dailymotion',
+      'https://www.dailymotion.com/video/x12345'
+    )
+    assert.strictEqual(genericAnalysis.platform, 'dailymotion')
+    assert.strictEqual(genericAnalysis.durationSeconds, 120)
+    assert.deepStrictEqual(genericAnalysis.videoQualities, ['1080p'])
+    assert.deepStrictEqual(genericAnalysis.audioOptions, ['mp3'])
+
+    // Separate video + audio calculation for generic platform:
+    // Video: (4000 * 120 * 1000) / 8 = 60,000,000 bytes
+    // Audio: (256 * 120 * 1000) / 8 = 3,840,000 bytes
+    // Total: 63,840,000 bytes = ~60.9 MB
+    const genericSize = estimateMp4QualitySize(genericAnalysis, '1080p')
+    assert.strictEqual(
+      genericSize,
+      '~60.9 MB',
+      'Generic platform separate streams estimate ~60.9 MB'
+    )
+    assert.strictEqual(estimateMp4QualitySize(genericAnalysis, 'best'), '~60.9 MB')
+    // Generic MP3: (120 * 320 * 1000) / 8 = 4,800,000 bytes = ~4.6 MB
+    assert.strictEqual(estimateMp3BitrateSize(genericAnalysis, 320), '~4.6 MB')
+
+    // Selector resolution for generic platform:
+    const genericSelector = resolveMp4FormatSelector(genericAnalysis.availableFormats, '1080p')
+    assert.strictEqual(genericSelector.selector, 'vid-1080+audio-256')
+    assert.strictEqual(genericSelector.type, 'separate_merge')
+    console.log(
+      '✓ Platform-neutral future platform correctly estimated and resolved without platform-specific code'
     )
 
     // C. X / Twitter Real-World Stream tests:

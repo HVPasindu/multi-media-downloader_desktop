@@ -306,6 +306,72 @@ async function runProgressEtaRetryTests() {
     'Size unavailable',
     'Scenario 7: Missing duration with bitrate yields Size unavailable'
   )
+
+  // Scenario 7b: Facebook live format structure with URL-derived bitrate
+  // (580 kbps * 74s * 1000) / 8 = 5,365,000 bytes = ~5.1 MB
+  const mediaFbUrlBitrate = {
+    durationSeconds: 74,
+    availableFormats: {
+      mp4Qualities: ['720p', '360p'],
+      mp4Formats: [
+        {
+          formatId: 'sd',
+          quality: '360p',
+          height: 360,
+          audioIncluded: true,
+          fileSize: null,
+          totalBitrateKbps: 127
+        },
+        {
+          formatId: 'hd',
+          quality: '720p',
+          height: 720,
+          audioIncluded: true,
+          fileSize: null,
+          totalBitrateKbps: 580
+        }
+      ]
+    }
+  }
+  assert.equal(
+    estimateMp4QualitySize(mediaFbUrlBitrate, '720p'),
+    '~5.1 MB',
+    'Scenario 7b: Facebook 720p with URL-derived bitrate yields ~5.1 MB'
+  )
+  assert.equal(
+    estimateMp4QualitySize(mediaFbUrlBitrate, 'best'),
+    '~5.1 MB',
+    'Scenario 7b: Facebook best quality yields ~5.1 MB'
+  )
+  assert.equal(
+    estimateMp4QualitySize(mediaFbUrlBitrate, '360p'),
+    '~1.1 MB',
+    'Scenario 7b: Facebook 360p yields ~1.1 MB'
+  )
+
+  // Scenario 7c: Generic Future Platform normalized structure
+  // (3500 kbps * 90s * 1000) / 8 = 39,375,000 bytes = ~37.6 MB
+  const mediaGeneric = {
+    durationSeconds: 90,
+    availableFormats: {
+      mp4Qualities: ['1080p'],
+      mp4Formats: [
+        {
+          formatId: 'generic-1080',
+          quality: '1080p',
+          height: 1080,
+          audioIncluded: true,
+          fileSize: null,
+          totalBitrateKbps: 3500
+        }
+      ]
+    }
+  }
+  assert.equal(
+    estimateMp4QualitySize(mediaGeneric, '1080p'),
+    '~37.6 MB',
+    'Scenario 7c: Generic future platform estimates ~37.6 MB without platform-specific rules'
+  )
   console.log('✓ Section 1 Passed: MP4 quality file size estimation verified.\n')
 
   // --------------------------------------------------------------------------
@@ -365,6 +431,20 @@ async function runProgressEtaRetryTests() {
     estimateMp3BitrateSize(mediaWithDurString, 128),
     '~14.8 MB',
     'Duration string fallback: 16:10 parsed to 970s for 128 kbps MP3'
+  )
+
+  // Scenario 11: Numeric string duration (e.g. duration: "970")
+  assert.equal(
+    estimateMp3BitrateSize({ duration: '970' }, 128),
+    '~14.8 MB',
+    'Scenario 11: Numeric string duration "970" parses to 970s for 128 kbps MP3'
+  )
+
+  // Scenario 12: Generic future platform MP3
+  assert.equal(
+    estimateMp3BitrateSize({ durationSeconds: 90 }, 192),
+    '~2.1 MB',
+    'Scenario 12: Generic future platform 90s 192 kbps MP3 yields ~2.1 MB'
   )
   console.log('✓ Section 2 Passed: MP3 bitrate output size estimation verified.\n')
 

@@ -196,6 +196,56 @@ function parseDurationString(durationStr) {
 }
 
 /**
+ * Universal media duration resolver for frontend estimation.
+ * Supports durationSeconds, numeric duration, numeric-string duration, and duration_string.
+ *
+ * @param {object|null|undefined} media
+ * @returns {number|null} Total seconds or null
+ */
+export function resolveMediaDuration(media) {
+  if (!media || typeof media !== 'object') return null
+
+  const candidates = [
+    media.durationSeconds,
+    media.duration,
+    media.duration_string,
+    media.formats?.[0]?.duration,
+    media.formats?.[0]?.duration_string
+  ]
+
+  for (const cand of candidates) {
+    if (cand === null || cand === undefined || cand === '') continue
+
+    // 1. Direct finite positive number
+    if (typeof cand === 'number' && Number.isFinite(cand) && cand > 0) {
+      return Math.floor(cand)
+    }
+
+    // 2. String representation
+    if (typeof cand === 'string') {
+      const trimmed = cand.trim()
+      if (!trimmed) continue
+
+      // Numeric string e.g. "74.304" or "970"
+      if (/^\d+(?:\.\d+)?$/.test(trimmed)) {
+        const num = parseFloat(trimmed)
+        if (Number.isFinite(num) && num > 0) {
+          return Math.floor(num)
+        }
+      }
+
+      // Colon-separated string e.g. "16:10", "0:30", "1:05:30"
+      const parsed = parseDurationString(trimmed)
+      if (parsed !== null && parsed > 0) {
+        return parsed
+      }
+    }
+  }
+
+  return null
+}
+
+/**
  * Finds an equivalent same-quality format fallback (Section 5.4).
  * Same height/quality, same stream role (audioIncluded), compatible extension/codec,
  * with valid positive fileSize or valid bitrate.
@@ -307,12 +357,7 @@ export function estimateMp4QualitySize(analyzedMedia, requestedQuality = 'best')
     return 'Size unavailable'
   }
 
-  const durationSeconds =
-    Number.isFinite(analyzedMedia.durationSeconds) && analyzedMedia.durationSeconds > 0
-      ? analyzedMedia.durationSeconds
-      : Number.isFinite(analyzedMedia.duration) && analyzedMedia.duration > 0
-        ? analyzedMedia.duration
-        : parseDurationString(analyzedMedia.duration_string)
+  const durationSeconds = resolveMediaDuration(analyzedMedia)
 
   // 1. Prefer video-only MP4 with separate compatible audio (following backend resolveMp4FormatSelector)
   const videoOnly = [...matchingVideos].reverse().find((format) => format.audioIncluded === false)
@@ -335,9 +380,16 @@ export function estimateMp4QualitySize(analyzedMedia, requestedQuality = 'best')
     [...audioFormats].reverse().find(hasFormatId)
 
   // 2. Combined stream
-  const combinedVideo = [...matchingVideos]
-    .reverse()
-    .find((format) => format.audioIncluded === true)
+  const combinedVideos = matchingVideos.filter((format) => format.audioIncluded === true)
+  const combinedVideo =
+    [...combinedVideos].reverse().find((format) => {
+      const hasSize = validPositiveNumber(format.fileSize)
+      const hasBitrate =
+        validPositiveNumber(format.totalBitrateKbps) ??
+        (validPositiveNumber(format.videoBitrateKbps) &&
+          validPositiveNumber(format.audioBitrateKbps))
+      return Boolean(hasSize || hasBitrate)
+    }) || [...combinedVideos].reverse()[0]
 
   // Scenario 1: Separate video + audio streams
   if (videoOnly && compatibleAudio) {
@@ -472,14 +524,9 @@ export function estimateMp3BitrateSize(analyzedMedia, bitrateKbps) {
     return 'Size unavailable'
   }
 
-  const durationSeconds =
-    Number.isFinite(analyzedMedia.durationSeconds) && analyzedMedia.durationSeconds > 0
-      ? analyzedMedia.durationSeconds
-      : Number.isFinite(analyzedMedia.duration) && analyzedMedia.duration > 0
-        ? analyzedMedia.duration
-        : parseDurationString(analyzedMedia.duration_string)
+  const durationSeconds = resolveMediaDuration(analyzedMedia)
 
-  if (!durationSeconds) {
+  if (!durationSeconds || durationSeconds <= 0) {
     return 'Size unavailable'
   }
 

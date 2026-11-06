@@ -352,6 +352,162 @@ export function parseDurationString(durationStr) {
 }
 
 /**
+ * Safely extracts and normalizes media duration into total integer seconds.
+ * Priority:
+ * 1. Valid numeric duration (metadata.duration)
+ * 2. Valid numeric-string duration (e.g. "970" or "74.304")
+ * 3. Valid duration_string (e.g. "16:10", "0:30", "1:05:30")
+ * 4. Duration from metadata.durationSeconds or formats[0].duration / duration_string
+ * 5. null if no reliable duration exists.
+ *
+ * @param {object} metadata
+ * @returns {number|null} Total seconds or null
+ */
+export function resolveMediaDuration(metadata) {
+  if (!metadata || typeof metadata !== 'object') return null
+
+  const candidates = [
+    metadata.durationSeconds,
+    metadata.duration,
+    metadata.duration_string,
+    metadata.formats?.[0]?.duration,
+    metadata.formats?.[0]?.duration_string
+  ]
+
+  for (const cand of candidates) {
+    if (cand === null || cand === undefined || cand === '') continue
+
+    // 1. Direct finite positive number
+    if (typeof cand === 'number' && Number.isFinite(cand) && cand >= 0) {
+      return Math.floor(cand)
+    }
+
+    // 2. String representation
+    if (typeof cand === 'string') {
+      const trimmed = cand.trim()
+      if (!trimmed) continue
+
+      // Numeric string e.g. "74.304" or "970"
+      if (/^\d+(?:\.\d+)?$/.test(trimmed)) {
+        const num = parseFloat(trimmed)
+        if (Number.isFinite(num) && num >= 0) {
+          return Math.floor(num)
+        }
+      }
+
+      // Colon-separated string e.g. "16:10", "0:30", "1:05:30"
+      const parsed = parseDurationString(trimmed)
+      if (parsed !== null && parsed >= 0) {
+        return parsed
+      }
+    }
+  }
+
+  return null
+}
+
+/**
+ * Resolves vertical resolution (height) in pixels across platforms and formats.
+ * Checks format.height, format.resolution, format_note, format_id, and URL query tags.
+ *
+ * @param {object} format
+ * @returns {number|null} Height integer or null
+ */
+export function resolveFormatHeight(format) {
+  if (!format || typeof format !== 'object') return null
+
+  // 1. Explicit numeric height
+  if (Number.isInteger(format.height) && format.height > 0) {
+    return format.height
+  }
+
+  // 2. From resolution string e.g. "1280x720", "320x568"
+  if (typeof format.resolution === 'string') {
+    const resMatch = format.resolution.match(/(\d+)\s*[xX]\s*(\d+)/)
+    if (resMatch) {
+      const h = parseInt(resMatch[2], 10)
+      if (h > 0) return h
+    }
+    const pMatch = format.resolution.match(/(\d{3,4})p/i)
+    if (pMatch) {
+      const h = parseInt(pMatch[1], 10)
+      if (h > 0) return h
+    }
+  }
+
+  // 3. From format_note or format_id e.g. "1080p", "720p", "hd", "sd"
+  const identifiers = [format.format_note, format.format_id].filter(
+    (v) => typeof v === 'string' && v.trim()
+  )
+  for (const id of identifiers) {
+    const pMatch = id.match(/(?:^|[._-])(\d{3,4})p?(?:[._-]|$)/i)
+    if (pMatch) {
+      const val = parseInt(pMatch[1], 10)
+      if (val >= 144 && val <= 4320) return val
+    }
+    const lower = id.toLowerCase()
+    if (lower === 'hd' || lower.includes('_hd') || lower.includes('-hd')) {
+      return 720
+    }
+    if (lower === 'sd' || lower.includes('_sd') || lower.includes('-sd')) {
+      return 360
+    }
+  }
+
+  // 4. From URL query params (e.g. tag=hd, tag=sd)
+  if (typeof format.url === 'string') {
+    if (/[?&]tag=hd\b/i.test(format.url)) return 720
+    if (/[?&]tag=sd\b/i.test(format.url)) return 360
+  }
+
+  return null
+}
+
+/**
+ * Resolves horizontal resolution (width) in pixels across platforms and formats.
+ *
+ * @param {object} format
+ * @returns {number|null} Width integer or null
+ */
+export function resolveFormatWidth(format) {
+  if (!format || typeof format !== 'object') return null
+
+  if (Number.isInteger(format.width) && format.width > 0) {
+    return format.width
+  }
+
+  if (typeof format.resolution === 'string') {
+    const resMatch = format.resolution.match(/(\d+)\s*[xX]\s*(\d+)/)
+    if (resMatch) {
+      const w = parseInt(resMatch[1], 10)
+      if (w > 0) return w
+    }
+  }
+
+  return null
+}
+
+/**
+ * Extracts bitrate encoded in media URLs (e.g. Meta / Facebook / Instagram / CDN query params).
+ * Supports bitrate=<bps|kbps> and br=<bps|kbps>.
+ * Values > 10,000 are treated as bits per second and converted to kbps.
+ *
+ * @param {string|any} url
+ * @returns {number|null} Bitrate in kbps or null
+ */
+export function extractUrlBitrateKbps(url) {
+  if (typeof url !== 'string') return null
+  const match = url.match(/[?&](?:bitrate|br)=(\d+)/i)
+  if (!match) return null
+  const raw = parseInt(match[1], 10)
+  if (!Number.isFinite(raw) || raw <= 0) return null
+  if (raw > 10000) {
+    return Math.round(raw / 1000)
+  }
+  return raw
+}
+
+/**
  * Parses and validates raw yt-dlp metadata JSON object into structured media metadata.
  *
  * @param {object} metadata - Raw yt-dlp metadata object
@@ -380,6 +536,11 @@ export function parseMediaMetadata(metadata, platform, sourceUrl) {
 
   const formats = Array.isArray(metadata.formats) ? metadata.formats : []
 
+  // Identify actual downloadable source formats
+  const validFormats = formats.filter(
+    (format) => format && typeof format === 'object' && !Array.isArray(format)
+  )
+
   const isAudioOnlyFormat = (format) => {
     if (!format || typeof format !== 'object') return false
     const vcodec = typeof format.vcodec === 'string' ? format.vcodec.toLowerCase() : ''
@@ -389,7 +550,8 @@ export function parseMediaMetadata(metadata, platform, sourceUrl) {
       typeof format.format_note === 'string' ? format.format_note.toLowerCase() : ''
     const formatId = typeof format.format_id === 'string' ? format.format_id.toLowerCase() : ''
 
-    if (Number.isInteger(format.height) && format.height > 0) {
+    const height = resolveFormatHeight(format)
+    if (Number.isInteger(height) && height > 0 && vcodec !== 'none') {
       return false
     }
 
@@ -406,87 +568,7 @@ export function parseMediaMetadata(metadata, platform, sourceUrl) {
     return hasNoVideo && hasAudio
   }
 
-  const isVideoFormat = (format) => {
-    if (!format || typeof format !== 'object') return false
-    const vcodec = typeof format.vcodec === 'string' ? format.vcodec.toLowerCase() : ''
-    if (vcodec === 'none') return false
-    if (Number.isInteger(format.height) && format.height > 0) return true
-    return Boolean(vcodec && vcodec !== 'none')
-  }
-
-  const hasAudioTrack = (format) => {
-    if (!format || typeof format !== 'object') return false
-    if (isAudioOnlyFormat(format)) return true
-    const acodec = typeof format.acodec === 'string' ? format.acodec.toLowerCase().trim() : ''
-    const audioExt =
-      typeof format.audio_ext === 'string' ? format.audio_ext.toLowerCase().trim() : ''
-    if (acodec === 'none' || audioExt === 'none') return false
-    if (acodec && acodec !== 'none') return true
-    if (
-      (!format.vcodec || format.vcodec === 'none') &&
-      Number.isFinite(format.abr) &&
-      format.abr > 0
-    ) {
-      return true
-    }
-    return false
-  }
-
-  // Quality heights
-  const qualityHeights = new Set()
-
-  for (const format of formats) {
-    if (isVideoFormat(format) && Number.isInteger(format.height) && format.height > 0) {
-      qualityHeights.add(format.height)
-    }
-  }
-
-  const videoQualities = [...qualityHeights].sort((a, b) => b - a).map((height) => `${height}p`)
-
-  // MP3 option
-  const hasAudioStream = formats.some((format) => hasAudioTrack(format))
-
-  const audioOptions = hasAudioStream ? ['mp3'] : []
-
-  // Check whether an MP4 video format includes audio track
-  const isAudioIncluded = (format) => {
-    if (!format || typeof format !== 'object') return false
-    const acodec = typeof format.acodec === 'string' ? format.acodec.toLowerCase().trim() : ''
-    const audioExt =
-      typeof format.audio_ext === 'string' ? format.audio_ext.toLowerCase().trim() : ''
-
-    // 1. Explicit no-audio indicators strictly take precedence
-    if (acodec === 'none' || audioExt === 'none') {
-      return false
-    }
-
-    // 2. Explicit audio codec present (and not 'none')
-    if (acodec && acodec !== 'none') {
-      return true
-    }
-
-    // 3. Explicit audio extension present (and not 'none')
-    if (audioExt && audioExt !== 'none') {
-      return true
-    }
-
-    // 4. Use progressive-stream fallback only when explicit stream information is absent
-    if (
-      hasAudioStream &&
-      (format.protocol === 'https' || format.protocol === 'http' || !format.protocol)
-    ) {
-      return true
-    }
-
-    return false
-  }
-
-  // Identify actual downloadable source formats
-  const validFormats = formats.filter(
-    (format) => format && typeof format === 'object' && !Array.isArray(format)
-  )
-
-  // Audio-only source formats
+  // Audio-only source formats (separate audio tracks)
   const audioFormats = validFormats
     .filter((format) => isAudioOnlyFormat(format))
     .map((format) => {
@@ -509,23 +591,124 @@ export function parseMediaMetadata(metadata, platform, sourceUrl) {
         fileSize,
         isApproximate,
         audioBitrateKbps: validPositiveNumber(format.abr) ?? validPositiveNumber(format.tbr),
+        totalBitrateKbps: validPositiveNumber(format.tbr) ?? validPositiveNumber(format.abr),
         protocol: format.protocol ?? null
       }
     })
 
   const hasSeparateAudio = audioFormats.length > 0
 
+  const isVideoFormat = (format) => {
+    if (!format || typeof format !== 'object') return false
+    const vcodec = typeof format.vcodec === 'string' ? format.vcodec.toLowerCase() : ''
+    if (vcodec === 'none') return false
+    const height = resolveFormatHeight(format)
+    if (Number.isInteger(height) && height > 0) return true
+    if (vcodec && vcodec !== 'none') return true
+    if (format.video_ext && format.video_ext !== 'none') return true
+    if (format.ext === 'mp4' && !isAudioOnlyFormat(format)) return true
+    return false
+  }
+
+  const hasAudioTrack = (format) => {
+    if (!format || typeof format !== 'object') return false
+    if (isAudioOnlyFormat(format)) return true
+    const acodec = typeof format.acodec === 'string' ? format.acodec.toLowerCase().trim() : ''
+    const audioExt =
+      typeof format.audio_ext === 'string' ? format.audio_ext.toLowerCase().trim() : ''
+    if (acodec === 'none') return false
+    if (hasSeparateAudio && audioExt === 'none') return false
+    if (acodec && acodec !== 'none') return true
+    if (audioExt && audioExt !== 'none') return true
+    if (Number.isFinite(format.abr) && format.abr > 0) return true
+    if (
+      !hasSeparateAudio &&
+      (format.ext === 'mp4' || format.protocol === 'https' || format.protocol === 'http')
+    ) {
+      return true
+    }
+    return false
+  }
+
+  const isAudioIncluded = (format) => {
+    if (!format || typeof format !== 'object') return false
+    const acodec = typeof format.acodec === 'string' ? format.acodec.toLowerCase().trim() : ''
+    const audioExt =
+      typeof format.audio_ext === 'string' ? format.audio_ext.toLowerCase().trim() : ''
+
+    // 1. Explicit no-audio indicators strictly take precedence
+    if (acodec === 'none') {
+      return false
+    }
+
+    // 2. If separate audio streams exist and format explicitly indicates audio_ext === 'none',
+    // it is a video-only format designed to merge with separate audio (e.g. X/Twitter, adaptive streams)
+    if (hasSeparateAudio && audioExt === 'none') {
+      return false
+    }
+
+    // 3. Explicit audio codec present (and not 'none')
+    if (acodec && acodec !== 'none') {
+      return true
+    }
+
+    // 4. Explicit audio extension present (and not 'none')
+    if (audioExt && audioExt !== 'none') {
+      return true
+    }
+
+    // 5. Audio bitrate present
+    if (Number.isFinite(format.abr) && format.abr > 0) {
+      return true
+    }
+
+    // 6. Progressive stream fallback when no separate audio streams exist
+    if (
+      !hasSeparateAudio &&
+      (format.ext === 'mp4' ||
+        format.protocol === 'https' ||
+        format.protocol === 'http' ||
+        !format.protocol)
+    ) {
+      return true
+    }
+
+    return false
+  }
+
+  // Quality heights
+  const qualityHeights = new Set()
+
+  for (const format of formats) {
+    if (isVideoFormat(format)) {
+      const h = resolveFormatHeight(format)
+      if (Number.isInteger(h) && h > 0) {
+        qualityHeights.add(h)
+      }
+    }
+  }
+
+  const videoQualities = [...qualityHeights].sort((a, b) => b - a).map((height) => `${height}p`)
+
+  // MP3 option
+  const hasAudioStream = formats.some((format) => hasAudioTrack(format))
+
+  const audioOptions = hasAudioStream ? ['mp3'] : []
+
   // Find MP4 video sources compatible with universal selector
   const mp4Formats = validFormats
     .filter((format) => {
       if (format.ext !== 'mp4') return false
       if (!isVideoFormat(format)) return false
-      if (!Number.isInteger(format.height) || format.height <= 0) return false
+      const height = resolveFormatHeight(format)
+      if (!Number.isInteger(height) || height <= 0) return false
 
       const audioIncluded = isAudioIncluded(format)
       return audioIncluded || hasSeparateAudio
     })
     .map((format) => {
+      const height = resolveFormatHeight(format)
+      const width = resolveFormatWidth(format)
       const audioIncluded = isAudioIncluded(format)
 
       const exactSize = validPositiveNumber(format.filesize)
@@ -533,10 +716,19 @@ export function parseMediaMetadata(metadata, platform, sourceUrl) {
       const fileSize = exactSize ?? approximateSize
       const isApproximate = !exactSize && Boolean(approximateSize)
 
+      const urlBitrate = extractUrlBitrateKbps(format.url)
+      const totalBitrateKbps =
+        validPositiveNumber(format.tbr) ??
+        urlBitrate ??
+        (validPositiveNumber(format.vbr) && validPositiveNumber(format.abr)
+          ? format.vbr + format.abr
+          : null)
+
       return {
         formatId: format.format_id ?? null,
-        quality: `${format.height}p`,
-        height: format.height,
+        quality: `${height}p`,
+        height,
+        width,
         extension: format.ext ?? null,
         videoCodec: format.vcodec ?? null,
         audioCodec: format.acodec ?? null,
@@ -545,9 +737,8 @@ export function parseMediaMetadata(metadata, platform, sourceUrl) {
         isApproximate,
         videoBitrateKbps: validPositiveNumber(format.vbr),
         audioBitrateKbps: validPositiveNumber(format.abr),
-        totalBitrateKbps: validPositiveNumber(format.tbr),
-        protocol: format.protocol ?? null,
-        width: format.width ?? null
+        totalBitrateKbps,
+        protocol: format.protocol ?? null
       }
     })
 
@@ -568,10 +759,7 @@ export function parseMediaMetadata(metadata, platform, sourceUrl) {
     sourceUrl: typeof sourceUrl === 'string' ? sourceUrl.trim() : '',
     title: metadata.title.trim(),
     thumbnailUrl: typeof metadata.thumbnail === 'string' ? metadata.thumbnail : null,
-    durationSeconds:
-      Number.isFinite(metadata.duration) && metadata.duration >= 0
-        ? Math.floor(metadata.duration)
-        : parseDurationString(metadata.duration_string),
+    durationSeconds: resolveMediaDuration(metadata),
     videoQualities,
     audioOptions,
     availableFormats
