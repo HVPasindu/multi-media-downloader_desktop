@@ -372,6 +372,73 @@ async function runProgressEtaRetryTests() {
     '~37.6 MB',
     'Scenario 7c: Generic future platform estimates ~37.6 MB without platform-specific rules'
   )
+
+  // Scenario 7d: TikTok real-world progressive stream structure
+  const mediaTikTokProgressive = {
+    durationSeconds: 24,
+    availableFormats: {
+      mp4Qualities: ['1920p', '960p'],
+      mp4Formats: [
+        {
+          formatId: 'bytevc1_1080p_1094429-1',
+          quality: '1920p',
+          height: 1920,
+          audioIncluded: true,
+          fileSize: 3360445,
+          totalBitrateKbps: 1094
+        },
+        {
+          formatId: 'h264_540p_377700-0',
+          quality: '960p',
+          height: 960,
+          audioIncluded: true,
+          fileSize: 1159730,
+          totalBitrateKbps: 377
+        }
+      ],
+      audioFormats: [
+        {
+          formatId: 'audio',
+          fileSize: null,
+          audioBitrateKbps: null
+        }
+      ]
+    }
+  }
+  assert.equal(
+    estimateMp4QualitySize(mediaTikTokProgressive, '1920p'),
+    '3.2 MB',
+    'Scenario 7d: TikTok progressive 1920p estimates exact 3.2 MB'
+  )
+  assert.equal(
+    estimateMp4QualitySize(mediaTikTokProgressive, 'best'),
+    '3.2 MB',
+    'Scenario 7d: TikTok progressive best estimates exact 3.2 MB'
+  )
+
+  // Scenario 7e: Instagram zero duration + duration_string fallback
+  const mediaInstagramZeroDur = {
+    duration: 0,
+    duration_string: '0:30',
+    availableFormats: {
+      mp4Qualities: ['1080p'],
+      mp4Formats: [
+        {
+          formatId: '0',
+          quality: '1080p',
+          height: 1080,
+          audioIncluded: true,
+          fileSize: null,
+          totalBitrateKbps: 2500
+        }
+      ]
+    }
+  }
+  assert.equal(
+    estimateMp4QualitySize(mediaInstagramZeroDur, '1080p'),
+    '~8.9 MB',
+    'Scenario 7e: Instagram duration: 0 + duration_string: "0:30" estimates ~8.9 MB'
+  )
   console.log('✓ Section 1 Passed: MP4 quality file size estimation verified.\n')
 
   // --------------------------------------------------------------------------
@@ -445,6 +512,31 @@ async function runProgressEtaRetryTests() {
     estimateMp3BitrateSize({ durationSeconds: 90 }, 192),
     '~2.1 MB',
     'Scenario 12: Generic future platform 90s 192 kbps MP3 yields ~2.1 MB'
+  )
+
+  // Scenario 13: Instagram duration: 0 with duration_string fallback for MP3
+  const igZeroMedia = { duration: 0, duration_string: '0:30' }
+  assert.equal(
+    estimateMp3BitrateSize(igZeroMedia, 128),
+    '~468.8 KB',
+    'Scenario 13: Instagram duration: 0 + duration_string: "0:30" 128 kbps yields ~468.8 KB'
+  )
+  assert.equal(
+    estimateMp3BitrateSize(igZeroMedia, 192),
+    '~703.1 KB',
+    'Scenario 13: Instagram duration: 0 + duration_string: "0:30" 192 kbps yields ~703.1 KB'
+  )
+  assert.equal(
+    estimateMp3BitrateSize(igZeroMedia, 320),
+    '~1.1 MB',
+    'Scenario 13: Instagram duration: 0 + duration_string: "0:30" 320 kbps yields ~1.1 MB'
+  )
+
+  // Scenario 14: TikTok real-world duration 24s for MP3
+  assert.equal(
+    estimateMp3BitrateSize({ durationSeconds: 24 }, 128),
+    '~375 KB',
+    'Scenario 14: TikTok 24s 128 kbps MP3 yields ~375 KB'
   )
   console.log('✓ Section 2 Passed: MP3 bitrate output size estimation verified.\n')
 

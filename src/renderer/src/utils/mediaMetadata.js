@@ -196,8 +196,54 @@ function parseDurationString(durationStr) {
 }
 
 /**
+ * Safely extracts a valid positive duration in integer seconds from a candidate value.
+ * Accepts numbers > 0, numeric strings > 0, and colon-separated duration strings ("0:30", "16:10").
+ * Rejects 0, negative values, null, undefined, and unparseable strings.
+ *
+ * @param {any} cand
+ * @returns {number|null}
+ */
+function extractValidPositiveDuration(cand) {
+  if (cand === null || cand === undefined || cand === '') return null
+
+  // 1. Direct finite positive number
+  if (typeof cand === 'number' && Number.isFinite(cand) && cand > 0) {
+    return Math.floor(cand)
+  }
+
+  // 2. String representation
+  if (typeof cand === 'string') {
+    const trimmed = cand.trim()
+    if (!trimmed) return null
+
+    // Numeric string e.g. "74.304" or "970"
+    if (/^\d+(?:\.\d+)?$/.test(trimmed)) {
+      const num = parseFloat(trimmed)
+      if (Number.isFinite(num) && num > 0) {
+        return Math.floor(num)
+      }
+    }
+
+    // Colon-separated string e.g. "16:10", "0:30", "1:05:30"
+    const parsed = parseDurationString(trimmed)
+    if (parsed !== null && parsed > 0) {
+      return parsed
+    }
+  }
+
+  return null
+}
+
+/**
  * Universal media duration resolver for frontend estimation.
  * Supports durationSeconds, numeric duration, numeric-string duration, and duration_string.
+ * Priority:
+ * 1. Valid numeric duration (media.durationSeconds)
+ * 2. Valid numeric duration (media.duration)
+ * 3. Valid duration_string (media.duration_string, e.g. "16:10", "0:30", "1:05:30")
+ * 4. Format-level duration across all available formats
+ * 5. Format-level duration_string across all available formats
+ * 6. null if no reliable duration exists.
  *
  * @param {object|null|undefined} media
  * @returns {number|null} Total seconds or null
@@ -205,40 +251,26 @@ function parseDurationString(durationStr) {
 export function resolveMediaDuration(media) {
   if (!media || typeof media !== 'object') return null
 
-  const candidates = [
-    media.durationSeconds,
-    media.duration,
-    media.duration_string,
-    media.formats?.[0]?.duration,
-    media.formats?.[0]?.duration_string
-  ]
+  // Priority 1: Top-level durationSeconds
+  const topSeconds = extractValidPositiveDuration(media.durationSeconds)
+  if (topSeconds !== null) return topSeconds
 
-  for (const cand of candidates) {
-    if (cand === null || cand === undefined || cand === '') continue
+  // Priority 2: Top-level duration (number or numeric string)
+  const topDuration = extractValidPositiveDuration(media.duration)
+  if (topDuration !== null) return topDuration
 
-    // 1. Direct finite positive number
-    if (typeof cand === 'number' && Number.isFinite(cand) && cand > 0) {
-      return Math.floor(cand)
-    }
+  // Priority 3: Top-level duration_string
+  const topDurStr = extractValidPositiveDuration(media.duration_string)
+  if (topDurStr !== null) return topDurStr
 
-    // 2. String representation
-    if (typeof cand === 'string') {
-      const trimmed = cand.trim()
-      if (!trimmed) continue
-
-      // Numeric string e.g. "74.304" or "970"
-      if (/^\d+(?:\.\d+)?$/.test(trimmed)) {
-        const num = parseFloat(trimmed)
-        if (Number.isFinite(num) && num > 0) {
-          return Math.floor(num)
-        }
-      }
-
-      // Colon-separated string e.g. "16:10", "0:30", "1:05:30"
-      const parsed = parseDurationString(trimmed)
-      if (parsed !== null && parsed > 0) {
-        return parsed
-      }
+  // Priority 4 & 5: Format-level duration and duration_string across all available formats
+  if (Array.isArray(media.formats)) {
+    for (const format of media.formats) {
+      if (!format || typeof format !== 'object') continue
+      const formatDuration = extractValidPositiveDuration(format.duration)
+      if (formatDuration !== null) return formatDuration
+      const formatDurStr = extractValidPositiveDuration(format.duration_string)
+      if (formatDurStr !== null) return formatDurStr
     }
   }
 

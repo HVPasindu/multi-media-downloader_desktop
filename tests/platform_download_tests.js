@@ -28,7 +28,10 @@ import {
   resetJobRetryStateForTesting,
   getJobRetryState
 } from '../src/main/backend/services/networkRecoveryService.js'
-import { parseMediaMetadata } from '../src/main/backend/services/mediaAnalyzerService.js'
+import {
+  parseMediaMetadata,
+  hasAudioTrack
+} from '../src/main/backend/services/mediaAnalyzerService.js'
 import {
   estimateMp4QualitySize,
   estimateMp3BitrateSize
@@ -135,6 +138,28 @@ const INSTAGRAM_SYNTHETIC_FIXTURE = Object.freeze({
   ]
 })
 
+// 3b. Instagram real-world zero-duration fixture (duration: 0, duration_string: "0:30", URL bitrate)
+const INSTAGRAM_ZERO_DURATION_FIXTURE = Object.freeze({
+  id: 'C1234567890_zero',
+  title: 'Test Instagram Zero Duration Reel',
+  thumbnail: 'https://instagram.xx.fbcdn.net/v/test_zero.jpg',
+  duration: 0,
+  duration_string: '0:30',
+  formats: [
+    {
+      format_id: '0',
+      ext: 'mp4',
+      vcodec: 'h264',
+      acodec: 'aac',
+      height: 1080,
+      width: 1920,
+      filesize: null,
+      filesize_approx: null,
+      url: 'https://example.invalid/media?bitrate=2500000'
+    }
+  ]
+})
+
 // 4. TikTok synthetic fixture: pre-muxed vertical MP4 video with audio
 const TIKTOK_SYNTHETIC_FIXTURE = Object.freeze({
   id: '7123456789012345678',
@@ -149,6 +174,56 @@ const TIKTOK_SYNTHETIC_FIXTURE = Object.freeze({
       vcodec: 'h264',
       acodec: 'aac',
       filesize: 6000000
+    }
+  ]
+})
+
+// 4b. TikTok real-world fixture: multi-format progressive video with standalone audio entry
+// (Reflects live yt-dlp metadata with format_id: "audio" + progressive bytevc1/h264 formats)
+const TIKTOK_REAL_WORLD_SYNTHETIC_FIXTURE = Object.freeze({
+  id: '7106594312292453675',
+  title: 'Make your day',
+  thumbnail: 'https://p16-sign-va.tiktokcdn.com/tos-maliva-p-0068/test_real.jpg',
+  duration: 24,
+  duration_string: '0:24',
+  formats: [
+    {
+      format_id: 'audio',
+      ext: 'mp4',
+      resolution: 'audio only',
+      vcodec: 'none',
+      acodec: 'mp4',
+      audio_ext: 'mp4',
+      filesize: null,
+      filesize_approx: null,
+      tbr: null,
+      abr: null
+    },
+    {
+      format_id: 'bytevc1_1080p_1094429-1',
+      ext: 'mp4',
+      video_ext: 'mp4',
+      audio_ext: 'none',
+      vcodec: 'h265',
+      acodec: 'aac',
+      height: 1920,
+      width: 1080,
+      resolution: '1080x1920',
+      filesize: 3360445,
+      tbr: 1094.429
+    },
+    {
+      format_id: 'h264_540p_377700-0',
+      ext: 'mp4',
+      video_ext: 'mp4',
+      audio_ext: 'none',
+      vcodec: 'h264',
+      acodec: 'aac',
+      height: 960,
+      width: 540,
+      resolution: '540x960',
+      filesize: 1159730,
+      tbr: 377.7
     }
   ]
 })
@@ -675,10 +750,38 @@ async function runPlatformDownloadTests() {
 
     // ------------------------------------------------------------------------
     // TEST 2.1: Advanced Platform Metadata, Bitrate & Pre-Download File Size Estimation
-    // (Facebook, Instagram, X/Twitter real-world fixtures)
+    // (Facebook, Instagram, TikTok, X/Twitter, and YouTube real-world fixtures)
     // ------------------------------------------------------------------------
     console.log(
       '\n--- 2.1 Testing Advanced Platform Metadata & Bitrate/Duration File Size Estimation ---'
+    )
+
+    // A0. YouTube Regression Verification (TEST C):
+    // Adaptive video-only stream (format 137) remains audioIncluded: false
+    // Audio stream (format 140) selected separately
+    // Total 1080p size = 50,000,000 + 3,500,000 = 53,500,000 bytes = 51 MB
+    assert.strictEqual(
+      ytAnalysis.availableFormats.mp4Formats[0].audioIncluded,
+      false,
+      'YouTube 1080p adaptive stream must have audioIncluded: false'
+    )
+    assert.strictEqual(
+      estimateMp4QualitySize(ytAnalysis, '1080p'),
+      '51 MB',
+      'YouTube 1080p separate video+audio must estimate 51 MB'
+    )
+    assert.strictEqual(
+      estimateMp3BitrateSize(ytAnalysis, 128),
+      '~3.2 MB',
+      'YouTube 212s 128 kbps MP3 must estimate ~3.2 MB'
+    )
+    assert.strictEqual(
+      estimateMp3BitrateSize(ytAnalysis, 320),
+      '~8.1 MB',
+      'YouTube 212s 320 kbps MP3 must estimate ~8.1 MB'
+    )
+    console.log(
+      '✓ YouTube: adaptive video-only classification, separate audio merge size, and MP3 verified'
     )
 
     // A. Facebook tests:
@@ -881,6 +984,38 @@ async function runPlatformDownloadTests() {
     )
 
     // B. Instagram tests:
+    // B0. Instagram Reel with duration: 0 and duration_string: "0:30" (Real-World Zero Duration Regression - TEST B)
+    const igZeroDurAnalysis = parseSyntheticMetadata(
+      INSTAGRAM_ZERO_DURATION_FIXTURE,
+      'instagram',
+      'https://www.instagram.com/reel/C1234567890'
+    )
+    assert.strictEqual(
+      igZeroDurAnalysis.durationSeconds,
+      30,
+      'Instagram duration: 0 must fall back to duration_string "0:30" producing 30s'
+    )
+    assert.strictEqual(
+      estimateMp4QualitySize(igZeroDurAnalysis, '1080p'),
+      '~8.9 MB',
+      'Instagram 1080p with duration: 0 + duration_string: "0:30" should estimate ~8.9 MB'
+    )
+    assert.strictEqual(
+      estimateMp3BitrateSize(igZeroDurAnalysis, 128),
+      '~468.8 KB',
+      'Instagram 30s 128 kbps MP3 should estimate ~468.8 KB'
+    )
+    assert.strictEqual(
+      estimateMp3BitrateSize(igZeroDurAnalysis, 192),
+      '~703.1 KB',
+      'Instagram 30s 192 kbps MP3 should estimate ~703.1 KB'
+    )
+    assert.strictEqual(
+      estimateMp3BitrateSize(igZeroDurAnalysis, 320),
+      '~1.1 MB',
+      'Instagram 30s 320 kbps MP3 should estimate ~1.1 MB'
+    )
+
     // B1. Missing exact and approximate filesize, bitrate-based MP4 estimation
     const igBitrateFixture = {
       id: 'ig-bitrate-1',
@@ -1066,6 +1201,82 @@ async function runPlatformDownloadTests() {
       '✓ Instagram: missing filesize, duration_string fallback, URL bitrate, exact size, and unavailable duration verified'
     )
 
+    // B7. TikTok Real-World Multi-Format Stream Tests (TEST A)
+    const ttRealAnalysis = parseSyntheticMetadata(
+      TIKTOK_REAL_WORLD_SYNTHETIC_FIXTURE,
+      'tiktok',
+      'https://www.tiktok.com/@tiktok/video/7106594312292453675'
+    )
+    assert.strictEqual(ttRealAnalysis.durationSeconds, 24, 'TikTok duration normalized to 24s')
+    assert.deepStrictEqual(
+      ttRealAnalysis.videoQualities,
+      ['1920p', '960p'],
+      'TikTok video qualities 1920p and 960p detected'
+    )
+    assert.deepStrictEqual(ttRealAnalysis.audioOptions, ['mp3'], 'TikTok supports MP3')
+
+    const ttProg1920 = ttRealAnalysis.availableFormats.mp4Formats.find(
+      (f) => f.formatId === 'bytevc1_1080p_1094429-1'
+    )
+    assert.ok(ttProg1920, 'Progressive 1920p format must exist in mp4Formats')
+
+    // Assertion 1: hasAudioTrack() returns true for the progressive format
+    assert.strictEqual(
+      hasAudioTrack(TIKTOK_REAL_WORLD_SYNTHETIC_FIXTURE.formats[1], true),
+      true,
+      'hasAudioTrack() must return true for TikTok progressive format with acodec: "aac"'
+    )
+
+    // Assertion 2: Progressive format audioIncluded is true
+    assert.strictEqual(
+      ttProg1920.audioIncluded,
+      true,
+      'TikTok progressive format with acodec: "aac" MUST have audioIncluded: true despite audio_ext: "none"'
+    )
+    assert.strictEqual(
+      ttProg1920.fileSize,
+      3360445,
+      'TikTok format fileSize 3360445 bytes retained'
+    )
+
+    // Assertion 3 & 4: MP4 quality selection identifies progressive stream and does not merge audio
+    const ttRealSelector = resolveMp4FormatSelector(ttRealAnalysis.availableFormats, '1920p')
+    assert.strictEqual(
+      ttRealSelector.selector,
+      'bytevc1_1080p_1094429-1',
+      'TikTok selector must select single combined format without +audio'
+    )
+    assert.strictEqual(
+      ttRealSelector.type,
+      'combined_stream',
+      'TikTok stream selector type must be combined_stream'
+    )
+
+    // Assertion 5: MP4 size returns approximately 3.2 MB (no tilde for exact filesize)
+    const tt1920Size = estimateMp4QualitySize(ttRealAnalysis, '1920p')
+    assert.strictEqual(tt1920Size, '3.2 MB', 'TikTok 1920p progressive format estimates 3.2 MB')
+    assert.strictEqual(
+      estimateMp4QualitySize(ttRealAnalysis, 'best'),
+      '3.2 MB',
+      'TikTok best quality estimates 3.2 MB'
+    )
+
+    // Assertion 6: Standalone audio-only format does not override the valid combined stream
+    assert.strictEqual(
+      ttRealAnalysis.availableFormats.audioFormats[0].formatId,
+      'audio',
+      'Standalone audio format detected as separate audio format'
+    )
+
+    // TikTok MP3 estimation (24s duration):
+    // (24 * 128 * 1000) / 8 = 384,000 bytes = ~375 KB
+    assert.strictEqual(estimateMp3BitrateSize(ttRealAnalysis, 128), '~375 KB')
+    assert.strictEqual(estimateMp3BitrateSize(ttRealAnalysis, 192), '~562.5 KB')
+    assert.strictEqual(estimateMp3BitrateSize(ttRealAnalysis, 320), '~937.5 KB')
+    console.log(
+      '✓ TikTok: progressive format audioIncluded: true, selector resolution, exact 3.2 MB, and MP3 verified'
+    )
+
     // D. Future / Platform-Neutral Extractor Metadata Tests (Section 8.5)
     // Verifies that a generic/new platform requires NO platform-specific code in estimator
     console.log('\n--- 2.2 Testing Platform-Neutral Future Platform Compatibility ---')
@@ -1122,6 +1333,58 @@ async function runPlatformDownloadTests() {
     assert.strictEqual(genericSelector.type, 'separate_merge')
     console.log(
       '✓ Platform-neutral future platform correctly estimated and resolved without platform-specific code'
+    )
+
+    // D2. Future / Generic Platform without platform identifier (TEST F):
+    const genericUnknownPlatformFixture = {
+      id: 'generic-future-200',
+      title: 'Future Media Platform Video',
+      durationSeconds: 60,
+      formats: [
+        {
+          format_id: 'future-720',
+          ext: 'mp4',
+          height: 720,
+          vcodec: 'h264',
+          acodec: 'aac',
+          filesize: 10485760 // 10 MB exact
+        },
+        {
+          format_id: 'future-approx-480',
+          ext: 'mp4',
+          height: 480,
+          vcodec: 'h264',
+          acodec: 'aac',
+          filesize_approx: 5242880 // ~5 MB approx
+        },
+        {
+          format_id: 'future-bitrate-360',
+          ext: 'mp4',
+          height: 360,
+          vcodec: 'h264',
+          acodec: 'aac',
+          tbr: 800 // 800 kbps * 60s * 1000 / 8 = 6,000,000 bytes = ~5.7 MB
+        }
+      ]
+    }
+    const genericUnknownAnalysis = parseSyntheticMetadata(
+      genericUnknownPlatformFixture,
+      'vimeo',
+      'https://vimeo.com/123456789'
+    )
+    assert.strictEqual(genericUnknownAnalysis.durationSeconds, 60)
+    assert.deepStrictEqual(genericUnknownAnalysis.videoQualities, ['720p', '480p', '360p'])
+    assert.strictEqual(estimateMp4QualitySize(genericUnknownAnalysis, '720p'), '10 MB')
+    assert.strictEqual(estimateMp4QualitySize(genericUnknownAnalysis, '480p'), '~5 MB')
+    assert.strictEqual(estimateMp4QualitySize(genericUnknownAnalysis, '360p'), '~5.7 MB')
+    // Unknown metadata safely returns Size unavailable
+    assert.strictEqual(estimateMp4QualitySize(null), 'Size unavailable')
+    assert.strictEqual(estimateMp4QualitySize({}), 'Size unavailable')
+    assert.strictEqual(estimateMp3BitrateSize(null, 128), 'Size unavailable')
+    assert.strictEqual(estimateMp3BitrateSize({ durationSeconds: 0 }, 128), 'Size unavailable')
+    assert.strictEqual(estimateMp3BitrateSize({ durationSeconds: -10 }, 128), 'Size unavailable')
+    console.log(
+      '✓ Future platform compatibility: exact, approx, bitrate, and safe "Size unavailable" handling verified'
     )
 
     // C. X / Twitter Real-World Stream tests:

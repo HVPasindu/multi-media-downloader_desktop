@@ -352,13 +352,53 @@ export function parseDurationString(durationStr) {
 }
 
 /**
+ * Safely extracts a valid positive duration in integer seconds from a candidate value.
+ * Accepts numbers > 0, numeric strings > 0, and colon-separated duration strings ("0:30", "16:10").
+ * Rejects 0, negative values, null, undefined, and unparseable strings.
+ *
+ * @param {any} cand
+ * @returns {number|null}
+ */
+function extractValidPositiveDuration(cand) {
+  if (cand === null || cand === undefined || cand === '') return null
+
+  // 1. Direct finite positive number
+  if (typeof cand === 'number' && Number.isFinite(cand) && cand > 0) {
+    return Math.floor(cand)
+  }
+
+  // 2. String representation
+  if (typeof cand === 'string') {
+    const trimmed = cand.trim()
+    if (!trimmed) return null
+
+    // Numeric string e.g. "74.304" or "970"
+    if (/^\d+(?:\.\d+)?$/.test(trimmed)) {
+      const num = parseFloat(trimmed)
+      if (Number.isFinite(num) && num > 0) {
+        return Math.floor(num)
+      }
+    }
+
+    // Colon-separated string e.g. "16:10", "0:30", "1:05:30"
+    const parsed = parseDurationString(trimmed)
+    if (parsed !== null && parsed > 0) {
+      return parsed
+    }
+  }
+
+  return null
+}
+
+/**
  * Safely extracts and normalizes media duration into total integer seconds.
  * Priority:
- * 1. Valid numeric duration (metadata.duration)
- * 2. Valid numeric-string duration (e.g. "970" or "74.304")
- * 3. Valid duration_string (e.g. "16:10", "0:30", "1:05:30")
- * 4. Duration from metadata.durationSeconds or formats[0].duration / duration_string
- * 5. null if no reliable duration exists.
+ * 1. Valid numeric duration (metadata.durationSeconds)
+ * 2. Valid numeric duration (metadata.duration)
+ * 3. Valid duration_string (metadata.duration_string, e.g. "16:10", "0:30", "1:05:30")
+ * 4. Format-level duration across all available formats
+ * 5. Format-level duration_string across all available formats
+ * 6. null if no reliable duration exists.
  *
  * @param {object} metadata
  * @returns {number|null} Total seconds or null
@@ -366,40 +406,26 @@ export function parseDurationString(durationStr) {
 export function resolveMediaDuration(metadata) {
   if (!metadata || typeof metadata !== 'object') return null
 
-  const candidates = [
-    metadata.durationSeconds,
-    metadata.duration,
-    metadata.duration_string,
-    metadata.formats?.[0]?.duration,
-    metadata.formats?.[0]?.duration_string
-  ]
+  // Priority 1: Top-level durationSeconds
+  const topSeconds = extractValidPositiveDuration(metadata.durationSeconds)
+  if (topSeconds !== null) return topSeconds
 
-  for (const cand of candidates) {
-    if (cand === null || cand === undefined || cand === '') continue
+  // Priority 2: Top-level duration (number or numeric string)
+  const topDuration = extractValidPositiveDuration(metadata.duration)
+  if (topDuration !== null) return topDuration
 
-    // 1. Direct finite positive number
-    if (typeof cand === 'number' && Number.isFinite(cand) && cand >= 0) {
-      return Math.floor(cand)
-    }
+  // Priority 3: Top-level duration_string
+  const topDurStr = extractValidPositiveDuration(metadata.duration_string)
+  if (topDurStr !== null) return topDurStr
 
-    // 2. String representation
-    if (typeof cand === 'string') {
-      const trimmed = cand.trim()
-      if (!trimmed) continue
-
-      // Numeric string e.g. "74.304" or "970"
-      if (/^\d+(?:\.\d+)?$/.test(trimmed)) {
-        const num = parseFloat(trimmed)
-        if (Number.isFinite(num) && num >= 0) {
-          return Math.floor(num)
-        }
-      }
-
-      // Colon-separated string e.g. "16:10", "0:30", "1:05:30"
-      const parsed = parseDurationString(trimmed)
-      if (parsed !== null && parsed >= 0) {
-        return parsed
-      }
+  // Priority 4 & 5: Format-level duration and duration_string across all available formats
+  if (Array.isArray(metadata.formats)) {
+    for (const format of metadata.formats) {
+      if (!format || typeof format !== 'object') continue
+      const formatDuration = extractValidPositiveDuration(format.duration)
+      if (formatDuration !== null) return formatDuration
+      const formatDurStr = extractValidPositiveDuration(format.duration_string)
+      if (formatDurStr !== null) return formatDurStr
     }
   }
 
@@ -508,6 +534,122 @@ export function extractUrlBitrateKbps(url) {
 }
 
 /**
+ * Determines whether a media format is an audio-only stream.
+ *
+ * @param {object} format
+ * @returns {boolean}
+ */
+export function isAudioOnlyFormat(format) {
+  if (!format || typeof format !== 'object') return false
+  const vcodec = typeof format.vcodec === 'string' ? format.vcodec.toLowerCase() : ''
+  const acodec = typeof format.acodec === 'string' ? format.acodec.toLowerCase() : ''
+  const resolution = typeof format.resolution === 'string' ? format.resolution.toLowerCase() : ''
+  const formatNote = typeof format.format_note === 'string' ? format.format_note.toLowerCase() : ''
+  const formatId = typeof format.format_id === 'string' ? format.format_id.toLowerCase() : ''
+
+  const height = resolveFormatHeight(format)
+  if (Number.isInteger(height) && height > 0 && vcodec !== 'none') {
+    return false
+  }
+
+  if (resolution === 'audio only') return true
+  if (formatId.startsWith('hls-audio-')) return true
+  if (format.audio_ext === 'mp4' && (!vcodec || vcodec === 'none')) return true
+
+  const hasNoVideo = !vcodec || vcodec === 'none'
+  const hasAudio =
+    (acodec && acodec !== 'none') ||
+    formatNote.includes('audio') ||
+    (Number.isFinite(format.abr) && format.abr > 0)
+
+  return hasNoVideo && hasAudio
+}
+
+/**
+ * Determines whether a format includes an audio track.
+ *
+ * @param {object} format
+ * @param {boolean} [hasSeparateAudio=false]
+ * @returns {boolean}
+ */
+export function hasAudioTrack(format, hasSeparateAudio = false) {
+  if (!format || typeof format !== 'object') return false
+  if (isAudioOnlyFormat(format)) return true
+  const acodec = typeof format.acodec === 'string' ? format.acodec.toLowerCase().trim() : ''
+  const audioExt = typeof format.audio_ext === 'string' ? format.audio_ext.toLowerCase().trim() : ''
+
+  // 1. Explicit no-audio indicator
+  if (acodec === 'none') return false
+
+  // 2. Explicit valid audio codec present
+  if (acodec && acodec !== 'none') return true
+
+  // 3. Fallback when valid audio codec is unavailable
+  if (hasSeparateAudio && audioExt === 'none') return false
+  if (audioExt && audioExt !== 'none') return true
+  if (Number.isFinite(format.abr) && format.abr > 0) return true
+  if (
+    !hasSeparateAudio &&
+    (format.ext === 'mp4' || format.protocol === 'https' || format.protocol === 'http')
+  ) {
+    return true
+  }
+  return false
+}
+
+/**
+ * Determines whether an MP4 format contains an audio track in its container.
+ *
+ * @param {object} format
+ * @param {boolean} [hasSeparateAudio=false]
+ * @returns {boolean}
+ */
+export function isAudioIncluded(format, hasSeparateAudio = false) {
+  if (!format || typeof format !== 'object') return false
+  const acodec = typeof format.acodec === 'string' ? format.acodec.toLowerCase().trim() : ''
+  const audioExt = typeof format.audio_ext === 'string' ? format.audio_ext.toLowerCase().trim() : ''
+
+  // 1. Explicit no-audio indicators strictly take precedence
+  if (acodec === 'none') {
+    return false
+  }
+
+  // 2. Explicit valid audio codec present (and not 'none')
+  if (acodec && acodec !== 'none') {
+    return true
+  }
+
+  // 3. If valid audio codec is unavailable, separate audio streams and audio_ext determine video-only role
+  // (e.g. X/Twitter HTTP streams with audio_ext === 'none' when separate audio exists)
+  if (hasSeparateAudio && audioExt === 'none') {
+    return false
+  }
+
+  // 4. Explicit audio extension present (and not 'none')
+  if (audioExt && audioExt !== 'none') {
+    return true
+  }
+
+  // 5. Audio bitrate present
+  if (Number.isFinite(format.abr) && format.abr > 0) {
+    return true
+  }
+
+  // 6. Progressive stream fallback when no separate audio streams exist
+  if (
+    !hasSeparateAudio &&
+    (format.ext === 'mp4' ||
+      format.protocol === 'https' ||
+      format.protocol === 'http' ||
+      !format.protocol)
+  ) {
+    return true
+  }
+
+  return false
+}
+
+/**
  * Parses and validates raw yt-dlp metadata JSON object into structured media metadata.
  *
  * @param {object} metadata - Raw yt-dlp metadata object
@@ -540,33 +682,6 @@ export function parseMediaMetadata(metadata, platform, sourceUrl) {
   const validFormats = formats.filter(
     (format) => format && typeof format === 'object' && !Array.isArray(format)
   )
-
-  const isAudioOnlyFormat = (format) => {
-    if (!format || typeof format !== 'object') return false
-    const vcodec = typeof format.vcodec === 'string' ? format.vcodec.toLowerCase() : ''
-    const acodec = typeof format.acodec === 'string' ? format.acodec.toLowerCase() : ''
-    const resolution = typeof format.resolution === 'string' ? format.resolution.toLowerCase() : ''
-    const formatNote =
-      typeof format.format_note === 'string' ? format.format_note.toLowerCase() : ''
-    const formatId = typeof format.format_id === 'string' ? format.format_id.toLowerCase() : ''
-
-    const height = resolveFormatHeight(format)
-    if (Number.isInteger(height) && height > 0 && vcodec !== 'none') {
-      return false
-    }
-
-    if (resolution === 'audio only') return true
-    if (formatId.startsWith('hls-audio-')) return true
-    if (format.audio_ext === 'mp4' && (!vcodec || vcodec === 'none')) return true
-
-    const hasNoVideo = !vcodec || vcodec === 'none'
-    const hasAudio =
-      (acodec && acodec !== 'none') ||
-      formatNote.includes('audio') ||
-      (Number.isFinite(format.abr) && format.abr > 0)
-
-    return hasNoVideo && hasAudio
-  }
 
   // Audio-only source formats (separate audio tracks)
   const audioFormats = validFormats
@@ -610,72 +725,6 @@ export function parseMediaMetadata(metadata, platform, sourceUrl) {
     return false
   }
 
-  const hasAudioTrack = (format) => {
-    if (!format || typeof format !== 'object') return false
-    if (isAudioOnlyFormat(format)) return true
-    const acodec = typeof format.acodec === 'string' ? format.acodec.toLowerCase().trim() : ''
-    const audioExt =
-      typeof format.audio_ext === 'string' ? format.audio_ext.toLowerCase().trim() : ''
-    if (acodec === 'none') return false
-    if (hasSeparateAudio && audioExt === 'none') return false
-    if (acodec && acodec !== 'none') return true
-    if (audioExt && audioExt !== 'none') return true
-    if (Number.isFinite(format.abr) && format.abr > 0) return true
-    if (
-      !hasSeparateAudio &&
-      (format.ext === 'mp4' || format.protocol === 'https' || format.protocol === 'http')
-    ) {
-      return true
-    }
-    return false
-  }
-
-  const isAudioIncluded = (format) => {
-    if (!format || typeof format !== 'object') return false
-    const acodec = typeof format.acodec === 'string' ? format.acodec.toLowerCase().trim() : ''
-    const audioExt =
-      typeof format.audio_ext === 'string' ? format.audio_ext.toLowerCase().trim() : ''
-
-    // 1. Explicit no-audio indicators strictly take precedence
-    if (acodec === 'none') {
-      return false
-    }
-
-    // 2. If separate audio streams exist and format explicitly indicates audio_ext === 'none',
-    // it is a video-only format designed to merge with separate audio (e.g. X/Twitter, adaptive streams)
-    if (hasSeparateAudio && audioExt === 'none') {
-      return false
-    }
-
-    // 3. Explicit audio codec present (and not 'none')
-    if (acodec && acodec !== 'none') {
-      return true
-    }
-
-    // 4. Explicit audio extension present (and not 'none')
-    if (audioExt && audioExt !== 'none') {
-      return true
-    }
-
-    // 5. Audio bitrate present
-    if (Number.isFinite(format.abr) && format.abr > 0) {
-      return true
-    }
-
-    // 6. Progressive stream fallback when no separate audio streams exist
-    if (
-      !hasSeparateAudio &&
-      (format.ext === 'mp4' ||
-        format.protocol === 'https' ||
-        format.protocol === 'http' ||
-        !format.protocol)
-    ) {
-      return true
-    }
-
-    return false
-  }
-
   // Quality heights
   const qualityHeights = new Set()
 
@@ -691,7 +740,7 @@ export function parseMediaMetadata(metadata, platform, sourceUrl) {
   const videoQualities = [...qualityHeights].sort((a, b) => b - a).map((height) => `${height}p`)
 
   // MP3 option
-  const hasAudioStream = formats.some((format) => hasAudioTrack(format))
+  const hasAudioStream = formats.some((format) => hasAudioTrack(format, hasSeparateAudio))
 
   const audioOptions = hasAudioStream ? ['mp3'] : []
 
@@ -703,13 +752,13 @@ export function parseMediaMetadata(metadata, platform, sourceUrl) {
       const height = resolveFormatHeight(format)
       if (!Number.isInteger(height) || height <= 0) return false
 
-      const audioIncluded = isAudioIncluded(format)
+      const audioIncluded = isAudioIncluded(format, hasSeparateAudio)
       return audioIncluded || hasSeparateAudio
     })
     .map((format) => {
       const height = resolveFormatHeight(format)
       const width = resolveFormatWidth(format)
-      const audioIncluded = isAudioIncluded(format)
+      const audioIncluded = isAudioIncluded(format, hasSeparateAudio)
 
       const exactSize = validPositiveNumber(format.filesize)
       const approximateSize = validPositiveNumber(format.filesize_approx)
