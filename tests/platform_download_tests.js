@@ -30,7 +30,9 @@ import {
 } from '../src/main/backend/services/networkRecoveryService.js'
 import {
   parseMediaMetadata,
-  hasAudioTrack
+  hasAudioTrack,
+  extractUrlMetadata,
+  resolveMediaDuration
 } from '../src/main/backend/services/mediaAnalyzerService.js'
 import {
   estimateMp4QualitySize,
@@ -156,6 +158,87 @@ const INSTAGRAM_ZERO_DURATION_FIXTURE = Object.freeze({
       filesize: null,
       filesize_approx: null,
       url: 'https://example.invalid/media?bitrate=2500000'
+    }
+  ]
+})
+
+// 3c. Authentic Instagram DASH fixture: no top/format duration, filesize null, separate DASH video/audio, Base64URL efg duration_s: 19
+const igEfgTestPayload = JSON.stringify({
+  vencode_tag: 'ig-xpvds.clips.igwww-C3.dash_r2evevp9-r1gen2vp9_q90',
+  duration_s: 19,
+  bitrate: 2281975,
+  urlgen_source: 'www'
+})
+const igEfgTestB64Url = Buffer.from(igEfgTestPayload)
+  .toString('base64')
+  .replace(/\+/g, '-')
+  .replace(/\//g, '_')
+  .replace(/=+$/, '')
+
+const INSTAGRAM_DASH_AUTHENTIC_FIXTURE = Object.freeze({
+  id: 'Dewb_HOIdyo',
+  title: 'Video by filmygyan',
+  thumbnail: 'https://instagram.xx.fbcdn.net/v/test_dewb.jpg',
+  formats: [
+    {
+      format_id: 'dash-983309768156705a',
+      ext: 'm4a',
+      resolution: 'audio only',
+      width: null,
+      height: null,
+      filesize: null,
+      filesize_approx: null,
+      tbr: 66.215,
+      vbr: 0,
+      abr: 66.215,
+      vcodec: 'none',
+      acodec: 'mp4a.40.5',
+      url: `https://scontent.cdninstagram.com/v/t50.2886-16/audio.m4a?efg=${igEfgTestB64Url}`
+    },
+    {
+      format_id: 'dash-983317644822584v',
+      ext: 'mp4',
+      resolution: '360x640',
+      width: 360,
+      height: 640,
+      filesize: null,
+      filesize_approx: null,
+      tbr: 105.512,
+      vbr: 105.512,
+      abr: 0,
+      vcodec: 'vp09.00.21.08.00.01.01.01.00',
+      acodec: 'none',
+      url: `https://scontent.cdninstagram.com/v/t50.2886-16/640p.mp4?efg=${igEfgTestB64Url}`
+    },
+    {
+      format_id: 'dash-983317648155917v',
+      ext: 'mp4',
+      resolution: '540x960',
+      width: 540,
+      height: 960,
+      filesize: null,
+      filesize_approx: null,
+      tbr: 393.562,
+      vbr: 393.562,
+      abr: 0,
+      vcodec: 'vp09.00.30.08.00.01.01.01.00',
+      acodec: 'none',
+      url: `https://scontent.cdninstagram.com/v/t50.2886-16/960p.mp4?efg=${igEfgTestB64Url}`
+    },
+    {
+      format_id: 'dash-983317638155918v',
+      ext: 'mp4',
+      resolution: '720x1280',
+      width: 720,
+      height: 1280,
+      filesize: null,
+      filesize_approx: null,
+      tbr: 2281.975,
+      vbr: 2281.975,
+      abr: 0,
+      vcodec: 'vp09.00.31.08.00.01.01.01.00',
+      acodec: 'none',
+      url: `https://scontent.cdninstagram.com/v/t50.2886-16/1280p.mp4?efg=${igEfgTestB64Url}`
     }
   ]
 })
@@ -1199,6 +1282,210 @@ async function runPlatformDownloadTests() {
     )
     console.log(
       '✓ Instagram: missing filesize, duration_string fallback, URL bitrate, exact size, and unavailable duration verified'
+    )
+
+    // ------------------------------------------------------------------------
+    // INSTAGRAM LIVE DURATION & META CDN efg TESTS (10 Scenarios + DASH Fixture)
+    // ------------------------------------------------------------------------
+
+    // Scenario 1: Valid efg extraction (standard base64)
+    const validB64Url =
+      'https://cdn.instagram.com/reel.mp4?efg=' +
+      Buffer.from(JSON.stringify({ duration_s: 19, bitrate: 2281975 })).toString('base64')
+    const validEfgMeta = extractUrlMetadata(validB64Url)
+    assert.strictEqual(validEfgMeta.durationSeconds, 19, 'Valid efg extracts duration_s: 19')
+    assert.strictEqual(
+      validEfgMeta.bitrateKbps,
+      2282,
+      'Valid efg converts 2281975 bps to 2282 kbps'
+    )
+
+    // Scenario 2: Base64URL extraction (unpadded with - and _)
+    const b64UrlSafe = Buffer.from(JSON.stringify({ duration_s: 25, bitrate: 1500000 }))
+      .toString('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/, '')
+    const b64UrlMeta = extractUrlMetadata(`https://cdn.instagram.com/reel.mp4?efg=${b64UrlSafe}`)
+    assert.strictEqual(b64UrlMeta.durationSeconds, 25, 'Base64URL extracts duration_s: 25')
+    assert.strictEqual(b64UrlMeta.bitrateKbps, 1500, 'Base64URL converts 1500000 bps to 1500 kbps')
+
+    // Scenario 3: Missing efg parameter
+    const missingEfgMeta = extractUrlMetadata('https://cdn.instagram.com/reel.mp4?other_param=123')
+    assert.strictEqual(missingEfgMeta, null, 'Missing efg parameter returns null')
+
+    // Scenario 4: Malformed Base64
+    const malformedB64Meta = extractUrlMetadata(
+      'https://cdn.instagram.com/reel.mp4?efg=%%%notbase64@@@'
+    )
+    assert.strictEqual(malformedB64Meta, null, 'Malformed Base64 returns null')
+
+    // Scenario 5: Invalid JSON in Base64
+    const invalidJsonB64 = Buffer.from('{not-valid-json:true]').toString('base64')
+    const invalidJsonMeta = extractUrlMetadata(
+      `https://cdn.instagram.com/reel.mp4?efg=${invalidJsonB64}`
+    )
+    assert.strictEqual(invalidJsonMeta, null, 'Invalid JSON inside Base64 returns null')
+
+    // Scenario 6: duration_s = 0
+    const zeroDurB64 = Buffer.from(JSON.stringify({ duration_s: 0, bitrate: 1000000 })).toString(
+      'base64'
+    )
+    const zeroDurMeta = extractUrlMetadata(`https://cdn.instagram.com/reel.mp4?efg=${zeroDurB64}`)
+    assert.strictEqual(
+      zeroDurMeta.durationSeconds,
+      null,
+      'duration_s = 0 returns null durationSeconds'
+    )
+    assert.strictEqual(
+      zeroDurMeta.bitrateKbps,
+      1000,
+      'bitrate is still extracted when duration_s = 0'
+    )
+
+    // Scenario 7: Missing duration_s (only bitrate present)
+    const missingDurB64 = Buffer.from(JSON.stringify({ bitrate: 800000 })).toString('base64')
+    const missingDurMeta = extractUrlMetadata(
+      `https://cdn.instagram.com/reel.mp4?efg=${missingDurB64}`
+    )
+    assert.strictEqual(
+      missingDurMeta.durationSeconds,
+      null,
+      'Missing duration_s returns null durationSeconds'
+    )
+    assert.strictEqual(
+      missingDurMeta.bitrateKbps,
+      800,
+      'bitrate is still extracted when duration_s is absent'
+    )
+
+    // Scenario 8: Multiple formats with different efg values (first valid positive duration chosen)
+    const multiFormatFixture = {
+      id: 'ig-multi-efg',
+      title: 'Instagram Multi-format efg test',
+      formats: [
+        {
+          format_id: '0',
+          ext: 'mp4',
+          height: 720,
+          url: 'https://cdn.instagram.com/v/0.mp4?efg=' + zeroDurB64
+        },
+        {
+          format_id: '1',
+          ext: 'mp4',
+          height: 1080,
+          url: 'https://cdn.instagram.com/v/1.mp4?efg=' + validB64Url.split('?efg=')[1]
+        }
+      ]
+    }
+    const multiFormatDur = resolveMediaDuration(multiFormatFixture)
+    assert.strictEqual(
+      multiFormatDur,
+      19,
+      'First format with valid positive efg duration (19s) is resolved'
+    )
+
+    // Scenario 9: Existing standard duration priority (standard duration > efg duration)
+    const standardPriorityFixture = {
+      id: 'ig-priority-test',
+      title: 'Instagram Priority Test',
+      duration: 45,
+      formats: [
+        {
+          format_id: '1',
+          ext: 'mp4',
+          height: 1080,
+          url: 'https://cdn.instagram.com/v/1.mp4?efg=' + validB64Url.split('?efg=')[1]
+        }
+      ]
+    }
+    const standardPriorityDur = resolveMediaDuration(standardPriorityFixture)
+    assert.strictEqual(
+      standardPriorityDur,
+      45,
+      'Standard top-level duration: 45 strictly overrides efg duration_s: 19'
+    )
+
+    // Scenario 10: Existing standard bitrate priority (standard tbr > efg bitrate)
+    const bitratePriorityFixture = {
+      id: 'ig-br-priority',
+      title: 'Instagram Bitrate Priority Test',
+      duration: 10,
+      formats: [
+        {
+          format_id: '1',
+          ext: 'mp4',
+          height: 1080,
+          vcodec: 'h264',
+          acodec: 'aac',
+          tbr: 2500,
+          url:
+            'https://cdn.instagram.com/v/1.mp4?efg=' +
+            Buffer.from(JSON.stringify({ duration_s: 10, bitrate: 5000000 })).toString('base64')
+        }
+      ]
+    }
+    const bitratePriorityAnalysis = parseSyntheticMetadata(
+      bitratePriorityFixture,
+      'instagram',
+      'https://instagram.com/reel/test'
+    )
+    assert.strictEqual(
+      bitratePriorityAnalysis.availableFormats.mp4Formats[0].totalBitrateKbps,
+      2500,
+      'Standard tbr (2500 kbps) strictly takes precedence over efg bitrate (5000 kbps)'
+    )
+
+    // Scenario 11: Authentic Instagram DASH Fixture End-to-End Test
+    const igDashAnalysis = parseSyntheticMetadata(
+      INSTAGRAM_DASH_AUTHENTIC_FIXTURE,
+      'instagram',
+      'https://www.instagram.com/reel/Dewb_HOIdyo/?utm_source=ig_web_button_share_sheet'
+    )
+    assert.strictEqual(igDashAnalysis.id, 'Dewb_HOIdyo', 'Instagram ID matches Dewb_HOIdyo')
+    assert.strictEqual(
+      igDashAnalysis.durationSeconds,
+      19,
+      'Instagram DASH duration resolves to 19s from efg'
+    )
+    assert.deepStrictEqual(
+      igDashAnalysis.videoQualities,
+      ['1280p', '960p', '640p'],
+      'Qualities sorted descending'
+    )
+    assert.deepStrictEqual(igDashAnalysis.audioOptions, ['mp3'], 'MP3 option supported')
+    assert.strictEqual(
+      estimateMp4QualitySize(igDashAnalysis, '1280p'),
+      '~5.3 MB',
+      '1280p estimated size matches ~5.3 MB'
+    )
+    assert.strictEqual(
+      estimateMp4QualitySize(igDashAnalysis, '960p'),
+      '~1 MB',
+      '960p estimated size matches ~1 MB'
+    )
+    assert.strictEqual(
+      estimateMp4QualitySize(igDashAnalysis, '640p'),
+      '~398.3 KB',
+      '640p estimated size matches ~398.3 KB'
+    )
+    assert.strictEqual(
+      estimateMp3BitrateSize(igDashAnalysis, 128),
+      '~296.9 KB',
+      '128 kbps MP3 matches ~296.9 KB'
+    )
+    assert.strictEqual(
+      estimateMp3BitrateSize(igDashAnalysis, 192),
+      '~445.3 KB',
+      '192 kbps MP3 matches ~445.3 KB'
+    )
+    assert.strictEqual(
+      estimateMp3BitrateSize(igDashAnalysis, 320),
+      '~742.2 KB',
+      '320 kbps MP3 matches ~742.2 KB'
+    )
+    console.log(
+      '✓ Instagram: 10 efg scenarios and authentic DASH fixture verified (1280p, 960p, 640p MP4 + MP3 bitrates)'
     )
 
     // B7. TikTok Real-World Multi-Format Stream Tests (TEST A)

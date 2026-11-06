@@ -439,6 +439,66 @@ async function runProgressEtaRetryTests() {
     '~8.9 MB',
     'Scenario 7e: Instagram duration: 0 + duration_string: "0:30" estimates ~8.9 MB'
   )
+
+  // Scenario 7f: Instagram authentic DASH streams with durationSeconds = 19
+  const mediaInstagramDash = {
+    durationSeconds: 19,
+    availableFormats: {
+      mp4Qualities: ['1280p', '960p', '640p'],
+      mp4Formats: [
+        {
+          formatId: 'dash-983317638155918v',
+          quality: '1280p',
+          height: 1280,
+          audioIncluded: false,
+          fileSize: null,
+          totalBitrateKbps: 2281.975
+        },
+        {
+          formatId: 'dash-983317648155917v',
+          quality: '960p',
+          height: 960,
+          audioIncluded: false,
+          fileSize: null,
+          totalBitrateKbps: 393.562
+        },
+        {
+          formatId: 'dash-983317644822584v',
+          quality: '640p',
+          height: 640,
+          audioIncluded: false,
+          fileSize: null,
+          totalBitrateKbps: 105.512
+        }
+      ],
+      audioFormats: [
+        {
+          formatId: 'dash-983309768156705a',
+          extension: 'm4a',
+          audioCodec: 'mp4a.40.5',
+          fileSize: null,
+          audioBitrateKbps: 66.215,
+          totalBitrateKbps: 66.215
+        }
+      ]
+    }
+  }
+
+  assert.equal(
+    estimateMp4QualitySize(mediaInstagramDash, '1280p'),
+    '~5.3 MB',
+    'Scenario 7f: Instagram MP4 1280p estimates ~5.3 MB'
+  )
+  assert.equal(
+    estimateMp4QualitySize(mediaInstagramDash, '960p'),
+    '~1 MB',
+    'Scenario 7f: Instagram MP4 960p estimates ~1 MB'
+  )
+  assert.equal(
+    estimateMp4QualitySize(mediaInstagramDash, '640p'),
+    '~398.3 KB',
+    'Scenario 7f: Instagram MP4 640p estimates ~398.3 KB'
+  )
   console.log('✓ Section 1 Passed: MP4 quality file size estimation verified.\n')
 
   // --------------------------------------------------------------------------
@@ -530,6 +590,24 @@ async function runProgressEtaRetryTests() {
     estimateMp3BitrateSize(igZeroMedia, 320),
     '~1.1 MB',
     'Scenario 13: Instagram duration: 0 + duration_string: "0:30" 320 kbps yields ~1.1 MB'
+  )
+
+  // Scenario 13b: Instagram authentic durationSeconds = 19 for MP3
+  const ig19Media = { durationSeconds: 19 }
+  assert.equal(
+    estimateMp3BitrateSize(ig19Media, 128),
+    '~296.9 KB',
+    'Scenario 13b: Instagram 19s 128 kbps MP3 yields ~296.9 KB'
+  )
+  assert.equal(
+    estimateMp3BitrateSize(ig19Media, 192),
+    '~445.3 KB',
+    'Scenario 13b: Instagram 19s 192 kbps MP3 yields ~445.3 KB'
+  )
+  assert.equal(
+    estimateMp3BitrateSize(ig19Media, 320),
+    '~742.2 KB',
+    'Scenario 13b: Instagram 19s 320 kbps MP3 yields ~742.2 KB'
   )
 
   // Scenario 14: TikTok real-world duration 24s for MP3

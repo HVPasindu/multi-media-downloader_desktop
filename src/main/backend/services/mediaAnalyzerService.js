@@ -398,7 +398,8 @@ function extractValidPositiveDuration(cand) {
  * 3. Valid duration_string (metadata.duration_string, e.g. "16:10", "0:30", "1:05:30")
  * 4. Format-level duration across all available formats
  * 5. Format-level duration_string across all available formats
- * 6. null if no reliable duration exists.
+ * 6. Duration extracted from Meta CDN efg in available format URLs
+ * 7. null if no reliable duration exists.
  *
  * @param {object} metadata
  * @returns {number|null} Total seconds or null
@@ -426,6 +427,29 @@ export function resolveMediaDuration(metadata) {
       if (formatDuration !== null) return formatDuration
       const formatDurStr = extractValidPositiveDuration(format.duration_string)
       if (formatDurStr !== null) return formatDurStr
+    }
+  }
+
+  // Priority 6: Duration extracted from efg in available format URLs
+  if (Array.isArray(metadata.formats)) {
+    for (const format of metadata.formats) {
+      if (!format || typeof format !== 'object') continue
+      const urlMeta = extractUrlMetadata(format.url)
+      if (urlMeta && Number.isFinite(urlMeta.durationSeconds) && urlMeta.durationSeconds > 0) {
+        return urlMeta.durationSeconds
+      }
+    }
+  }
+
+  // Fallback: If metadata has a url property directly containing efg
+  if (typeof metadata.url === 'string') {
+    const topUrlMeta = extractUrlMetadata(metadata.url)
+    if (
+      topUrlMeta &&
+      Number.isFinite(topUrlMeta.durationSeconds) &&
+      topUrlMeta.durationSeconds > 0
+    ) {
+      return topUrlMeta.durationSeconds
     }
   }
 
@@ -514,8 +538,56 @@ export function resolveFormatWidth(format) {
 }
 
 /**
+ * Safely extracts duration and fallback bitrate metadata encoded in Meta CDN URLs (efg query param).
+ * Handles Base64 and Base64URL encoding safely.
+ *
+ * @param {string|any} url
+ * @returns {{ durationSeconds: number|null, bitrateKbps: number|null } | null}
+ */
+export function extractUrlMetadata(url) {
+  try {
+    if (!url || typeof url !== 'string') return null
+
+    const parsedUrl = new URL(url)
+    const encoded = parsedUrl.searchParams.get('efg')
+
+    if (!encoded) return null
+
+    const normalized = encoded.replace(/-/g, '+').replace(/_/g, '/')
+    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=')
+    const decoded = Buffer.from(padded, 'base64').toString('utf8')
+
+    const data = JSON.parse(decoded)
+    if (!data || typeof data !== 'object') return null
+
+    const rawDuration = Number(data.duration_s ?? data.duration)
+    const durationSeconds =
+      Number.isFinite(rawDuration) && rawDuration > 0
+        ? Number.isInteger(rawDuration)
+          ? rawDuration
+          : Math.floor(rawDuration)
+        : null
+
+    const rawBitrate = Number(data.bitrate)
+    const bitrateKbps =
+      Number.isFinite(rawBitrate) && rawBitrate > 0
+        ? rawBitrate > 10000
+          ? Math.round(rawBitrate / 1000)
+          : rawBitrate
+        : null
+
+    return {
+      durationSeconds,
+      bitrateKbps
+    }
+  } catch {
+    return null
+  }
+}
+
+/**
  * Extracts bitrate encoded in media URLs (e.g. Meta / Facebook / Instagram / CDN query params).
- * Supports bitrate=<bps|kbps> and br=<bps|kbps>.
+ * Supports bitrate=<bps|kbps> and br=<bps|kbps>, as well as Meta CDN efg query parameter.
  * Values > 10,000 are treated as bits per second and converted to kbps.
  *
  * @param {string|any} url
@@ -524,13 +596,23 @@ export function resolveFormatWidth(format) {
 export function extractUrlBitrateKbps(url) {
   if (typeof url !== 'string') return null
   const match = url.match(/[?&](?:bitrate|br)=(\d+)/i)
-  if (!match) return null
-  const raw = parseInt(match[1], 10)
-  if (!Number.isFinite(raw) || raw <= 0) return null
-  if (raw > 10000) {
-    return Math.round(raw / 1000)
+  if (match) {
+    const raw = parseInt(match[1], 10)
+    if (Number.isFinite(raw) && raw > 0) {
+      if (raw > 10000) {
+        return Math.round(raw / 1000)
+      }
+      return raw
+    }
   }
-  return raw
+
+  // Fallback to Meta CDN efg metadata
+  const meta = extractUrlMetadata(url)
+  if (meta && Number.isFinite(meta.bitrateKbps) && meta.bitrateKbps > 0) {
+    return meta.bitrateKbps
+  }
+
+  return null
 }
 
 /**
@@ -698,6 +780,7 @@ export function parseMediaMetadata(metadata, platform, sourceUrl) {
       const approximateSize = validPositiveNumber(format.filesize_approx)
       const fileSize = exactSize ?? approximateSize
       const isApproximate = !exactSize && Boolean(approximateSize)
+      const urlBitrate = extractUrlBitrateKbps(format.url)
 
       return {
         formatId: format.format_id ?? null,
@@ -705,8 +788,10 @@ export function parseMediaMetadata(metadata, platform, sourceUrl) {
         audioCodec,
         fileSize,
         isApproximate,
-        audioBitrateKbps: validPositiveNumber(format.abr) ?? validPositiveNumber(format.tbr),
-        totalBitrateKbps: validPositiveNumber(format.tbr) ?? validPositiveNumber(format.abr),
+        audioBitrateKbps:
+          validPositiveNumber(format.abr) ?? validPositiveNumber(format.tbr) ?? urlBitrate,
+        totalBitrateKbps:
+          validPositiveNumber(format.tbr) ?? validPositiveNumber(format.abr) ?? urlBitrate,
         protocol: format.protocol ?? null
       }
     })
