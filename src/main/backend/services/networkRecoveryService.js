@@ -14,6 +14,7 @@ let currentBackoffMs = 5000
 let lastKnownOnline = null
 let isRecovering = false
 let customConnectivityChecker = null
+let initializationPromise = null
 
 // Trusted, fixed HTTPS endpoints for external connectivity verification
 const PRIMARY_CONNECTIVITY_ENDPOINT = 'https://www.google.com/generate_204'
@@ -148,7 +149,8 @@ export async function resumeInterruptedNetworkJobs(options = {}) {
   isRecovering = true
 
   try {
-    const isOnline = await checkNetworkConnectivity()
+    const isOnline =
+      typeof options.isOnline === 'boolean' ? options.isOnline : await checkNetworkConnectivity()
     if (!isOnline) {
       console.log('[network-recovery] Internet is still offline. Cannot resume downloads.')
       return { resumedCount: 0, resumedJobIds: [], jobIds: [] }
@@ -300,15 +302,20 @@ export async function resumeInterruptedNetworkJobs(options = {}) {
 
 /**
  * Starts background network connectivity monitoring with capped backoff.
+ * Serializes initial connectivity check and performs an immediate interrupted-job
+ * recovery scan if online on initial check.
  *
  * @param {object} [options={}]
  * @param {number} [options.baseIntervalMs=5000]
  * @param {number} [options.maxBackoffMs=30000]
  * @param {number} [options.initialDelayMs]
  * @param {Function} [options.enqueue]
+ * @returns {Promise<void>} Resolves once initial connectivity and recovery scan complete
  */
 export function startNetworkMonitoring(options = {}) {
-  if (isMonitoring) return
+  if (isMonitoring) {
+    return initializationPromise || Promise.resolve()
+  }
   isMonitoring = true
 
   const baseIntervalMs = options.baseIntervalMs || 5000
@@ -316,30 +323,31 @@ export function startNetworkMonitoring(options = {}) {
   const backoffStepMs = options.backoffStepMs || baseIntervalMs
   currentBackoffMs = baseIntervalMs
 
-  // Establish initial online state using genuine connectivity check
-  void checkNetworkConnectivity().then((initialOnline) => {
-    if (!isMonitoring) return
-    lastKnownOnline = initialOnline
-    if (!initialOnline) {
-      console.log(
-        '[network-recovery] Application started in offline state. Network monitoring active.'
-      )
-    }
-  })
-
   async function checkCycle() {
     if (!isMonitoring) return
 
     try {
       const isOnline = await checkNetworkConnectivity()
+      if (!isMonitoring) return
 
       if (isOnline) {
         if (lastKnownOnline === false) {
           console.log('[network-recovery] Internet connection re-established!')
-          await resumeInterruptedNetworkJobs(options)
+          try {
+            await resumeInterruptedNetworkJobs({
+              ...options,
+              isOnline: true
+            })
+            lastKnownOnline = true
+            currentBackoffMs = baseIntervalMs
+          } catch (recErr) {
+            console.warn('[network-recovery] Recovery scan failed on reconnection:', recErr)
+            // Keep lastKnownOnline = false so next cycle can retry
+          }
+        } else {
+          lastKnownOnline = true
+          currentBackoffMs = baseIntervalMs
         }
-        lastKnownOnline = true
-        currentBackoffMs = baseIntervalMs
       } else {
         if (lastKnownOnline === true) {
           console.log('[network-recovery] Internet connection lost. Entering backoff monitoring...')
@@ -357,8 +365,45 @@ export function startNetworkMonitoring(options = {}) {
     }
   }
 
-  const initialDelayMs = options.initialDelayMs ?? baseIntervalMs
-  monitoringTimer = setTimeout(checkCycle, initialDelayMs)
+  initializationPromise = (async () => {
+    try {
+      const isOnline = await checkNetworkConnectivity()
+      if (!isMonitoring) return
+
+      if (isOnline) {
+        try {
+          await resumeInterruptedNetworkJobs({
+            ...options,
+            isOnline: true
+          })
+        } catch (initRecErr) {
+          console.warn('[network-recovery] Initial recovery scan error:', initRecErr)
+        }
+
+        if (!isMonitoring) return
+        lastKnownOnline = true
+        currentBackoffMs = baseIntervalMs
+      } else {
+        lastKnownOnline = false
+        console.log(
+          '[network-recovery] Application started in offline state. Network monitoring active.'
+        )
+      }
+
+      if (isMonitoring) {
+        const initialDelayMs = options.initialDelayMs ?? baseIntervalMs
+        monitoringTimer = setTimeout(checkCycle, initialDelayMs)
+      }
+    } catch (initErr) {
+      console.warn('[network-recovery] Initial network monitoring error:', initErr)
+      if (isMonitoring) {
+        const initialDelayMs = options.initialDelayMs ?? baseIntervalMs
+        monitoringTimer = setTimeout(checkCycle, initialDelayMs)
+      }
+    }
+  })()
+
+  return initializationPromise
 }
 
 /**
@@ -370,6 +415,7 @@ export function stopNetworkMonitoring() {
     clearTimeout(monitoringTimer)
     monitoringTimer = null
   }
+  initializationPromise = null
 }
 
 /**
@@ -382,6 +428,7 @@ export function resetNetworkMonitoringForTesting() {
   currentBackoffMs = 5000
   isRecovering = false
   customConnectivityChecker = null
+  initializationPromise = null
 }
 
 /**

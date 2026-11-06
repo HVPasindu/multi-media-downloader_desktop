@@ -183,7 +183,8 @@ export function normalizeDownloadJob(job, speedTracker = null) {
     qualityLabel = job.quality
   }
 
-  // Determine total bytes (preferring live total_bytes from yt-dlp streams, falling back to file_size)
+  // Determine total bytes (preferring actual output file_size once completed,
+  // otherwise live total_bytes from yt-dlp streams, falling back to file_size)
   const hasLiveTotal =
     job.total_bytes !== null &&
     job.total_bytes !== undefined &&
@@ -198,9 +199,16 @@ export function normalizeDownloadJob(job, speedTracker = null) {
       ? Number(job.file.file_size)
       : null
 
-  const totalBytes = hasLiveTotal ? Number(job.total_bytes) : validFileSizeFallback
+  const hasCompletedOutputFileSize = isCompleted && validFileSizeFallback !== null
+
+  const totalBytes = hasCompletedOutputFileSize
+    ? validFileSizeFallback
+    : hasLiveTotal
+      ? Number(job.total_bytes)
+      : validFileSizeFallback
 
   const totalBytesIsEstimate =
+    !hasCompletedOutputFileSize &&
     hasLiveTotal &&
     (job.total_bytes_is_estimate === true ||
       job.total_bytes_is_estimate === 1 ||
@@ -222,9 +230,11 @@ export function normalizeDownloadJob(job, speedTracker = null) {
   const fileSizeFormatted =
     totalBytesFormatted || (downloadedBytes > 0 ? downloadedBytesFormatted : '—')
 
-  // Progress text (e.g. "25 MB / ~52 MB" or "25 MB downloaded" or "0 B")
+  // Progress text (e.g. "25 MB / ~52 MB" or "25 MB downloaded" or "0 B" or "52 MB" on completion)
   let progressText = '0 B'
-  if (totalBytes && downloadedBytes > 0) {
+  if (hasCompletedOutputFileSize) {
+    progressText = formatBytes(validFileSizeFallback)
+  } else if (totalBytes && downloadedBytes > 0) {
     progressText = `${downloadedBytesFormatted} / ${totalBytesFormatted}`
   } else if (downloadedBytes > 0) {
     progressText = `${downloadedBytesFormatted} downloaded`

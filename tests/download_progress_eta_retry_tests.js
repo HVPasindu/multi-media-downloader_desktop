@@ -380,6 +380,116 @@ async function runProgressEtaRetryTests() {
   )
   assert.equal(normFallback.totalBytesFormatted, '52 MB', '4.6F: completed file size has no tilde')
 
+  // Case G (Order 01 Test A): Estimated total vs actual completed file size
+  const completedActualJob = {
+    id: 201,
+    status: 'completed',
+    downloaded_bytes: 52 * 1024 * 1024,
+    total_bytes: 50 * 1024 * 1024,
+    total_bytes_is_estimate: true,
+    file: {
+      file_size: 52 * 1024 * 1024
+    }
+  }
+  const normCompletedActual = normalizeDownloadJob(completedActualJob)
+  assert.equal(
+    normCompletedActual.totalBytes,
+    52 * 1024 * 1024,
+    '4.6G: Actual completed file size overrides transfer estimate'
+  )
+  assert.equal(
+    normCompletedActual.totalBytesIsEstimate,
+    false,
+    '4.6G: totalBytesIsEstimate is false for actual completed file'
+  )
+  assert.equal(
+    normCompletedActual.totalBytesFormatted,
+    '52 MB',
+    '4.6G: totalBytesFormatted displays actual size without tilde'
+  )
+  assert.equal(
+    normCompletedActual.progressText,
+    '52 MB',
+    '4.6G: progressText displays actual completed size'
+  )
+  assert.equal(
+    normCompletedActual.fileSize,
+    '52 MB',
+    '4.6G: fileSize displays actual completed size'
+  )
+
+  // Case H (Order 01 Test B): MP3 output differs from source size
+  const completedMp3Job = {
+    id: 202,
+    status: 'completed',
+    output_format: 'mp3',
+    audio_bitrate_kbps: 192,
+    downloaded_bytes: 50 * 1024 * 1024,
+    total_bytes: 50 * 1024 * 1024,
+    total_bytes_is_estimate: true,
+    file: {
+      file_size: 8 * 1024 * 1024
+    }
+  }
+  const normCompletedMp3 = normalizeDownloadJob(completedMp3Job)
+  assert.equal(
+    normCompletedMp3.totalBytes,
+    8 * 1024 * 1024,
+    '4.6H: Final MP3 output file size takes priority'
+  )
+  assert.equal(normCompletedMp3.totalBytesIsEstimate, false, '4.6H: MP3 output is not estimate')
+  assert.equal(normCompletedMp3.totalBytesFormatted, '8 MB', '4.6H: MP3 formatted as 8 MB')
+  assert.equal(normCompletedMp3.progressText, '8 MB', '4.6H: MP3 progressText is 8 MB')
+  assert.equal(normCompletedMp3.fileSize, '8 MB', '4.6H: MP3 fileSize is 8 MB')
+
+  // Case I (Order 01 Test C): Completed job without actual file size
+  const completedNoFileJob = {
+    id: 203,
+    status: 'completed',
+    downloaded_bytes: 50 * 1024 * 1024,
+    total_bytes: 50 * 1024 * 1024,
+    total_bytes_is_estimate: true,
+    file: null
+  }
+  const normCompletedNoFile = normalizeDownloadJob(completedNoFileJob)
+  assert.equal(
+    normCompletedNoFile.totalBytes,
+    50 * 1024 * 1024,
+    '4.6I: Preserves existing live total'
+  )
+  assert.equal(normCompletedNoFile.totalBytesIsEstimate, true, '4.6I: Preserves estimate indicator')
+  assert.equal(normCompletedNoFile.totalBytesFormatted, '~50 MB', '4.6I: Formats with tilde')
+  assert.equal(normCompletedNoFile.fileSize, '~50 MB', '4.6I: fileSize displays ~50 MB')
+
+  // Case J (Order 01 Test D): Active download does not switch to stale output file size
+  const activeDownloadingJob = {
+    id: 204,
+    status: 'downloading',
+    downloaded_bytes: 25 * 1024 * 1024,
+    total_bytes: 50 * 1024 * 1024,
+    total_bytes_is_estimate: true,
+    file: {
+      file_size: 52 * 1024 * 1024 // Stale or partial file object
+    }
+  }
+  const normActive = normalizeDownloadJob(activeDownloadingJob)
+  assert.equal(
+    normActive.totalBytes,
+    50 * 1024 * 1024,
+    '4.6J: Active download uses live total_bytes'
+  )
+  assert.equal(
+    normActive.totalBytesIsEstimate,
+    true,
+    '4.6J: Active download preserves live estimate flag'
+  )
+  assert.equal(normActive.totalBytesFormatted, '~50 MB', '4.6J: Active download formats ~50 MB')
+  assert.equal(
+    normActive.progressText,
+    '25 MB / ~50 MB',
+    '4.6J: Active progress text is 25 MB / ~50 MB'
+  )
+
   // 4.7 Resuming State UI Normalization (ORDER 02)
   // Derived resuming from queued with existing progress
   const queuedWithProgressJob = {
