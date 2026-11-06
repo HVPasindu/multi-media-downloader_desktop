@@ -169,6 +169,42 @@ app.whenReady().then(async () => {
       return await getDefaultDownloadPath()
     })
 
+    // Step 05.12 - Secure IPC handlers to open downloaded media file or its folder
+    ipcMain.handle('shell:open-file', async (event, filePath) => {
+      const ownerWindow = BrowserWindow.fromWebContents(event.sender)
+      if (!ownerWindow || ownerWindow.isDestroyed()) {
+        throw new Error('Unauthorized IPC sender')
+      }
+      if (typeof filePath !== 'string' || !filePath.trim()) {
+        return { success: false, error: 'Invalid file path' }
+      }
+      try {
+        const errorMsg = await shell.openPath(filePath.trim())
+        if (errorMsg) {
+          return { success: false, error: errorMsg }
+        }
+        return { success: true }
+      } catch (err) {
+        return { success: false, error: err?.message || 'Failed to open file' }
+      }
+    })
+
+    ipcMain.handle('shell:open-folder', async (event, filePath) => {
+      const ownerWindow = BrowserWindow.fromWebContents(event.sender)
+      if (!ownerWindow || ownerWindow.isDestroyed()) {
+        throw new Error('Unauthorized IPC sender')
+      }
+      if (typeof filePath !== 'string' || !filePath.trim()) {
+        return { success: false, error: 'Invalid file path' }
+      }
+      try {
+        shell.showItemInFolder(filePath.trim())
+        return { success: true }
+      } catch (err) {
+        return { success: false, error: err?.message || 'Failed to open folder' }
+      }
+    })
+
     // Step 04.41 - Provide a secure, authenticated IPC bridge for renderer API requests
     ipcMain.handle('api:request', async (event, requestOptions) => {
       // 1. Validate IPC sender - must originate from the trusted application window

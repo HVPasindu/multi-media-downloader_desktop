@@ -22,7 +22,13 @@ import PlatformBadge from '../components/ui/PlatformBadge'
 import StatusBadge from '../components/ui/StatusBadge'
 import Pagination from '../components/common/Pagination'
 import { useDownloadsManager } from '../hooks/useDownloadsManager'
-import { retryDownload, clearDownloadHistory, getDownloadSummary } from '../services/downloadsApi'
+import {
+  retryDownload,
+  cancelDownload,
+  clearDownloadHistory,
+  getDownloadSummary
+} from '../services/downloadsApi'
+import { getFriendlyErrorInfo } from '../utils/errorPresentation'
 import { showError, showToast, showConfirm } from '../utils/notificationService'
 
 /**
@@ -55,6 +61,7 @@ export default function DownloadsPage() {
   const [pageSize, setPageSize] = useState(20)
   const [currentPage, setCurrentPage] = useState(1)
   const [retryingJobId, setRetryingJobId] = useState(null)
+  const [cancellingJobId, setCancellingJobId] = useState(null)
 
   // Status mapping for server-side queries
   const statusFilter = activeTab === 'all' || activeTab === 'failed' ? null : activeTab
@@ -158,20 +165,76 @@ export default function DownloadsPage() {
   }
 
   const handleRetryJob = async (jobId) => {
+    if (retryingJobId) return
     try {
       setRetryingJobId(jobId)
       const res = await retryDownload(jobId)
       if (res.ok && res.status === 201) {
         showToast('Download queued for retry', 'success')
         if (typeof retry === 'function') retry()
+        fetchGlobalCounts()
       } else {
-        const errorMsg = res.data?.message || 'Failed to retry download'
-        showError('Retry Failed', errorMsg)
+        const errorInfo = getFriendlyErrorInfo(res.data?.message || 'Failed to retry download')
+        showError(errorInfo.title || 'Retry Failed', errorInfo.message)
       }
     } catch (err) {
-      showError('Retry Error', err?.message || 'An unexpected error occurred while retrying.')
+      const errorInfo = getFriendlyErrorInfo(
+        err?.message || 'An unexpected error occurred while retrying.'
+      )
+      showError(errorInfo.title || 'Retry Error', errorInfo.message)
     } finally {
       setRetryingJobId(null)
+    }
+  }
+
+  // Cancel an active or queued download job (Step 05.11 & 05.13)
+  const handleCancelJob = async (jobId) => {
+    if (cancellingJobId) return
+
+    const confirmed = await showConfirm(
+      'Cancel Download?',
+      'Are you sure you want to cancel this download? This will stop the active download process.',
+      {
+        confirmButtonText: 'Cancel Download',
+        isDanger: true
+      }
+    )
+
+    if (!confirmed) return
+
+    try {
+      setCancellingJobId(jobId)
+      const res = await cancelDownload(jobId)
+      if (res.ok) {
+        if (res.status === 202) {
+          showToast('Cancellation requested', 'info')
+        } else {
+          showToast('Download cancelled', 'success')
+        }
+        if (typeof retry === 'function') retry()
+        fetchGlobalCounts()
+      } else if (res.status === 409) {
+        showError(
+          'Cannot Cancel',
+          res.data?.message || 'Download is already completed or terminated.'
+        )
+        if (typeof retry === 'function') retry()
+        fetchGlobalCounts()
+      } else if (res.status === 404) {
+        showError('Not Found', 'Download job not found.')
+        if (typeof retry === 'function') retry()
+        fetchGlobalCounts()
+      } else {
+        const errorInfo = getFriendlyErrorInfo(res.data?.message || 'Failed to cancel download.')
+        showError(errorInfo.title || 'Cancellation Failed', errorInfo.message)
+      }
+    } catch (err) {
+      const errorInfo = getFriendlyErrorInfo(
+        err?.message || 'An unexpected error occurred while cancelling.'
+      )
+      showError(errorInfo.title || 'Cancellation Error', errorInfo.message)
+    } finally {
+      setCancellingJobId(null)
     }
   }
 
@@ -524,7 +587,7 @@ export default function DownloadsPage() {
                             type="button"
                             disabled
                             className="w-8 h-8 rounded-lg bg-[#040B1C]/50 border border-primary/10 flex items-center justify-center text-text-muted/40 cursor-not-allowed"
-                            title="Pause control will be connected in Step 05.11"
+                            title="Pause is not supported by the download engine"
                           >
                             <Pause className="w-3.5 h-3.5" />
                           </button>
@@ -535,7 +598,7 @@ export default function DownloadsPage() {
                             type="button"
                             disabled
                             className="w-8 h-8 rounded-lg bg-[#040B1C]/50 border border-primary/10 flex items-center justify-center text-text-muted/40 cursor-not-allowed"
-                            title="Start queue control will be connected in Step 05.11"
+                            title="Queue processing is automatic (max 2 concurrent)"
                           >
                             <Play className="w-3.5 h-3.5 ml-0.5" />
                           </button>
@@ -545,11 +608,26 @@ export default function DownloadsPage() {
                         {(isDownloading || isQueued || item.status === 'interrupted') && (
                           <button
                             type="button"
-                            disabled
-                            className="w-8 h-8 rounded-lg border bg-[#040B1C]/50 border-primary/10 text-text-muted/40 flex items-center justify-center cursor-not-allowed"
-                            title="Cancel download will be connected in Step 05.11"
+                            onClick={() => handleCancelJob(item.id)}
+                            disabled={Boolean(cancellingJobId)}
+                            className={`w-8 h-8 rounded-lg border flex items-center justify-center transition-all ${
+                              cancellingJobId === item.id
+                                ? 'bg-[#040B1C]/50 border-red-500/30 text-red-400 cursor-wait'
+                                : cancellingJobId
+                                  ? 'bg-[#040B1C]/30 border-primary/10 text-text-muted/30 cursor-not-allowed'
+                                  : 'bg-[#040B1C]/80 hover:bg-red-500/20 border-primary/20 hover:border-red-500/40 text-text-muted hover:text-red-400 cursor-pointer shadow-sm'
+                            }`}
+                            title={
+                              cancellingJobId === item.id
+                                ? 'Cancelling download...'
+                                : 'Cancel download'
+                            }
                           >
-                            <Square className="w-3 h-3 fill-current" />
+                            {cancellingJobId === item.id ? (
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            ) : (
+                              <Square className="w-3 h-3 fill-current" />
+                            )}
                           </button>
                         )}
                       </div>

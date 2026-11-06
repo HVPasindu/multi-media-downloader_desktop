@@ -29,6 +29,7 @@ import {
 } from '../services/downloadsApi'
 import { normalizeDownloadJob, formatBytes } from '../utils/downloadPresentation'
 import { showConfirm, showToast, showError } from '../utils/notificationService'
+import { getFriendlyErrorInfo } from '../utils/errorPresentation'
 
 /**
  * Extracts a clean subtitle from statusText without repeating the main status label
@@ -80,6 +81,12 @@ export default function HistoryPage() {
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState(null)
   const [retryingJobId, setRetryingJobId] = useState(null)
+  const [showDateFilter, setShowDateFilter] = useState(false)
+  const [fromDate, setFromDate] = useState('')
+  const [toDate, setToDate] = useState('')
+  const [appliedFrom, setAppliedFrom] = useState('')
+  const [appliedTo, setAppliedTo] = useState('')
+  const [dateError, setDateError] = useState(null)
   const [summary, setSummary] = useState({
     totalFiles: 0,
     videos: 0,
@@ -117,6 +124,14 @@ export default function HistoryPage() {
 
       if (searchQuery.trim()) {
         filters.search = searchQuery.trim()
+      }
+
+      if (appliedFrom) {
+        filters.from = appliedFrom
+      }
+
+      if (appliedTo) {
+        filters.to = appliedTo
       }
 
       if (activeTab === 'videos') {
@@ -158,7 +173,7 @@ export default function HistoryPage() {
     } finally {
       setIsLoading(false)
     }
-  }, [activeTab, searchQuery, pageSize, currentPage])
+  }, [activeTab, searchQuery, pageSize, currentPage, appliedFrom, appliedTo])
 
   // Adaptive background polling & immediate refresh on mutation events
   useEffect(() => {
@@ -330,8 +345,75 @@ export default function HistoryPage() {
     }
   }
 
-  // Retry a failed or cancelled record
+  // Date range filter handlers (Step 05.12)
+  const handleApplyDateFilter = () => {
+    if (fromDate && toDate && fromDate > toDate) {
+      setDateError('Start date cannot be after end date')
+      return
+    }
+    setDateError(null)
+    setAppliedFrom(fromDate)
+    setAppliedTo(toDate)
+    setCurrentPage(1)
+    setSelectedIds([])
+  }
+
+  const handleClearDateFilter = () => {
+    setFromDate('')
+    setToDate('')
+    setAppliedFrom('')
+    setAppliedTo('')
+    setDateError(null)
+    setCurrentPage(1)
+    setSelectedIds([])
+  }
+
+  // Open media file using native OS application (Step 05.12)
+  const handleOpenFile = async (filePath) => {
+    if (!filePath || filePath === '—') {
+      showError('File Not Available', 'The file path is not recorded or unavailable.')
+      return
+    }
+    try {
+      if (window.api?.openFile) {
+        const res = await window.api.openFile(filePath)
+        if (!res?.success) {
+          showError(
+            'Cannot Open File',
+            res?.error || 'The file could not be opened. It may have been moved or deleted.'
+          )
+        }
+      } else {
+        showError('Not Supported', 'Opening files is not supported in this environment.')
+      }
+    } catch (err) {
+      showError('Open File Failed', err?.message || 'An unexpected error occurred.')
+    }
+  }
+
+  // Open enclosing folder in OS file manager (Step 05.12)
+  const handleOpenFolder = async (filePath) => {
+    if (!filePath || filePath === '—') {
+      showError('Folder Not Available', 'The file path is not recorded or unavailable.')
+      return
+    }
+    try {
+      if (window.api?.openFolder) {
+        const res = await window.api.openFolder(filePath)
+        if (!res?.success) {
+          showError('Cannot Open Folder', res?.error || 'The enclosing folder could not be opened.')
+        }
+      } else {
+        showError('Not Supported', 'Opening folders is not supported in this environment.')
+      }
+    } catch (err) {
+      showError('Open Folder Failed', err?.message || 'An unexpected error occurred.')
+    }
+  }
+
+  // Retry a failed or cancelled record (Step 05.13)
   const handleRetryRecord = async (id) => {
+    if (retryingJobId) return
     try {
       setRetryingJobId(id)
       const res = await retryDownload(id)
@@ -340,10 +422,16 @@ export default function HistoryPage() {
         fetchHistory()
         fetchSummary()
       } else {
-        showError('Retry Failed', res.data?.message || 'Failed to retry download')
+        const errorInfo = getFriendlyErrorInfo(
+          res.data?.message || res.data?.error || 'Failed to retry download'
+        )
+        showError(errorInfo.title || 'Retry Failed', errorInfo.message)
       }
     } catch (err) {
-      showError('Retry Error', err?.message || 'An unexpected error occurred while retrying.')
+      const errorInfo = getFriendlyErrorInfo(
+        err?.message || 'An unexpected error occurred while retrying.'
+      )
+      showError(errorInfo.title || 'Retry Error', errorInfo.message)
     } finally {
       setRetryingJobId(null)
     }
@@ -388,13 +476,72 @@ export default function HistoryPage() {
           </div>
           <button
             type="button"
-            className="p-2.5 rounded-xl bg-[#07152E]/90 hover:bg-[#0B1C38] border border-primary/20 text-text-muted hover:text-white transition-all cursor-pointer"
-            title="Filter options"
+            onClick={() => setShowDateFilter((prev) => !prev)}
+            className={`p-2.5 rounded-xl border transition-all cursor-pointer ${
+              showDateFilter || appliedFrom || appliedTo
+                ? 'bg-[#0B1C38] border-[#19D8FF]/40 text-[#19D8FF] shadow-sm'
+                : 'bg-[#07152E]/90 hover:bg-[#0B1C38] border-primary/20 text-text-muted hover:text-white'
+            }`}
+            title={showDateFilter ? 'Close date filter' : 'Filter by date range'}
           >
             <SlidersHorizontal className="w-4 h-4" />
           </button>
         </div>
       </div>
+
+      {/* ----------------- DATE RANGE FILTER PANEL (Step 05.12) ----------------- */}
+      {showDateFilter && (
+        <div className="p-4 rounded-2xl bg-[#07152E]/90 border border-primary/20 shadow-lg flex flex-wrap items-center gap-4 transition-all animate-fadeIn">
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-semibold text-text-muted">From:</span>
+            <input
+              type="date"
+              value={fromDate}
+              onChange={(e) => {
+                setFromDate(e.target.value)
+                setDateError(null)
+              }}
+              className="bg-[#040B1C] border border-primary/20 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-primary [color-scheme:dark]"
+            />
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-semibold text-text-muted">To:</span>
+            <input
+              type="date"
+              value={toDate}
+              onChange={(e) => {
+                setToDate(e.target.value)
+                setDateError(null)
+              }}
+              className="bg-[#040B1C] border border-primary/20 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-primary [color-scheme:dark]"
+            />
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleApplyDateFilter}
+              className="px-3.5 py-1.5 rounded-lg bg-primary hover:bg-primary/80 text-xs font-semibold text-white transition-all cursor-pointer shadow-sm"
+            >
+              Apply Filter
+            </button>
+            {(appliedFrom || appliedTo || fromDate || toDate) && (
+              <button
+                type="button"
+                onClick={handleClearDateFilter}
+                className="px-3.5 py-1.5 rounded-lg bg-[#040B1C] hover:bg-[#102449] border border-primary/20 text-xs font-semibold text-text-muted hover:text-white transition-all cursor-pointer"
+              >
+                Clear
+              </button>
+            )}
+          </div>
+          {dateError && <span className="text-xs text-red-400 font-medium">{dateError}</span>}
+          {(appliedFrom || appliedTo) && !dateError && (
+            <span className="text-xs text-[#19D8FF] font-medium ml-auto">
+              Active: {appliedFrom || 'Any'} &rarr; {appliedTo || 'Any'}
+            </span>
+          )}
+        </div>
+      )}
 
       {/* ----------------- 4 SUMMARY CARDS ROW (Dynamic Counts) ----------------- */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -583,36 +730,54 @@ export default function HistoryPage() {
                     {/* Action Buttons */}
                     <td className="py-3 px-4">
                       <div className="flex items-center justify-center gap-1.5">
-                        {/* Play or Retry Button */}
+                        {/* Play / Open File or Retry Button */}
                         {isFailed ? (
                           <button
                             type="button"
                             onClick={() => handleRetryRecord(item.id)}
                             disabled={retryingJobId === item.id}
-                            className="w-7 h-7 rounded-lg bg-[#040B1C] hover:bg-[#102449] border border-primary/20 flex items-center justify-center text-text-muted hover:text-[#19D8FF] transition-all cursor-pointer"
+                            className="w-7 h-7 rounded-lg bg-[#040B1C] hover:bg-[#102449] border border-primary/20 flex items-center justify-center text-text-muted hover:text-[#19D8FF] transition-all cursor-pointer shadow-sm"
                             title="Retry download"
                           >
                             <RotateCcw
-                              className={`w-3.5 h-3.5 ${retryingJobId === item.id ? 'animate-spin' : ''}`}
+                              className={`w-3.5 h-3.5 ${retryingJobId === item.id ? 'animate-spin text-[#19D8FF]' : ''}`}
                             />
                           </button>
                         ) : (
                           <button
                             type="button"
-                            disabled
-                            className="w-7 h-7 rounded-lg bg-[#040B1C]/50 border border-primary/10 flex items-center justify-center text-text-muted/40 cursor-not-allowed"
-                            title="Play media"
+                            onClick={() => handleOpenFile(item.savedTo)}
+                            disabled={!item.filePath || item.filePath === '—'}
+                            className={`w-7 h-7 rounded-lg border flex items-center justify-center transition-all ${
+                              item.filePath && item.filePath !== '—'
+                                ? 'bg-[#040B1C] hover:bg-[#102449] border-primary/20 text-text-muted hover:text-[#19D8FF] cursor-pointer shadow-sm'
+                                : 'bg-[#040B1C]/50 border-primary/10 text-text-muted/40 cursor-not-allowed'
+                            }`}
+                            title={
+                              item.filePath && item.filePath !== '—'
+                                ? 'Play / Open media file'
+                                : 'File path unavailable'
+                            }
                           >
                             <Play className="w-3.5 h-3.5 ml-0.5" />
                           </button>
                         )}
 
-                        {/* Open Folder Button */}
+                        {/* Open Enclosing Folder Button */}
                         <button
                           type="button"
-                          disabled
-                          className="w-7 h-7 rounded-lg bg-[#040B1C]/50 border border-primary/10 flex items-center justify-center text-text-muted/40 cursor-not-allowed"
-                          title="Open enclosing folder"
+                          onClick={() => handleOpenFolder(item.savedTo)}
+                          disabled={!item.filePath || item.filePath === '—'}
+                          className={`w-7 h-7 rounded-lg border flex items-center justify-center transition-all ${
+                            item.filePath && item.filePath !== '—'
+                              ? 'bg-[#040B1C] hover:bg-[#102449] border-primary/20 text-text-muted hover:text-[#19D8FF] cursor-pointer shadow-sm'
+                              : 'bg-[#040B1C]/50 border-primary/10 text-text-muted/40 cursor-not-allowed'
+                          }`}
+                          title={
+                            item.filePath && item.filePath !== '—'
+                              ? 'Open enclosing folder'
+                              : 'Folder path unavailable'
+                          }
                         >
                           <FolderOpen className="w-3.5 h-3.5" />
                         </button>
