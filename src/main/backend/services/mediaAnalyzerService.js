@@ -850,13 +850,14 @@ export function parseMediaMetadata(metadata, platform, sourceUrl) {
       const fileSize = exactSize ?? approximateSize
       const isApproximate = !exactSize && Boolean(approximateSize)
 
-      const urlBitrate = extractUrlBitrateKbps(format.url)
-      const totalBitrateKbps =
-        validPositiveNumber(format.tbr) ??
-        urlBitrate ??
-        (validPositiveNumber(format.vbr) && validPositiveNumber(format.abr)
-          ? format.vbr + format.abr
-          : null)
+      const tbr = validPositiveNumber(format.tbr)
+      const vbr = validPositiveNumber(format.vbr)
+      const abr = validPositiveNumber(format.abr)
+      const urlBitrate = validPositiveNumber(extractUrlBitrateKbps(format.url))
+
+      const combinedBitrate = vbr !== null && abr !== null ? validPositiveNumber(vbr + abr) : null
+
+      const totalBitrateKbps = tbr ?? combinedBitrate ?? vbr ?? urlBitrate
 
       return {
         formatId: format.format_id ?? null,

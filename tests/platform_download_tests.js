@@ -1436,6 +1436,147 @@ async function runPlatformDownloadTests() {
       'Standard tbr (2500 kbps) strictly takes precedence over efg bitrate (5000 kbps)'
     )
 
+    // ------------------------------------------------------------------------
+    // MP4 BITRATE PRIORITY REGRESSION TESTS (Tests 1 - 8)
+    // ------------------------------------------------------------------------
+    const makeBitrateFixture = (overrides) => ({
+      id: 'mp4-br-priority-test',
+      title: 'MP4 Bitrate Priority Test',
+      duration: 10,
+      formats: [
+        {
+          format_id: '1',
+          ext: 'mp4',
+          height: 1080,
+          vcodec: 'h264',
+          acodec: 'aac',
+          url: 'https://cdn.example.com/video.mp4?bitrate=5000000',
+          ...overrides
+        }
+      ]
+    })
+
+    // Test 1 – Standard TBR has highest priority
+    const brTest1 = parseSyntheticMetadata(
+      makeBitrateFixture({ tbr: 2500, vbr: 2000, abr: 128 }),
+      'universal',
+      'https://example.com/video'
+    )
+    assert.strictEqual(
+      brTest1.availableFormats.mp4Formats[0].totalBitrateKbps,
+      2500,
+      'Test 1: Standard TBR (2500) has highest priority'
+    )
+
+    // Test 2 – Combined VBR + ABR takes priority over URL bitrate
+    const brTest2 = parseSyntheticMetadata(
+      makeBitrateFixture({ tbr: undefined, vbr: 2000, abr: 128 }),
+      'universal',
+      'https://example.com/video'
+    )
+    assert.strictEqual(
+      brTest2.availableFormats.mp4Formats[0].totalBitrateKbps,
+      2128,
+      'Test 2: Combined VBR + ABR (2128) takes priority over URL bitrate (5000)'
+    )
+
+    // Test 3 – VBR fallback when ABR is unavailable
+    const brTest3 = parseSyntheticMetadata(
+      makeBitrateFixture({ tbr: undefined, vbr: 1800, abr: undefined }),
+      'universal',
+      'https://example.com/video'
+    )
+    assert.strictEqual(
+      brTest3.availableFormats.mp4Formats[0].totalBitrateKbps,
+      1800,
+      'Test 3: VBR fallback (1800) takes priority over URL bitrate (5000) when ABR is unavailable'
+    )
+
+    // Test 4 – URL bitrate fallback
+    const brTest4 = parseSyntheticMetadata(
+      makeBitrateFixture({ tbr: undefined, vbr: undefined, abr: undefined }),
+      'universal',
+      'https://example.com/video'
+    )
+    assert.strictEqual(
+      brTest4.availableFormats.mp4Formats[0].totalBitrateKbps,
+      5000,
+      'Test 4: URL bitrate fallback (5000) when standard bitrate fields are unavailable'
+    )
+
+    // Test 5 – Invalid TBR must not block valid combined bitrate
+    const brTest5 = parseSyntheticMetadata(
+      makeBitrateFixture({ tbr: 0, vbr: 2000, abr: 128 }),
+      'universal',
+      'https://example.com/video'
+    )
+    assert.strictEqual(
+      brTest5.availableFormats.mp4Formats[0].totalBitrateKbps,
+      2128,
+      'Test 5: Invalid TBR (0) does not block valid combined bitrate (2128)'
+    )
+
+    // Test 6 – Invalid ABR must not be included in combined bitrate
+    const brTest6 = parseSyntheticMetadata(
+      makeBitrateFixture({ tbr: undefined, vbr: 1800, abr: 0 }),
+      'universal',
+      'https://example.com/video'
+    )
+    assert.strictEqual(
+      brTest6.availableFormats.mp4Formats[0].totalBitrateKbps,
+      1800,
+      'Test 6: Invalid ABR (0) falls back to VBR (1800)'
+    )
+
+    // Test 7 – Standalone ABR must not become total MP4 bitrate
+    const brTest7 = parseSyntheticMetadata(
+      makeBitrateFixture({ tbr: undefined, vbr: undefined, abr: 128 }),
+      'universal',
+      'https://example.com/video'
+    )
+    assert.strictEqual(
+      brTest7.availableFormats.mp4Formats[0].totalBitrateKbps,
+      5000,
+      'Test 7: Standalone ABR (128) must not become total MP4 bitrate; falls back to URL bitrate (5000)'
+    )
+
+    // Test 8 – No valid bitrate available
+    const brTest8 = parseSyntheticMetadata(
+      makeBitrateFixture({
+        tbr: 0,
+        vbr: -10,
+        abr: 0,
+        url: 'https://cdn.example.com/video.mp4'
+      }),
+      'universal',
+      'https://example.com/video'
+    )
+    assert.strictEqual(
+      brTest8.availableFormats.mp4Formats[0].totalBitrateKbps,
+      null,
+      'Test 8: No valid bitrate available returns null'
+    )
+
+    // Additional robustness: Non-finite numbers and invalid strings safely rejected
+    const brTestInvalid = parseSyntheticMetadata(
+      makeBitrateFixture({
+        tbr: 'invalid_bitrate',
+        vbr: NaN,
+        abr: Infinity,
+        url: 'not-a-valid-url-no-params'
+      }),
+      'universal',
+      'https://example.com/video'
+    )
+    assert.strictEqual(
+      brTestInvalid.availableFormats.mp4Formats[0].totalBitrateKbps,
+      null,
+      'Invalid strings and non-finite numbers safely produce null totalBitrateKbps'
+    )
+    console.log(
+      '✓ MP4 Bitrate Priority: Tests 1-8 verified (TBR > VBR+ABR > VBR > URL bitrate > null)'
+    )
+
     // Scenario 11: Authentic Instagram DASH Fixture End-to-End Test
     const igDashAnalysis = parseSyntheticMetadata(
       INSTAGRAM_DASH_AUTHENTIC_FIXTURE,
