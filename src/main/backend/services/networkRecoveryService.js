@@ -371,17 +371,20 @@ export function startNetworkMonitoring(options = {}) {
       if (!isMonitoring) return
 
       if (isOnline) {
+        let initialRecoverySucceeded = false
         try {
           await resumeInterruptedNetworkJobs({
             ...options,
             isOnline: true
           })
+          initialRecoverySucceeded = true
         } catch (initRecErr) {
           console.warn('[network-recovery] Initial recovery scan error:', initRecErr)
+          initialRecoverySucceeded = false
         }
 
         if (!isMonitoring) return
-        lastKnownOnline = true
+        lastKnownOnline = initialRecoverySucceeded
         currentBackoffMs = baseIntervalMs
       } else {
         lastKnownOnline = false
@@ -396,6 +399,7 @@ export function startNetworkMonitoring(options = {}) {
       }
     } catch (initErr) {
       console.warn('[network-recovery] Initial network monitoring error:', initErr)
+      lastKnownOnline = false
       if (isMonitoring) {
         const initialDelayMs = options.initialDelayMs ?? baseIntervalMs
         monitoringTimer = setTimeout(checkCycle, initialDelayMs)

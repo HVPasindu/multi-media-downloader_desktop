@@ -4,7 +4,7 @@ import crypto from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { mkdir, writeFile, symlink } from 'node:fs/promises'
+import { mkdir, writeFile, symlink, stat } from 'node:fs/promises'
 import { createTestDatabase } from './helpers/testDatabase.js'
 import {
   resolveValidatedDownloadPath,
@@ -1119,7 +1119,7 @@ async function runNetworkRecoveryTests() {
     // ========================================================================
     // STARTUP RACE & SERIALIZED NETWORK MONITORING TESTS (ORDER 02)
     // ========================================================================
-    console.log('--- Order 02: Startup Race & Serialized Network Monitoring Tests (1-6) ---')
+    console.log('--- Order 02: Startup Race & Serialized Network Monitoring Tests (1-7) ---')
 
     // ------------------------------------------------------------------------
     // Test 1 – Exact startup race reproduction
@@ -1472,6 +1472,106 @@ async function runNetworkRecoveryTests() {
     stopNetworkMonitoring()
     console.log(
       '  ✓ Race 6 passed: Monitoring remains alive after recovery failure and retries successfully\n'
+    )
+
+    // ------------------------------------------------------------------------
+    // Test 7 – Initial Online Recovery Failure → Automatic Retry
+    // Application starts with Internet ON, but initial recovery scan fails due
+    // to temporary SQLite error. Next monitoring cycle must automatically retry
+    // and recover the interrupted job without manual intervention.
+    // ------------------------------------------------------------------------
+    console.log('  [Race 7] Initial Online Recovery Failure → Automatic Retry...')
+    resetRecoveryTrackingForTesting()
+    resetNetworkMonitoringForTesting()
+    await DownloadJob.destroy({ where: {} })
+
+    const raceJob7 = await DownloadJob.create({
+      media_id: media.id,
+      output_format: 'mp4',
+      quality: '1080p',
+      status: 'interrupted',
+      progress: 80,
+      downloaded_bytes: 8000000
+    })
+    const racePartPath7 = join(testDownloadDir, `race-clip-7 [job-${raceJob7.id}].mp4.part`)
+    await writeFile(racePartPath7, Buffer.alloc(8000000, 0x77))
+
+    let race7FindAllCalls = 0
+    const originalFindAll7 = DownloadJob.findAll
+
+    DownloadJob.findAll = async function (...args) {
+      race7FindAllCalls++
+      if (race7FindAllCalls === 1) {
+        throw new Error('Simulated transient SQLite lock during initial recovery')
+      }
+      return originalFindAll7.apply(this, args)
+    }
+
+    try {
+      setConnectivityCheckerForTesting(async () => true)
+
+      const monitorEnqRace7 = []
+      await startNetworkMonitoring({
+        baseIntervalMs: 50,
+        initialDelayMs: 30,
+        enqueue: (id) => {
+          monitorEnqRace7.push(id)
+          return true
+        }
+      })
+
+      // The initial recovery scan failed due to the simulated SQLite error.
+      // Monitoring remains active and retries on the next checkCycle while still ONLINE.
+      let reloadedRace7 = null
+      for (let poll = 0; poll < 40; poll++) {
+        reloadedRace7 = await DownloadJob.findByPk(raceJob7.id)
+        if (reloadedRace7 && reloadedRace7.status === 'queued') {
+          break
+        }
+        await new Promise((r) => setTimeout(r, 25))
+      }
+
+      assert.equal(
+        race7FindAllCalls >= 2,
+        true,
+        'Race 7: Recovery scan retried after initial SQLite failure'
+      )
+      assert.equal(reloadedRace7.id, raceJob7.id, 'Race 7: Original Job ID preserved')
+      assert.equal(reloadedRace7.status, 'queued', 'Race 7: Original job recovered to queued')
+      assert.equal(reloadedRace7.progress, 80, 'Race 7: Original progress preserved')
+      assert.equal(
+        reloadedRace7.downloaded_bytes,
+        8000000,
+        'Race 7: Original downloaded bytes preserved'
+      )
+      assert.deepEqual(monitorEnqRace7, [raceJob7.id], 'Race 7: Exactly one queue enqueue')
+
+      // Verify partial file and DB invariants
+      const partStat7 = await stat(racePartPath7)
+      assert.equal(
+        partStat7.size,
+        8000000,
+        'Race 7: Valid partial file still exists and size remains 8 MB'
+      )
+
+      const totalJobCount7 = await DownloadJob.count({ where: { id: raceJob7.id } })
+      assert.equal(
+        totalJobCount7,
+        1,
+        'Race 7: Exactly one database job exists for original ID (no replacement job created)'
+      )
+
+      const allJobs7 = await DownloadJob.findAll()
+      assert.equal(allJobs7.length, 1, 'Race 7: No duplicate jobs exist in database')
+    } finally {
+      DownloadJob.findAll = originalFindAll7
+      stopNetworkMonitoring()
+      resetNetworkMonitoringForTesting()
+      resetRecoveryTrackingForTesting()
+    }
+
+    console.log(
+      '  ✓ Race 7 passed: Initial online recovery failure automatically retries and succeeds\n'
     )
 
     // ========================================================================
