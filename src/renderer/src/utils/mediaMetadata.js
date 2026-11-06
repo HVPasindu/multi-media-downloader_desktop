@@ -146,8 +146,123 @@ export function formatBytes(bytes, decimals = 1) {
 }
 
 /**
+ * Safely parses and validates a positive numeric value.
+ * Rejects null, undefined, empty strings, NaN, Infinity, and numbers <= 0.
+ *
+ * @param {any} val
+ * @returns {number|null}
+ */
+function validPositiveNumber(val) {
+  if (val === null || val === undefined || val === '') return null
+  const num = Number(val)
+  if (!Number.isFinite(num) || num <= 0) return null
+  return num
+}
+
+/**
+ * Safely parses a media duration string (e.g. "16:10", "0:30", "1:05:30") into total seconds.
+ *
+ * @param {string|any} durationStr
+ * @returns {number|null} Total seconds or null if invalid
+ */
+function parseDurationString(durationStr) {
+  if (typeof durationStr !== 'string') return null
+  const trimmed = durationStr.trim()
+  if (!trimmed) return null
+
+  const parts = trimmed.split(':')
+  if (parts.length < 2 || parts.length > 3) return null
+
+  const numbers = []
+  for (const part of parts) {
+    const p = part.trim()
+    if (!/^\d+$/.test(p)) return null
+    numbers.push(parseInt(p, 10))
+  }
+
+  if (parts.length === 2) {
+    const [minutes, seconds] = numbers
+    if (seconds >= 60 && minutes > 0) return null
+    return minutes * 60 + seconds
+  }
+
+  if (parts.length === 3) {
+    const [hours, minutes, seconds] = numbers
+    if (minutes >= 60 || seconds >= 60) return null
+    return hours * 3600 + minutes * 60 + seconds
+  }
+
+  return null
+}
+
+/**
+ * Finds an equivalent same-quality format fallback (Section 5.4).
+ * Same height/quality, same stream role (audioIncluded), compatible extension/codec,
+ * with valid positive fileSize or valid bitrate.
+ *
+ * @param {object} targetFormat
+ * @param {object[]} mp4Formats
+ * @returns {object|null}
+ */
+function findEquivalentVideoFormat(targetFormat, mp4Formats) {
+  if (!targetFormat || !Array.isArray(mp4Formats)) return null
+
+  for (const candidate of mp4Formats) {
+    if (!candidate) continue
+    if (candidate === targetFormat) continue
+    if (
+      candidate.formatId &&
+      targetFormat.formatId &&
+      candidate.formatId === targetFormat.formatId
+    ) {
+      continue
+    }
+
+    // Same height & quality
+    if (candidate.height !== targetFormat.height) continue
+    if (candidate.quality !== targetFormat.quality) continue
+
+    // Same video stream role (both video-only or both combined)
+    if (Boolean(candidate.audioIncluded) !== Boolean(targetFormat.audioIncluded)) continue
+
+    // Must have a valid positive fileSize or valid bitrate
+    const cSize = validPositiveNumber(candidate.fileSize)
+    const cBitrate =
+      validPositiveNumber(candidate.videoBitrateKbps) ??
+      validPositiveNumber(candidate.totalBitrateKbps)
+    if (!cSize && !cBitrate) continue
+
+    // Compatible container/extension
+    const tExt = String(candidate.extension || 'mp4').toLowerCase()
+    const cExt = String(targetFormat.extension || 'mp4').toLowerCase()
+    if (tExt !== cExt && tExt !== 'mp4' && cExt !== 'mp4') continue
+
+    // Compatible codec if both known
+    const tCodec = String(targetFormat.videoCodec || '').toLowerCase()
+    const cCodec = String(candidate.videoCodec || '').toLowerCase()
+    if (tCodec && cCodec) {
+      const isAvcT = tCodec.includes('avc') || tCodec.includes('h264')
+      const isAvcC = cCodec.includes('avc') || cCodec.includes('h264')
+      if (isAvcT && !isAvcC) continue
+      if (!isAvcT && isAvcC) continue
+    }
+
+    return candidate
+  }
+
+  return null
+}
+
+/**
  * Estimates the file size for an MP4 quality option based on analyzed metadata
  * and the backend's format-selection rules.
+ *
+ * Universal Priority:
+ * 1. Exact filesize
+ * 2. filesize_approx
+ * 3. Bitrate + duration calculation
+ * 4. Verified equivalent same-quality format fallback
+ * 5. Size unavailable
  *
  * @param {object|null|undefined} analyzedMedia
  * @param {string} [requestedQuality='best'] - Resolution string (e.g. '1080p') or 'best'
@@ -188,7 +303,18 @@ export function estimateMp4QualitySize(analyzedMedia, requestedQuality = 'best')
       hasFormatId(format)
   )
 
-  // 1. Prefer video-only MP4 with separate compatible audio
+  if (matchingVideos.length === 0) {
+    return 'Size unavailable'
+  }
+
+  const durationSeconds =
+    Number.isFinite(analyzedMedia.durationSeconds) && analyzedMedia.durationSeconds > 0
+      ? analyzedMedia.durationSeconds
+      : Number.isFinite(analyzedMedia.duration) && analyzedMedia.duration > 0
+        ? analyzedMedia.duration
+        : parseDurationString(analyzedMedia.duration_string)
+
+  // 1. Prefer video-only MP4 with separate compatible audio (following backend resolveMp4FormatSelector)
   const videoOnly = [...matchingVideos].reverse().find((format) => format.audioIncluded === false)
 
   const isPreferredAudio = (format) => {
@@ -213,24 +339,121 @@ export function estimateMp4QualitySize(analyzedMedia, requestedQuality = 'best')
     .reverse()
     .find((format) => format.audioIncluded === true)
 
+  // Scenario 1: Separate video + audio streams
   if (videoOnly && compatibleAudio) {
-    const vSize = Number(videoOnly.fileSize)
-    const aSize = Number(compatibleAudio.fileSize)
-    if (!Number.isFinite(vSize) || vSize <= 0 || !Number.isFinite(aSize) || aSize <= 0) {
-      return 'Size unavailable'
+    let videoBytes = null
+    let videoIsApprox = false
+
+    const vExact = validPositiveNumber(videoOnly.fileSize)
+    if (vExact) {
+      videoBytes = vExact
+      videoIsApprox = Boolean(videoOnly.isApproximate)
+    } else if (durationSeconds) {
+      const vBitrate =
+        validPositiveNumber(videoOnly.videoBitrateKbps) ??
+        validPositiveNumber(videoOnly.totalBitrateKbps)
+      if (vBitrate) {
+        videoBytes = (vBitrate * durationSeconds * 1000) / 8
+        videoIsApprox = true
+      }
     }
-    const totalBytes = vSize + aSize
-    const isApprox = Boolean(videoOnly.isApproximate || compatibleAudio.isApproximate)
-    const formatted = formatBytes(totalBytes)
-    return formatted ? (isApprox ? `~${formatted}` : formatted) : 'Size unavailable'
-  } else if (combinedVideo) {
-    const cSize = Number(combinedVideo.fileSize)
-    if (!Number.isFinite(cSize) || cSize <= 0) {
-      return 'Size unavailable'
+
+    // Equivalent same-quality format fallback (e.g. X Twitter HTTP format for HLS video)
+    if (!videoBytes) {
+      const equivVideo = findEquivalentVideoFormat(videoOnly, mp4Formats)
+      if (equivVideo) {
+        const equivSize = validPositiveNumber(equivVideo.fileSize)
+        if (equivSize) {
+          videoBytes = equivSize
+          videoIsApprox = true
+        } else if (durationSeconds) {
+          const equivBitrate =
+            validPositiveNumber(equivVideo.videoBitrateKbps) ??
+            validPositiveNumber(equivVideo.totalBitrateKbps)
+          if (equivBitrate) {
+            videoBytes = (equivBitrate * durationSeconds * 1000) / 8
+            videoIsApprox = true
+          }
+        }
+      }
     }
-    const isApprox = Boolean(combinedVideo.isApproximate)
-    const formatted = formatBytes(cSize)
-    return formatted ? (isApprox ? `~${formatted}` : formatted) : 'Size unavailable'
+
+    // Audio calculation
+    let audioBytes = null
+    let audioIsApprox = false
+
+    const aExact = validPositiveNumber(compatibleAudio.fileSize)
+    if (aExact) {
+      audioBytes = aExact
+      audioIsApprox = Boolean(compatibleAudio.isApproximate)
+    } else if (durationSeconds) {
+      const aBitrate =
+        validPositiveNumber(compatibleAudio.audioBitrateKbps) ??
+        validPositiveNumber(compatibleAudio.totalBitrateKbps)
+      if (aBitrate) {
+        audioBytes = (aBitrate * durationSeconds * 1000) / 8
+        audioIsApprox = true
+      }
+    }
+
+    if (videoBytes !== null && audioBytes !== null) {
+      const totalBytes = videoBytes + audioBytes
+      const isApprox = videoIsApprox || audioIsApprox
+      const formatted = formatBytes(totalBytes)
+      return formatted ? (isApprox ? `~${formatted}` : formatted) : 'Size unavailable'
+    }
+  }
+
+  // Scenario 2: Combined video/audio stream
+  if (combinedVideo) {
+    let combinedBytes = null
+    let combinedIsApprox = false
+
+    const cExact = validPositiveNumber(combinedVideo.fileSize)
+    if (cExact) {
+      combinedBytes = cExact
+      combinedIsApprox = Boolean(combinedVideo.isApproximate)
+    } else if (durationSeconds) {
+      const totalBitrate =
+        validPositiveNumber(combinedVideo.totalBitrateKbps) ??
+        (validPositiveNumber(combinedVideo.videoBitrateKbps) &&
+        validPositiveNumber(combinedVideo.audioBitrateKbps)
+          ? combinedVideo.videoBitrateKbps + combinedVideo.audioBitrateKbps
+          : null)
+
+      if (totalBitrate) {
+        combinedBytes = (totalBitrate * durationSeconds * 1000) / 8
+        combinedIsApprox = true
+      }
+    }
+
+    // Equivalent same-quality format fallback
+    if (!combinedBytes) {
+      const equivCombined = findEquivalentVideoFormat(combinedVideo, mp4Formats)
+      if (equivCombined) {
+        const equivSize = validPositiveNumber(equivCombined.fileSize)
+        if (equivSize) {
+          combinedBytes = equivSize
+          combinedIsApprox = true
+        } else if (durationSeconds) {
+          const equivBitrate =
+            validPositiveNumber(equivCombined.totalBitrateKbps) ??
+            (validPositiveNumber(equivCombined.videoBitrateKbps) &&
+            validPositiveNumber(equivCombined.audioBitrateKbps)
+              ? equivCombined.videoBitrateKbps + equivCombined.audioBitrateKbps
+              : null)
+          if (equivBitrate) {
+            combinedBytes = (equivBitrate * durationSeconds * 1000) / 8
+            combinedIsApprox = true
+          }
+        }
+      }
+    }
+
+    if (combinedBytes !== null) {
+      const formatted = formatBytes(combinedBytes)
+      return formatted ? (combinedIsApprox ? `~${formatted}` : formatted) : 'Size unavailable'
+    }
   }
 
   return 'Size unavailable'
@@ -254,7 +477,7 @@ export function estimateMp3BitrateSize(analyzedMedia, bitrateKbps) {
       ? analyzedMedia.durationSeconds
       : Number.isFinite(analyzedMedia.duration) && analyzedMedia.duration > 0
         ? analyzedMedia.duration
-        : null
+        : parseDurationString(analyzedMedia.duration_string)
 
   if (!durationSeconds) {
     return 'Size unavailable'

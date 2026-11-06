@@ -111,6 +111,201 @@ async function runProgressEtaRetryTests() {
     'Size unavailable',
     '1.5: Null media yields Size unavailable'
   )
+
+  // --- Dedicated Estimation Scenarios 1 - 7 ---
+
+  // Scenario 1: Exact MP4 file size (Combined 1080p with exact 18 MB fileSize)
+  const mediaExact = {
+    availableFormats: {
+      mp4Qualities: ['1080p'],
+      mp4Formats: [
+        {
+          formatId: 'c1080',
+          quality: '1080p',
+          height: 1080,
+          audioIncluded: true,
+          fileSize: 18000000,
+          isApproximate: false
+        }
+      ]
+    }
+  }
+  assert.equal(
+    estimateMp4QualitySize(mediaExact, '1080p'),
+    '17.2 MB',
+    'Scenario 1: Exact MP4 file size formats without tilde'
+  )
+
+  // Scenario 2: Approximate MP4 file size (Combined 1080p with approximate 18 MB fileSize)
+  const mediaApprox = {
+    availableFormats: {
+      mp4Qualities: ['1080p'],
+      mp4Formats: [
+        {
+          formatId: 'c1080',
+          quality: '1080p',
+          height: 1080,
+          audioIncluded: true,
+          fileSize: 18000000,
+          isApproximate: true
+        }
+      ]
+    }
+  }
+  assert.equal(
+    estimateMp4QualitySize(mediaApprox, '1080p'),
+    '~17.2 MB',
+    'Scenario 2: Approximate MP4 file size includes tilde'
+  )
+
+  // Scenario 3: Combined MP4 bitrate estimation
+  // (2000 kbps * 60s * 1000) / 8 = 15,000,000 bytes = ~14.3 MB
+  const mediaCombinedBitrate = {
+    durationSeconds: 60,
+    availableFormats: {
+      mp4Qualities: ['720p'],
+      mp4Formats: [
+        {
+          formatId: 'c720',
+          quality: '720p',
+          height: 720,
+          audioIncluded: true,
+          fileSize: null,
+          totalBitrateKbps: 2000
+        }
+      ]
+    }
+  }
+  assert.equal(
+    estimateMp4QualitySize(mediaCombinedBitrate, '720p'),
+    '~14.3 MB',
+    'Scenario 3: Combined MP4 bitrate estimation'
+  )
+
+  // Scenario 4: Separate video + audio bitrate estimation
+  // Video: (2500 kbps * 60s * 1000) / 8 = 18,750,000 bytes
+  // Audio: (128 kbps * 60s * 1000) / 8 = 960,000 bytes
+  // Total: 19,710,000 bytes = ~18.8 MB
+  const mediaSeparateBitrate = {
+    durationSeconds: 60,
+    availableFormats: {
+      mp4Qualities: ['1080p'],
+      mp4Formats: [
+        {
+          formatId: 'v1080',
+          quality: '1080p',
+          height: 1080,
+          audioIncluded: false,
+          fileSize: null,
+          videoBitrateKbps: 2500
+        }
+      ],
+      audioFormats: [
+        {
+          formatId: 'a128',
+          extension: 'm4a',
+          audioCodec: 'aac',
+          fileSize: null,
+          audioBitrateKbps: 128
+        }
+      ]
+    }
+  }
+  assert.equal(
+    estimateMp4QualitySize(mediaSeparateBitrate, '1080p'),
+    '~18.8 MB',
+    'Scenario 4: Separate video + audio bitrate estimation'
+  )
+
+  // Scenario 5: Equivalent same-quality format fallback (X real-world test case)
+  // Selected video: hls-11347 (1920p, no size, no bitrate)
+  // Equivalent video: http-10368 (1920p, fileSize: 19,470,000, approx)
+  // Audio: hls-audio-128000-Audio (128 kbps, 15s = 240,000 bytes)
+  // Total: 19,470,000 + 240,000 = 19,710,000 bytes = ~18.8 MB
+  const mediaXRealWorld = {
+    durationSeconds: 15,
+    availableFormats: {
+      mp4Qualities: ['1920p'],
+      mp4Formats: [
+        {
+          formatId: 'http-10368',
+          quality: '1920p',
+          height: 1920,
+          audioIncluded: false,
+          fileSize: 19470000,
+          isApproximate: true
+        },
+        {
+          formatId: 'hls-11347',
+          quality: '1920p',
+          height: 1920,
+          audioIncluded: false,
+          fileSize: null,
+          isApproximate: false
+        }
+      ],
+      audioFormats: [
+        {
+          formatId: 'hls-audio-128000-Audio',
+          extension: 'mp4',
+          audioCodec: 'aac',
+          fileSize: null,
+          audioBitrateKbps: 128
+        }
+      ]
+    }
+  }
+  assert.equal(
+    estimateMp4QualitySize(mediaXRealWorld, '1920p'),
+    '~18.8 MB',
+    'Scenario 5: Equivalent same-quality format fallback (X Twitter real-world case)'
+  )
+
+  // Scenario 6: Missing file size and missing bitrate
+  const mediaMissingInfo = {
+    durationSeconds: 60,
+    availableFormats: {
+      mp4Qualities: ['1080p'],
+      mp4Formats: [
+        {
+          formatId: 'c1080',
+          quality: '1080p',
+          height: 1080,
+          audioIncluded: true,
+          fileSize: null,
+          totalBitrateKbps: null
+        }
+      ]
+    }
+  }
+  assert.equal(
+    estimateMp4QualitySize(mediaMissingInfo, '1080p'),
+    'Size unavailable',
+    'Scenario 6: Missing file size and missing bitrate yields Size unavailable'
+  )
+
+  // Scenario 7: Missing duration when bitrate is present
+  const mediaMissingDuration = {
+    durationSeconds: null,
+    availableFormats: {
+      mp4Qualities: ['1080p'],
+      mp4Formats: [
+        {
+          formatId: 'c1080',
+          quality: '1080p',
+          height: 1080,
+          audioIncluded: true,
+          fileSize: null,
+          totalBitrateKbps: 2000
+        }
+      ]
+    }
+  }
+  assert.equal(
+    estimateMp4QualitySize(mediaMissingDuration, '1080p'),
+    'Size unavailable',
+    'Scenario 7: Missing duration with bitrate yields Size unavailable'
+  )
   console.log('✓ Section 1 Passed: MP4 quality file size estimation verified.\n')
 
   // --------------------------------------------------------------------------
@@ -139,6 +334,38 @@ async function runProgressEtaRetryTests() {
     '2.4: Missing duration'
   )
   assert.equal(estimateMp3BitrateSize(null, 192), 'Size unavailable', '2.5: Null media')
+
+  // --- Dedicated Estimation Scenarios 8 - 10 (Facebook 16:10 = 970s duration) ---
+  const fbMedia = { durationSeconds: 970 }
+
+  // Scenario 8: MP3 128 kbps (970s * 128 * 1000 / 8 = 15,520,000 bytes = ~14.8 MB)
+  assert.equal(
+    estimateMp3BitrateSize(fbMedia, 128),
+    '~14.8 MB',
+    'Scenario 8: MP3 128 kbps calculation (970s)'
+  )
+
+  // Scenario 9: MP3 192 kbps (970s * 192 * 1000 / 8 = 23,280,000 bytes = ~22.2 MB)
+  assert.equal(
+    estimateMp3BitrateSize(fbMedia, 192),
+    '~22.2 MB',
+    'Scenario 9: MP3 192 kbps calculation (970s)'
+  )
+
+  // Scenario 10: MP3 320 kbps (970s * 320 * 1000 / 8 = 38,800,000 bytes = ~37 MB)
+  assert.equal(
+    estimateMp3BitrateSize(fbMedia, 320),
+    '~37 MB',
+    'Scenario 10: MP3 320 kbps calculation (970s)'
+  )
+
+  // Fallback to duration_string in MP3 calculation
+  const mediaWithDurString = { duration_string: '16:10' }
+  assert.equal(
+    estimateMp3BitrateSize(mediaWithDurString, 128),
+    '~14.8 MB',
+    'Duration string fallback: 16:10 parsed to 970s for 128 kbps MP3'
+  )
   console.log('✓ Section 2 Passed: MP3 bitrate output size estimation verified.\n')
 
   // --------------------------------------------------------------------------

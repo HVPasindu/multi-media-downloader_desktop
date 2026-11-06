@@ -29,6 +29,10 @@ import {
   getJobRetryState
 } from '../src/main/backend/services/networkRecoveryService.js'
 import { parseMediaMetadata } from '../src/main/backend/services/mediaAnalyzerService.js'
+import {
+  estimateMp4QualitySize,
+  estimateMp3BitrateSize
+} from '../src/renderer/src/utils/mediaMetadata.js'
 import defineMediaItem from '../src/main/backend/models/MediaItem.js'
 import defineDownloadJob from '../src/main/backend/models/DownloadJob.js'
 import defineDownloadFile from '../src/main/backend/models/DownloadFile.js'
@@ -670,6 +674,299 @@ async function runPlatformDownloadTests() {
     console.log('✓ Malformed metadata strictly rejected with descriptive error')
 
     // ------------------------------------------------------------------------
+    // TEST 2.1: Advanced Platform Metadata, Bitrate & Pre-Download File Size Estimation
+    // (Facebook, Instagram, X/Twitter real-world fixtures)
+    // ------------------------------------------------------------------------
+    console.log(
+      '\n--- 2.1 Testing Advanced Platform Metadata & Bitrate/Duration File Size Estimation ---'
+    )
+
+    // A. Facebook tests:
+    // A1. Format without filesize, but with bitrate and duration
+    const fbNoFilesizeFixture = {
+      id: 'fb-nofilesize-1',
+      title: 'Facebook Video Bitrate Only',
+      duration: 95,
+      formats: [
+        {
+          format_id: 'hd',
+          ext: 'mp4',
+          height: 720,
+          vcodec: 'h264',
+          acodec: 'aac',
+          tbr: 2000
+        }
+      ]
+    }
+    const fbNoFilesizeAnalysis = parseSyntheticMetadata(
+      fbNoFilesizeFixture,
+      'facebook',
+      'https://www.facebook.com/watch?v=1'
+    )
+    assert.strictEqual(
+      fbNoFilesizeAnalysis.availableFormats.mp4Formats[0].fileSize,
+      null,
+      'Facebook without filesize should have null fileSize'
+    )
+    assert.strictEqual(
+      fbNoFilesizeAnalysis.availableFormats.mp4Formats[0].totalBitrateKbps,
+      2000,
+      'Facebook totalBitrateKbps should be parsed'
+    )
+    assert.strictEqual(
+      fbNoFilesizeAnalysis.availableFormats.mp4Formats[0].audioIncluded,
+      true,
+      'Facebook combined stream should have audioIncluded: true'
+    )
+    // (2000 * 95 * 1000) / 8 = 23,750,000 bytes = ~22.6 MB
+    const fbEstimatedSize = estimateMp4QualitySize(fbNoFilesizeAnalysis, '720p')
+    assert.strictEqual(
+      fbEstimatedSize,
+      '~22.6 MB',
+      'Facebook bitrate + duration should estimate ~22.6 MB'
+    )
+
+    // A2. Format with filesize_approx
+    const fbApproxFixture = {
+      id: 'fb-approx-1',
+      title: 'Facebook Video Approx Size',
+      duration: 95,
+      formats: [
+        {
+          format_id: 'hd',
+          ext: 'mp4',
+          height: 720,
+          vcodec: 'h264',
+          acodec: 'aac',
+          filesize_approx: 15000000
+        }
+      ]
+    }
+    const fbApproxAnalysis = parseSyntheticMetadata(
+      fbApproxFixture,
+      'facebook',
+      'https://www.facebook.com/watch?v=2'
+    )
+    assert.strictEqual(
+      fbApproxAnalysis.availableFormats.mp4Formats[0].fileSize,
+      15000000,
+      'Facebook filesize_approx should be adopted'
+    )
+    assert.strictEqual(
+      fbApproxAnalysis.availableFormats.mp4Formats[0].isApproximate,
+      true,
+      'Facebook approx size should be flagged isApproximate'
+    )
+    const fbApproxSize = estimateMp4QualitySize(fbApproxAnalysis, '720p')
+    assert.strictEqual(fbApproxSize, '~14.3 MB', 'Facebook approx size should format as ~14.3 MB')
+
+    // A3. MP3 bitrate estimates for Facebook video (16:10 = 970 seconds)
+    const fb970sMedia = { durationSeconds: 970, audioOptions: ['mp3'] }
+    assert.strictEqual(
+      estimateMp3BitrateSize(fb970sMedia, 128),
+      '~14.8 MB',
+      'Facebook 970s 128 kbps should estimate ~14.8 MB'
+    )
+    assert.strictEqual(
+      estimateMp3BitrateSize(fb970sMedia, 192),
+      '~22.2 MB',
+      'Facebook 970s 192 kbps should estimate ~22.2 MB'
+    )
+    assert.strictEqual(
+      estimateMp3BitrateSize(fb970sMedia, 320),
+      '~37 MB',
+      'Facebook 970s 320 kbps should estimate ~37 MB'
+    )
+    console.log('✓ Facebook: formats without filesize, approx size, and MP3 calculations verified')
+
+    // B. Instagram tests:
+    // B1. Missing exact and approximate filesize, bitrate-based MP4 estimation
+    const igBitrateFixture = {
+      id: 'ig-bitrate-1',
+      title: 'Instagram Reel Bitrate Only',
+      duration: 30,
+      formats: [
+        {
+          format_id: '0',
+          ext: 'mp4',
+          height: 1080,
+          vcodec: 'h264',
+          acodec: 'aac',
+          tbr: 2500
+        }
+      ]
+    }
+    const igBitrateAnalysis = parseSyntheticMetadata(
+      igBitrateFixture,
+      'instagram',
+      'https://www.instagram.com/reel/1'
+    )
+    // (2500 * 30 * 1000) / 8 = 9,375,000 bytes = ~8.9 MB
+    assert.strictEqual(
+      estimateMp4QualitySize(igBitrateAnalysis, '1080p'),
+      '~8.9 MB',
+      'Instagram bitrate + duration should estimate ~8.9 MB'
+    )
+
+    // B2. Duration extracted from duration_string (e.g. "0:30")
+    const igDurationStringFixture = {
+      id: 'ig-durstr-1',
+      title: 'Instagram Reel Duration String',
+      duration: null,
+      duration_string: '0:30',
+      formats: [
+        {
+          format_id: '0',
+          ext: 'mp4',
+          height: 1080,
+          vcodec: 'h264',
+          acodec: 'aac',
+          tbr: 2500
+        }
+      ]
+    }
+    const igDurStrAnalysis = parseSyntheticMetadata(
+      igDurationStringFixture,
+      'instagram',
+      'https://www.instagram.com/reel/2'
+    )
+    assert.strictEqual(
+      igDurStrAnalysis.durationSeconds,
+      30,
+      'Instagram duration_string "0:30" should parse to 30 seconds'
+    )
+    assert.strictEqual(
+      estimateMp4QualitySize(igDurStrAnalysis, '1080p'),
+      '~8.9 MB',
+      'Instagram with duration_string should estimate ~8.9 MB'
+    )
+    // (30 * 128 * 1000) / 8 = 480,000 bytes = ~468.8 KB
+    assert.strictEqual(
+      estimateMp3BitrateSize(igDurStrAnalysis, 128),
+      '~468.8 KB',
+      'Instagram with duration_string should estimate ~468.8 KB for 128 kbps MP3'
+    )
+
+    // B3. Duration completely unavailable
+    const igNoDurationFixture = {
+      id: 'ig-nodur-1',
+      title: 'Instagram Reel No Duration',
+      duration: null,
+      duration_string: null,
+      formats: [
+        {
+          format_id: '0',
+          ext: 'mp4',
+          height: 1080,
+          vcodec: 'h264',
+          acodec: 'aac',
+          tbr: 2500
+        }
+      ]
+    }
+    const igNoDurAnalysis = parseSyntheticMetadata(
+      igNoDurationFixture,
+      'instagram',
+      'https://www.instagram.com/reel/3'
+    )
+    assert.strictEqual(
+      igNoDurAnalysis.durationSeconds,
+      null,
+      'Instagram without duration or duration_string should have null durationSeconds'
+    )
+    assert.strictEqual(
+      estimateMp4QualitySize(igNoDurAnalysis, '1080p'),
+      'Size unavailable',
+      'Instagram without duration cannot estimate bitrate-based MP4'
+    )
+    assert.strictEqual(
+      estimateMp3BitrateSize(igNoDurAnalysis, 128),
+      'Size unavailable',
+      'Instagram without duration cannot estimate MP3 size'
+    )
+    console.log(
+      '✓ Instagram: missing filesize, duration_string fallback, and unavailable duration verified'
+    )
+
+    // C. X / Twitter Real-World Stream tests:
+    // C1. Verify HTTP format with audio_ext: 'none' is classified as video-only
+    const xHttp1920 = xRealAnalysis.availableFormats.mp4Formats.find(
+      (f) => f.formatId === 'http-10368'
+    )
+    assert.ok(xHttp1920, 'http-10368 must exist in mp4Formats')
+    assert.strictEqual(
+      xHttp1920.audioIncluded,
+      false,
+      'X HTTP format with audio_ext: "none" MUST be classified as video-only (audioIncluded: false)'
+    )
+
+    // C2. Verify HLS format with audio_ext: 'none' is video-only
+    const xHls1920 = xRealAnalysis.availableFormats.mp4Formats.find(
+      (f) => f.formatId === 'hls-11347'
+    )
+    assert.ok(xHls1920, 'hls-11347 must exist in mp4Formats')
+    assert.strictEqual(
+      xHls1920.audioIncluded,
+      false,
+      'X HLS video format with audio_ext: "none" MUST be classified as video-only'
+    )
+
+    // C3. Verify HLS audio formats detected separately
+    assert.strictEqual(
+      xRealAnalysis.availableFormats.audioFormats.length,
+      3,
+      'X should detect 3 separate HLS audio formats'
+    )
+    const xAudio128 = xRealAnalysis.availableFormats.audioFormats.find(
+      (f) => f.formatId === 'hls-audio-128000-Audio'
+    )
+    assert.ok(xAudio128, 'hls-audio-128000-Audio must exist in audioFormats')
+    assert.strictEqual(
+      xAudio128.audioBitrateKbps,
+      128,
+      'hls-audio-128000-Audio should preserve 128 kbps bitrate'
+    )
+
+    // C4. Verify Equivalent same-quality format fallback for size estimation:
+    // Selected format: hls-11347 (video-only, no size) + hls-audio-128000-Audio (128 kbps, 15s = 240,000 bytes)
+    // Equivalent video format: http-10368 (19,470,000 bytes, approx)
+    // Combined estimate: 19,470,000 + 240,000 = 19,710,000 bytes = ~18.8 MB
+    const x1920Size = estimateMp4QualitySize(xRealAnalysis, '1920p')
+    assert.strictEqual(
+      x1920Size,
+      '~18.8 MB',
+      'X 1920p should estimate ~18.8 MB via equivalent HTTP video size + HLS audio bitrate'
+    )
+
+    const x1280Size = estimateMp4QualitySize(xRealAnalysis, '1280p')
+    assert.strictEqual(
+      x1280Size,
+      '~4.1 MB',
+      'X 1280p should estimate ~4.1 MB via equivalent HTTP video size + audio'
+    )
+
+    // C5. Verify X MP3 estimation (15s duration):
+    // (15 * 128 * 1000) / 8 = 240,000 bytes = ~234.4 KB
+    assert.strictEqual(
+      estimateMp3BitrateSize(xRealAnalysis, 128),
+      '~234.4 KB',
+      'X 15s duration 128 kbps MP3 should estimate ~234.4 KB'
+    )
+    assert.strictEqual(
+      estimateMp3BitrateSize(xRealAnalysis, 192),
+      '~351.6 KB',
+      'X 15s duration 192 kbps MP3 should estimate ~351.6 KB'
+    )
+    assert.strictEqual(
+      estimateMp3BitrateSize(xRealAnalysis, 320),
+      '~585.9 KB',
+      'X 15s duration 320 kbps MP3 should estimate ~585.9 KB'
+    )
+    console.log(
+      '✓ X (Twitter): video-only audio_ext:none classification, equivalent size fallback, and MP3 verified'
+    )
+
+    // ------------------------------------------------------------------------
     // TEST 3: MP4 Compatibility & Stream Selector Resolution
     // ------------------------------------------------------------------------
     console.log('\n--- 3. Testing MP4 Format Selector Resolution ---')
@@ -732,14 +1029,37 @@ async function runPlatformDownloadTests() {
     assert.strictEqual(xReal568.selector, 'hls-1666+hls-audio-128000-Audio')
     assert.strictEqual(xReal568.type, 'separate_merge')
 
-    // Progressive combined fallback when separate audio streams are absent
-    const xCombinedOnlyFormats = {
-      ...xRealAnalysis.availableFormats,
-      audioFormats: [],
-      mp4Formats: xRealAnalysis.availableFormats.mp4Formats.filter((f) => f.audioIncluded)
+    // Progressive combined fallback when separate audio streams are absent.
+    // Tested with a genuinely combined format containing actual audio metadata.
+    const xCombinedFixture = {
+      id: '2115857427824607233',
+      title: 'A Q D A S - Progressive Combined',
+      thumbnail: 'https://pbs.twimg.com/media/test_real.jpg',
+      duration: 15,
+      formats: [
+        {
+          format_id: 'http-10368-combined',
+          ext: 'mp4',
+          height: 1920,
+          width: 1080,
+          protocol: 'https',
+          vcodec: 'h264',
+          acodec: 'aac',
+          filesize_approx: 19470000
+        }
+      ]
     }
-    const xFallback1920 = resolveMp4FormatSelector(xCombinedOnlyFormats, '1920p', 'twitter')
-    assert.strictEqual(xFallback1920.selector, 'http-10368')
+    const xCombinedAnalysis = parseSyntheticMetadata(
+      xCombinedFixture,
+      'twitter',
+      'https://x.com/user/status/2115857427824607233'
+    )
+    const xFallback1920 = resolveMp4FormatSelector(
+      xCombinedAnalysis.availableFormats,
+      '1920p',
+      'twitter'
+    )
+    assert.strictEqual(xFallback1920.selector, 'http-10368-combined')
     assert.strictEqual(xFallback1920.type, 'combined_stream')
     console.log(
       '✓ X (Twitter) real-world MP4 selector: correctly selects merged HLS video+audio and progressive fallback'

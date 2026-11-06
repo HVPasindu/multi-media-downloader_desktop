@@ -302,6 +302,56 @@ export async function analyzeMedia(sourceUrl) {
 }
 
 /**
+ * Safely parses and validates a positive numeric value.
+ * Rejects null, undefined, empty strings, NaN, Infinity, and numbers <= 0.
+ *
+ * @param {any} val
+ * @returns {number|null}
+ */
+export function validPositiveNumber(val) {
+  if (val === null || val === undefined || val === '') return null
+  const num = Number(val)
+  if (!Number.isFinite(num) || num <= 0) return null
+  return num
+}
+
+/**
+ * Safely parses a media duration string (e.g. "16:10", "0:30", "1:05:30") into total seconds.
+ *
+ * @param {string|any} durationStr
+ * @returns {number|null} Total seconds or null if invalid
+ */
+export function parseDurationString(durationStr) {
+  if (typeof durationStr !== 'string') return null
+  const trimmed = durationStr.trim()
+  if (!trimmed) return null
+
+  const parts = trimmed.split(':')
+  if (parts.length < 2 || parts.length > 3) return null
+
+  const numbers = []
+  for (const part of parts) {
+    const p = part.trim()
+    if (!/^\d+$/.test(p)) return null
+    numbers.push(parseInt(p, 10))
+  }
+
+  if (parts.length === 2) {
+    const [minutes, seconds] = numbers
+    if (seconds >= 60 && minutes > 0) return null
+    return minutes * 60 + seconds
+  }
+
+  if (parts.length === 3) {
+    const [hours, minutes, seconds] = numbers
+    if (minutes >= 60 || seconds >= 60) return null
+    return hours * 3600 + minutes * 60 + seconds
+  }
+
+  return null
+}
+
+/**
  * Parses and validates raw yt-dlp metadata JSON object into structured media metadata.
  *
  * @param {object} metadata - Raw yt-dlp metadata object
@@ -367,7 +417,10 @@ export function parseMediaMetadata(metadata, platform, sourceUrl) {
   const hasAudioTrack = (format) => {
     if (!format || typeof format !== 'object') return false
     if (isAudioOnlyFormat(format)) return true
-    const acodec = typeof format.acodec === 'string' ? format.acodec.toLowerCase() : ''
+    const acodec = typeof format.acodec === 'string' ? format.acodec.toLowerCase().trim() : ''
+    const audioExt =
+      typeof format.audio_ext === 'string' ? format.audio_ext.toLowerCase().trim() : ''
+    if (acodec === 'none' || audioExt === 'none') return false
     if (acodec && acodec !== 'none') return true
     if (
       (!format.vcodec || format.vcodec === 'none') &&
@@ -395,6 +448,39 @@ export function parseMediaMetadata(metadata, platform, sourceUrl) {
 
   const audioOptions = hasAudioStream ? ['mp3'] : []
 
+  // Check whether an MP4 video format includes audio track
+  const isAudioIncluded = (format) => {
+    if (!format || typeof format !== 'object') return false
+    const acodec = typeof format.acodec === 'string' ? format.acodec.toLowerCase().trim() : ''
+    const audioExt =
+      typeof format.audio_ext === 'string' ? format.audio_ext.toLowerCase().trim() : ''
+
+    // 1. Explicit no-audio indicators strictly take precedence
+    if (acodec === 'none' || audioExt === 'none') {
+      return false
+    }
+
+    // 2. Explicit audio codec present (and not 'none')
+    if (acodec && acodec !== 'none') {
+      return true
+    }
+
+    // 3. Explicit audio extension present (and not 'none')
+    if (audioExt && audioExt !== 'none') {
+      return true
+    }
+
+    // 4. Use progressive-stream fallback only when explicit stream information is absent
+    if (
+      hasAudioStream &&
+      (format.protocol === 'https' || format.protocol === 'http' || !format.protocol)
+    ) {
+      return true
+    }
+
+    return false
+  }
+
   // Identify actual downloadable source formats
   const validFormats = formats.filter(
     (format) => format && typeof format === 'object' && !Array.isArray(format)
@@ -403,18 +489,29 @@ export function parseMediaMetadata(metadata, platform, sourceUrl) {
   // Audio-only source formats
   const audioFormats = validFormats
     .filter((format) => isAudioOnlyFormat(format))
-    .map((format) => ({
-      formatId: format.format_id ?? null,
-      extension: format.ext ?? null,
-      audioCodec:
+    .map((format) => {
+      const audioCodec =
         typeof format.acodec === 'string' && format.acodec !== 'none'
           ? format.acodec
           : format.audio_ext === 'mp4' || format.ext === 'mp4' || format.ext === 'm4a'
             ? 'aac'
-            : null,
-      fileSize: format.filesize ?? format.filesize_approx ?? null,
-      isApproximate: !format.filesize && Boolean(format.filesize_approx)
-    }))
+            : null
+
+      const exactSize = validPositiveNumber(format.filesize)
+      const approximateSize = validPositiveNumber(format.filesize_approx)
+      const fileSize = exactSize ?? approximateSize
+      const isApproximate = !exactSize && Boolean(approximateSize)
+
+      return {
+        formatId: format.format_id ?? null,
+        extension: format.ext ?? null,
+        audioCodec,
+        fileSize,
+        isApproximate,
+        audioBitrateKbps: validPositiveNumber(format.abr) ?? validPositiveNumber(format.tbr),
+        protocol: format.protocol ?? null
+      }
+    })
 
   const hasSeparateAudio = audioFormats.length > 0
 
@@ -425,32 +522,32 @@ export function parseMediaMetadata(metadata, platform, sourceUrl) {
       if (!isVideoFormat(format)) return false
       if (!Number.isInteger(format.height) || format.height <= 0) return false
 
-      const acodec = typeof format.acodec === 'string' ? format.acodec.toLowerCase() : ''
-      const isExplicitCombined = Boolean(acodec && acodec !== 'none')
-      const isProgressiveCombined =
-        !acodec &&
-        hasAudioStream &&
-        (format.protocol === 'https' || format.protocol === 'http' || !format.protocol)
-
-      return isExplicitCombined || isProgressiveCombined || hasSeparateAudio
+      const audioIncluded = isAudioIncluded(format)
+      return audioIncluded || hasSeparateAudio
     })
     .map((format) => {
-      const acodec = typeof format.acodec === 'string' ? format.acodec.toLowerCase() : ''
-      const isExplicitCombined = Boolean(acodec && acodec !== 'none')
-      const isProgressiveCombined =
-        !acodec &&
-        hasAudioStream &&
-        (format.protocol === 'https' || format.protocol === 'http' || !format.protocol)
-      const audioIncluded = isExplicitCombined || isProgressiveCombined
+      const audioIncluded = isAudioIncluded(format)
+
+      const exactSize = validPositiveNumber(format.filesize)
+      const approximateSize = validPositiveNumber(format.filesize_approx)
+      const fileSize = exactSize ?? approximateSize
+      const isApproximate = !exactSize && Boolean(approximateSize)
 
       return {
         formatId: format.format_id ?? null,
         quality: `${format.height}p`,
         height: format.height,
-        videoCodec: format.vcodec ?? 'h264',
+        extension: format.ext ?? null,
+        videoCodec: format.vcodec ?? null,
+        audioCodec: format.acodec ?? null,
         audioIncluded,
-        fileSize: format.filesize ?? format.filesize_approx ?? null,
-        isApproximate: !format.filesize && Boolean(format.filesize_approx)
+        fileSize,
+        isApproximate,
+        videoBitrateKbps: validPositiveNumber(format.vbr),
+        audioBitrateKbps: validPositiveNumber(format.abr),
+        totalBitrateKbps: validPositiveNumber(format.tbr),
+        protocol: format.protocol ?? null,
+        width: format.width ?? null
       }
     })
 
@@ -474,7 +571,7 @@ export function parseMediaMetadata(metadata, platform, sourceUrl) {
     durationSeconds:
       Number.isFinite(metadata.duration) && metadata.duration >= 0
         ? Math.floor(metadata.duration)
-        : null,
+        : parseDurationString(metadata.duration_string),
     videoQualities,
     audioOptions,
     availableFormats
