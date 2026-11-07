@@ -568,7 +568,12 @@ export default function DownloaderPage() {
         }
       } catch (err) {
         if (isMounted) {
-          setFolderError(err?.message || 'Unable to retrieve saved download folder.')
+          const safeErrorInfo = getSafeFriendlyErrorInfo(
+            err,
+            'Unable to retrieve saved download folder.'
+          )
+
+          setFolderError(safeErrorInfo.message)
         }
       } finally {
         if (isMounted) {
@@ -592,7 +597,9 @@ export default function DownloaderPage() {
         setDownloadFolder(selected)
       }
     } catch (err) {
-      setFolderError(err?.message || 'Failed to update download folder.')
+      const safeErrorInfo = getSafeFriendlyErrorInfo(err, 'Failed to update download folder.')
+
+      setFolderError(safeErrorInfo.message)
     }
   }
 

@@ -644,6 +644,92 @@ async function runStep14Tests() {
       )
     }
 
+    // 6.4b Task 01: JSON Sensitive Credential Detection Tests
+    const jsonSensitiveKeys = [
+      'po_token',
+      'visitor_data',
+      'session_id',
+      'auth_token',
+      'access_token',
+      'refresh_token',
+      'api_key',
+      'client_secret',
+      'password',
+      'authorization',
+      'cookie',
+      'set-cookie',
+      'signature',
+      'sig',
+      'SAPISID',
+      '__Secure-3PSID',
+      'SID',
+      'HSID',
+      'SSID',
+      'APISID',
+      'LOGIN_INFO'
+    ]
+
+    for (const key of jsonSensitiveKeys) {
+      const secret = `json-secret-${key}`
+      const payload = JSON.stringify({ [key]: secret })
+
+      assert.equal(
+        containsUnsafeErrorDetails(payload),
+        true,
+        `JSON credential must be detected: ${key}`
+      )
+
+      const safeInfo = getSafeFriendlyErrorInfo(payload)
+
+      assert.ok(
+        !safeInfo.message.includes(secret),
+        `JSON credential must never appear in the user message: ${key}`
+      )
+    }
+
+    // Additional tests: nested JSON, whitespace, Error objects, and escaped strings
+    const nestedJson = JSON.stringify({ error: { details: { po_token: 'nested-token-xyz' } } })
+    assert.equal(containsUnsafeErrorDetails(nestedJson), true, 'Nested JSON token must be detected')
+    assert.ok(
+      !getSafeFriendlyErrorInfo(nestedJson).message.includes('nested-token-xyz'),
+      'Nested token must not appear in safe message'
+    )
+
+    const whitespaceJson = '{ "po_token"  :  "whitespace-token-123" }'
+    assert.equal(
+      containsUnsafeErrorDetails(whitespaceJson),
+      true,
+      'JSON with whitespace must be detected'
+    )
+    assert.ok(
+      !getSafeFriendlyErrorInfo(whitespaceJson).message.includes('whitespace-token-123'),
+      'Whitespace token must not appear in safe message'
+    )
+
+    const errorObjWithJson = new Error(
+      'Failed to complete request: {"auth_token":"bearer-tok-999"}'
+    )
+    assert.equal(
+      containsUnsafeErrorDetails(errorObjWithJson.message),
+      true,
+      'Error object with JSON message must be detected'
+    )
+    assert.ok(
+      !getSafeFriendlyErrorInfo(errorObjWithJson).message.includes('bearer-tok-999'),
+      'Token from Error object must not appear in safe message'
+    )
+
+    const escapedValJson = '{"password":"secret\\"escaped\\"val"}'
+    assert.equal(
+      containsUnsafeErrorDetails(escapedValJson),
+      true,
+      'JSON with escaped characters must be detected'
+    )
+    assert.ok(
+      !getSafeFriendlyErrorInfo(escapedValJson).message.includes('escaped'),
+      'Escaped password value must not appear in safe message'
+    )
+
     // 6.5 Safe fallback preservation
     const safeFallbackRes = getSafeFriendlyErrorInfo(
       'TypeError: internal failure',
@@ -743,6 +829,26 @@ async function runStep14Tests() {
     assert.ok(
       !downloaderPageSource.includes("showError('Clear Error', err?.message"),
       'DownloaderPage must not pass raw err.message to showError'
+    )
+    assert.ok(
+      !downloaderPageSource.includes('setFolderError(err?.message'),
+      'DownloaderPage must not set raw err?.message in setFolderError'
+    )
+    assert.ok(
+      downloaderPageSource.includes("'Unable to retrieve saved download folder.'"),
+      'DownloaderPage must use safe fallback for loadSavedFolder'
+    )
+    assert.ok(
+      downloaderPageSource.includes("'Failed to update download folder.'"),
+      'DownloaderPage must use safe fallback for handleChooseFolder'
+    )
+    const folderErrorSetOccurrences = (
+      downloaderPageSource.match(/setFolderError\(safeErrorInfo\.message\)/g) || []
+    ).length
+    assert.equal(
+      folderErrorSetOccurrences,
+      2,
+      'DownloaderPage must set safeErrorInfo.message in both folder error handlers'
     )
 
     // 6.11 Main process startup dialog safety audit (Task 03)

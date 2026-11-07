@@ -263,12 +263,16 @@ export function getFriendlyErrorInfo(errorOrCode, fallbackMessage = null) {
 const SENSITIVE_VALUE_PATTERN =
   /(?:^|[?&;,\s"'`([])(?:po[\s_-]?token|visitor[\s_-]?data|session[\s_-]?id|auth[\s_-]?token|access[\s_-]?token|refresh[\s_-]?token|api[\s_-]?key|client[\s_-]?secret|password|authorization|cookie|set-cookie|signature|sig|SAPISID|__Secure-3PSID|SID|HSID|SSID|APISID|LOGIN_INFO)\s*[:=]\s*["']?[^&\s,;"'`)]+/i
 
+const JSON_SENSITIVE_VALUE_PATTERN =
+  /(["'])(?:po[\s_-]?token|visitor[\s_-]?data|session[\s_-]?id|auth[\s_-]?token|access[\s_-]?token|refresh[\s_-]?token|api[\s_-]?key|client[\s_-]?secret|password|authorization|cookie|set-cookie|signature|sig|SAPISID|__Secure-3PSID|SID|HSID|SSID|APISID|LOGIN_INFO)\1\s*:\s*(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^,}\]\s]+)/i
+
 const UNSAFE_ERROR_PATTERNS = [
   /\b(?:node_modules|node:internal|Sequelize\w*Error|SQLITE_[A-Z_]+|SQLSTATE|TypeError|ReferenceError|SyntaxError)\b/i,
   /(?:^|\n)\s*at\s+.+:\d+:\d+/i,
   /\bBearer\s+[A-Za-z0-9._~+/-]{8,}/i,
   /\b(?:SELECT\s+[\s\S]+?\s+FROM|INSERT\s+INTO|UPDATE\s+\S+\s+SET|DELETE\s+FROM)\b/i,
   SENSITIVE_VALUE_PATTERN,
+  JSON_SENSITIVE_VALUE_PATTERN,
   /file:\/\/\/?/i,
   /(?:^|[=:,(["'\s])(?:[A-Za-z]:[\\/]|\\\\[^\\/\s]+\\[^\\/\s]+)/i,
   /(?:^|[=:,(["'\s])(?!(?:https?|ftp):\/\/)\/(?:tmp|root|opt|srv|run|proc|sys|dev|etc|var|usr|Volumes|Applications|Users|home|private)(?:[\\/\s"'`),;:]|$)/i,
