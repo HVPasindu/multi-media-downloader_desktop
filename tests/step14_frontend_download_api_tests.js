@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import path from 'node:path'
 import fs from 'node:fs/promises'
+import { pathToFileURL } from 'node:url'
 import {
   validateHistoryFilters,
   listDownloadHistory,
@@ -16,13 +17,17 @@ import {
   getSafeFriendlyErrorInfo,
   containsUnsafeErrorDetails,
   extractErrorCode,
-  extractCleanMessage
+  extractCleanMessage,
+  sanitizeStartupStatus
 } from '../src/renderer/src/utils/errorPresentation.js'
 import {
   getRetryButtonState,
   createRetryGuard
 } from '../src/renderer/src/utils/retryButtonState.js'
-import { registerDownloadFileHandlers } from '../src/main/ipc/downloadFileHandlers.js'
+import {
+  registerDownloadFileHandlers,
+  isTrustedDownloadIpcSender
+} from '../src/main/ipc/downloadFileHandlers.js'
 import {
   seedKnownFailures,
   notifyLiveJobFailure
@@ -513,9 +518,11 @@ async function runStep14Tests() {
     )
 
     // ----------------------------------------------------------------
-    // 6. Complete Safe Error Sanitization (Task 01)
+    // 6. Complete Safe Error Sanitization (Task 01, 02, 03)
     // ----------------------------------------------------------------
-    console.log('--- 6. Testing Error Presentation & Complete Safe Sanitization (Task 01) ---')
+    console.log(
+      '--- 6. Testing Error Presentation & Complete Safe Sanitization (Task 01, 02, 03) ---'
+    )
 
     // 6.0 Backward compatibility preserved
     assert.equal(getFriendlyErrorInfo('[NETWORK_ERROR] legacy check').code, 'NETWORK_ERROR')
@@ -539,22 +546,42 @@ async function runStep14Tests() {
       'SQLite database is locked'
     )
 
-    // 6.3 Required OS Path Sanitization Cases (Task 01 Table)
+    // 6.3 Required OS Path Sanitization Cases (Task 01 Table & Embedded paths)
     const requiredPathInputs = [
+      '/tmp/application/file.bin',
       '/tmp/applan2/file.bin',
+      '/root/private/file.db',
       '/root/private/file.bin',
+      '/opt/application/data.db',
       '/opt/application/file.db',
+      '/srv/application/downloads/video.mp4',
       '/srv/application/file.mp4',
-      '/private/var/data/file.bin',
       '/run/application/session.json',
       '/proc/process/data',
       '/sys/device/config',
       '/dev/sda',
+      '/etc/application/config',
+      '/var/log/application.log',
+      '/usr/local/application/data',
+      '/Volumes/ExternalDrive/video.mp4',
       '/Volumes/Drive/file.mp4',
+      '/Applications/APPLAN2/resources/file.bin',
       '/Applications/App/file.bin',
+      '/private/var/data/file.db',
+      '/private/var/data/file.bin',
+      '/Users/admin/Downloads/video.mp4',
       'C:\\Users\\Admin\\secret.bin',
       'C:/Users/Admin/secret.bin',
-      '\\\\SERVER\\Share\\secret.bin'
+      'D:\\Downloads\\private.mp4',
+      '\\\\SERVER\\Share\\Private\\file.bin',
+      'file:/tmp/private.db',
+      'file:///tmp/private.db',
+      'Path: /root/private.db',
+      'Path:/root/private.db',
+      'location,/tmp/private.db',
+      'location,/opt/application/data.db',
+      'error=/var/application/file.db',
+      'Error=/var/application/file.bin'
     ]
 
     for (const pathInput of requiredPathInputs) {
@@ -570,8 +597,22 @@ async function runStep14Tests() {
       )
     }
 
-    // 6.4 Technical / stack / database / token sanitization
-    const technicalInputs = [
+    // 6.4 Technical credentials, tokens, cookies, and SQL sanitization
+    const credentialInputs = [
+      'po_token=secret123',
+      'PO Token: secret123',
+      'visitor_data=secret123',
+      'visitorData=secret123',
+      'session_id=secret123',
+      'auth_token=secret123',
+      'access_token=secret123',
+      'refresh_token=secret123',
+      'client_secret=secret123',
+      'api_key=secret123',
+      '__Secure-3PSID=secret123',
+      'SAPISID=secret123',
+      'Cookie: session_id=secret123',
+      'Authorization: Bearer secret123',
       'Error: Download failed\n    at Object.<anonymous> (test.js:12:34)',
       'at Object.run (node:internal/modules/cjs/loader:123:45)',
       'SequelizeDatabaseError: table does not exist',
@@ -581,21 +622,23 @@ async function runStep14Tests() {
       'Authorization: Basic dXNlcjpwYXNz',
       'cookie: session_id=12345678',
       'password=supersecret',
-      'a'.repeat(241)
+      'a'.repeat(241),
+      'https://example.com/video?po_token=secret123',
+      'https://example.com/watch?v=123&visitor_data=sec456'
     ]
 
-    for (const techInput of technicalInputs) {
+    for (const credInput of credentialInputs) {
       assert.equal(
-        containsUnsafeErrorDetails(techInput),
+        containsUnsafeErrorDetails(credInput),
         true,
-        `Technical input must be detected as unsafe: ${techInput.slice(0, 30)}`
+        `Credential input must be detected as unsafe: ${credInput.slice(0, 30)}`
       )
-      const sanitized = getSafeFriendlyErrorInfo(techInput)
+      const sanitized = getSafeFriendlyErrorInfo(credInput)
       assert.ok(
-        !sanitized.message.includes('SQLITE_BUSY') &&
+        !sanitized.message.includes('secret123') &&
+          !sanitized.message.includes('SQLITE_BUSY') &&
           !sanitized.message.includes('Sequelize') &&
           !sanitized.message.includes('node:internal') &&
-          !sanitized.message.includes('Bearer ') &&
           !sanitized.message.includes('password='),
         'Unsafe details must be completely sanitized from user message'
       )
@@ -623,7 +666,7 @@ async function runStep14Tests() {
     )
     assert.equal(unsafeFallbackRes.message, 'The download failed due to an unexpected error.')
 
-    // 6.7 Safe plain user message preservation
+    // 6.7 Safe plain user messages & explanatory text preservation
     const plainSafeMsg = getSafeFriendlyErrorInfo(
       'The requested video is no longer available online.'
     )
@@ -631,6 +674,15 @@ async function runStep14Tests() {
       plainSafeMsg.message,
       'The requested video is no longer available online.',
       'Safe plain user message must be preserved'
+    )
+
+    const poTokenExplanatoryMsg = getSafeFriendlyErrorInfo(
+      'YouTube requires a PO token for this video.'
+    )
+    assert.equal(
+      poTokenExplanatoryMsg.message,
+      'YouTube requires a PO token for this video.',
+      'Explanatory sentence without credential value must be preserved as safe'
     )
 
     // 6.8 HTTP/HTTPS URL preservation
@@ -641,7 +693,75 @@ async function runStep14Tests() {
       'Valid HTTP/HTTPS URL must not be mistaken for local filesystem path'
     )
 
-    // 6.9 Historical failure popup suppression
+    // 6.9 Task 03: Application Startup Error Sanitization Tests
+    const initialClean = sanitizeStartupStatus({
+      state: 'launching',
+      message: 'Preparing desktop environment...',
+      error: null
+    })
+    assert.equal(initialClean.state, 'launching')
+    assert.equal(initialClean.message, 'Preparing desktop environment...')
+
+    const startupPathLeak = sanitizeStartupStatus({
+      state: 'error',
+      message: 'Database initialization failed at C:\\Users\\Admin\\AppData\\secret.sqlite',
+      error: 'C:\\Users\\Admin\\AppData\\secret.sqlite'
+    })
+    assert.equal(startupPathLeak.state, 'error')
+    assert.ok(
+      !startupPathLeak.message.includes('secret.sqlite'),
+      'Startup status message must sanitize filesystem paths'
+    )
+    assert.ok(
+      !startupPathLeak.error.includes('secret.sqlite'),
+      'Startup status error must sanitize filesystem paths'
+    )
+
+    const startupTokenLeak = sanitizeStartupStatus({
+      state: 'error',
+      message: 'Failed to authenticate: po_token=supersecret123',
+      error: 'po_token=supersecret123'
+    })
+    assert.ok(!startupTokenLeak.message.includes('supersecret123'))
+    assert.ok(!startupTokenLeak.error.includes('supersecret123'))
+
+    // 6.10 DownloaderPage source wiring audit (Task 02)
+    const downloaderPageSource = await fs.readFile(
+      path.resolve(process.cwd(), 'src/renderer/src/pages/DownloaderPage.jsx'),
+      'utf-8'
+    )
+    assert.ok(
+      downloaderPageSource.includes(
+        "import { getSafeFriendlyErrorInfo } from '../utils/errorPresentation'"
+      ),
+      'DownloaderPage must import getSafeFriendlyErrorInfo'
+    )
+    assert.ok(
+      !downloaderPageSource.includes('setApiError(err.message)'),
+      'DownloaderPage must not set raw err.message in setApiError'
+    )
+    assert.ok(
+      !downloaderPageSource.includes("showError('Clear Error', err?.message"),
+      'DownloaderPage must not pass raw err.message to showError'
+    )
+
+    // 6.11 Main process startup dialog safety audit (Task 03)
+    const mainProcessSource = await fs.readFile(
+      path.resolve(process.cwd(), 'src/main/index.js'),
+      'utf-8'
+    )
+    assert.ok(
+      mainProcessSource.includes('const safeStartupError ='),
+      'Main process must declare safeStartupError constant'
+    )
+    assert.ok(
+      !mainProcessSource.includes(
+        "dialog.showErrorBox('Startup Error', error instanceof Error ? error.message : String(error))"
+      ),
+      'Main process must not pass raw error.message to showErrorBox'
+    )
+
+    // 6.12 Historical failure popup suppression
     seedKnownFailures([101, 102])
     const popupResult1 = notifyLiveJobFailure(101, {
       title: 'Should be suppressed',
@@ -650,14 +770,238 @@ async function runStep14Tests() {
     assert.equal(popupResult1, undefined, 'Pre-seeded historical failures must not trigger popups')
 
     console.log(
-      '✓ Group 6 passed: Complete safe error sanitization and fallback protection verified.\n'
+      '✓ Group 6 passed: Complete safe error sanitization, DownloaderPage & Startup error protection verified.\n'
     )
 
     // ----------------------------------------------------------------
-    // 7. Actual Main Process IPC Security Handler Testing (Task 02)
+    // 7. Actual Main Process IPC Security Handler Testing (Task 04)
     // ----------------------------------------------------------------
-    console.log('--- 7. Testing Actual Registered IPC Security Handlers (Task 02) ---')
+    console.log('--- 7. Testing Actual Registered IPC Security Handlers (Task 04) ---')
 
+    // 7.1 Direct verification of isTrustedDownloadIpcSender across all 15 scenarios
+    const fakeDevUrl = 'http://localhost:5173/index.html'
+    const fakeProdFilePath = path.join(testDb.tempDir, 'renderer', 'index.html')
+    const fakeProdUrl = pathToFileURL(fakeProdFilePath).href
+
+    const validDevMainFrame = { url: fakeDevUrl }
+    const validDevSender = { id: 1, mainFrame: validDevMainFrame }
+    const validDevWindow = {
+      isDestroyed: () => false,
+      webContents: validDevSender
+    }
+
+    const mockBrowserWindowMap = new Map()
+    mockBrowserWindowMap.set(validDevSender, validDevWindow)
+
+    const mockBrowserWindow = {
+      fromWebContents: (sender) => mockBrowserWindowMap.get(sender) || null
+    }
+
+    // Direct Test A: Dev mode valid origin -> true
+    assert.equal(
+      isTrustedDownloadIpcSender(
+        { sender: validDevSender, senderFrame: validDevMainFrame },
+        {
+          BrowserWindow: mockBrowserWindow,
+          getTrustedWindow: () => validDevWindow,
+          isDev: true,
+          rendererUrl: 'http://localhost:5173'
+        }
+      ),
+      true,
+      'Dev mode with authentic matching origin must be trusted'
+    )
+
+    // Direct Test B: Dev mode with malicious external origin -> false
+    const maliciousDevFrame = { url: 'https://attacker.example.com/exploit.html' }
+    const maliciousDevSender = { id: 2, mainFrame: maliciousDevFrame }
+    mockBrowserWindowMap.set(maliciousDevSender, validDevWindow)
+    assert.equal(
+      isTrustedDownloadIpcSender(
+        { sender: maliciousDevSender, senderFrame: maliciousDevFrame },
+        {
+          BrowserWindow: mockBrowserWindow,
+          getTrustedWindow: () => validDevWindow,
+          isDev: true,
+          rendererUrl: 'http://localhost:5173'
+        }
+      ),
+      false,
+      'Dev mode with untrusted external origin must be rejected'
+    )
+
+    // Direct Test C: Dev mode with wrong port/origin -> false
+    const wrongPortFrame = { url: 'http://localhost:3000' }
+    const wrongPortSender = { id: 3, mainFrame: wrongPortFrame }
+    mockBrowserWindowMap.set(wrongPortSender, validDevWindow)
+    assert.equal(
+      isTrustedDownloadIpcSender(
+        { sender: wrongPortSender, senderFrame: wrongPortFrame },
+        {
+          BrowserWindow: mockBrowserWindow,
+          getTrustedWindow: () => validDevWindow,
+          isDev: true,
+          rendererUrl: 'http://localhost:5173'
+        }
+      ),
+      false,
+      'Dev mode with different port must be rejected'
+    )
+
+    // Direct Test D: Prod mode valid file URL -> true
+    const validProdMainFrame = { url: fakeProdUrl }
+    const validProdSender = { id: 4, mainFrame: validProdMainFrame }
+    const validProdWindow = {
+      isDestroyed: () => false,
+      webContents: validProdSender
+    }
+    mockBrowserWindowMap.set(validProdSender, validProdWindow)
+    assert.equal(
+      isTrustedDownloadIpcSender(
+        { sender: validProdSender, senderFrame: validProdMainFrame },
+        {
+          BrowserWindow: mockBrowserWindow,
+          getTrustedWindow: () => validProdWindow,
+          isDev: false,
+          rendererFilePath: fakeProdFilePath
+        }
+      ),
+      true,
+      'Prod mode with matching renderer file must be trusted'
+    )
+
+    // Direct Test E: Prod mode with remote web URL -> false
+    const remoteProdFrame = { url: 'https://attacker.example.com/exploit.html' }
+    const remoteProdSender = { id: 5, mainFrame: remoteProdFrame }
+    mockBrowserWindowMap.set(remoteProdSender, validProdWindow)
+    assert.equal(
+      isTrustedDownloadIpcSender(
+        { sender: remoteProdSender, senderFrame: remoteProdFrame },
+        {
+          BrowserWindow: mockBrowserWindow,
+          getTrustedWindow: () => validProdWindow,
+          isDev: false,
+          rendererFilePath: fakeProdFilePath
+        }
+      ),
+      false,
+      'Prod mode with non-file URL must be rejected'
+    )
+
+    // Direct Test F: Prod mode with wrong local file path -> false
+    const wrongFileUrl = pathToFileURL(path.join(testDb.tempDir, 'other', 'index.html')).href
+    const wrongFileFrame = { url: wrongFileUrl }
+    const wrongFileSender = { id: 6, mainFrame: wrongFileFrame }
+    mockBrowserWindowMap.set(wrongFileSender, validProdWindow)
+    assert.equal(
+      isTrustedDownloadIpcSender(
+        { sender: wrongFileSender, senderFrame: wrongFileFrame },
+        {
+          BrowserWindow: mockBrowserWindow,
+          getTrustedWindow: () => validProdWindow,
+          isDev: false,
+          rendererFilePath: fakeProdFilePath
+        }
+      ),
+      false,
+      'Prod mode with wrong file path must be rejected'
+    )
+
+    // Direct Test G: senderFrame !== sender.mainFrame (iframe caller) -> false
+    const iframeFrame = { url: fakeDevUrl }
+    assert.equal(
+      isTrustedDownloadIpcSender(
+        { sender: validDevSender, senderFrame: iframeFrame },
+        {
+          BrowserWindow: mockBrowserWindow,
+          getTrustedWindow: () => validDevWindow,
+          isDev: true,
+          rendererUrl: 'http://localhost:5173'
+        }
+      ),
+      false,
+      'Subframe / iframe caller must be rejected'
+    )
+
+    // Direct Test H: sender !== trustedWindow.webContents -> false
+    const wrongWebContentsSender = { id: 7, mainFrame: validDevMainFrame }
+    mockBrowserWindowMap.set(wrongWebContentsSender, validDevWindow)
+    assert.equal(
+      isTrustedDownloadIpcSender(
+        { sender: wrongWebContentsSender, senderFrame: validDevMainFrame },
+        {
+          BrowserWindow: mockBrowserWindow,
+          getTrustedWindow: () => validDevWindow,
+          isDev: true,
+          rendererUrl: 'http://localhost:5173'
+        }
+      ),
+      false,
+      'Mismatch between sender and trustedWindow.webContents must be rejected'
+    )
+
+    // Direct Test I: Owner window !== trustedWindow -> false
+    const otherWindow = { isDestroyed: () => false, webContents: validDevSender }
+    const mockOtherBrowserWindow = {
+      fromWebContents: () => otherWindow
+    }
+    assert.equal(
+      isTrustedDownloadIpcSender(
+        { sender: validDevSender, senderFrame: validDevMainFrame },
+        {
+          BrowserWindow: mockOtherBrowserWindow,
+          getTrustedWindow: () => validDevWindow,
+          isDev: true,
+          rendererUrl: 'http://localhost:5173'
+        }
+      ),
+      false,
+      'Sender belonging to a different window must be rejected'
+    )
+
+    // Direct Test J: Destroyed window -> false
+    const destroyedWindow = {
+      isDestroyed: () => true,
+      webContents: validDevSender
+    }
+    assert.equal(
+      isTrustedDownloadIpcSender(
+        { sender: validDevSender, senderFrame: validDevMainFrame },
+        {
+          BrowserWindow: mockBrowserWindow,
+          getTrustedWindow: () => destroyedWindow,
+          isDev: true,
+          rendererUrl: 'http://localhost:5173'
+        }
+      ),
+      false,
+      'Destroyed window must be rejected'
+    )
+
+    // Direct Test K: Null / missing trusted window or sender -> false
+    assert.equal(
+      isTrustedDownloadIpcSender(
+        { sender: validDevSender, senderFrame: validDevMainFrame },
+        {
+          BrowserWindow: mockBrowserWindow,
+          getTrustedWindow: () => null,
+          isDev: true,
+          rendererUrl: 'http://localhost:5173'
+        }
+      ),
+      false,
+      'Missing trusted window must be rejected'
+    )
+    assert.equal(
+      isTrustedDownloadIpcSender(null, {
+        BrowserWindow: mockBrowserWindow,
+        getTrustedWindow: () => validDevWindow
+      }),
+      false,
+      'Null event must be rejected'
+    )
+
+    // 7.2 Testing Registered Handlers shell:open-file and shell:open-folder
     // Create a real completed test file
     const validTestFilePath = path.join(testDb.tempDir, 'valid_download_clip.mp4')
     await fs.writeFile(validTestFilePath, Buffer.from('test media content for verification'))
@@ -679,7 +1023,7 @@ async function runStep14Tests() {
       file_size: 32
     })
 
-    // Setup IPC test harness with real registered handlers
+    // Setup IPC test harness with real registered handlers and trusted context
     const registeredHandlers = new Map()
     const ipcMainMock = {
       handle: (channel, handler) => {
@@ -704,28 +1048,37 @@ async function runStep14Tests() {
       }
     }
 
-    const trustedSender = { id: 1 }
-    const untrustedSender = { id: 99 }
-    const destroyedSender = { id: 2 }
+    const testTrustedFrame = { url: 'http://localhost:5173' }
+    const testTrustedSender = { id: 10, mainFrame: testTrustedFrame }
+    const testTrustedWindow = {
+      isDestroyed: () => false,
+      webContents: testTrustedSender
+    }
 
-    const mockBrowserWindow = {
+    const testUntrustedSender = { id: 99, mainFrame: { url: 'http://localhost:5173' } }
+    const testDestroyedWindow = {
+      isDestroyed: () => true,
+      webContents: testTrustedSender
+    }
+
+    const testIpcBrowserWindow = {
       fromWebContents: (sender) => {
-        if (sender === trustedSender) {
-          return { isDestroyed: () => false }
+        if (sender === testTrustedSender) {
+          return testTrustedWindow
         }
-        if (sender === destroyedSender) {
-          return { isDestroyed: () => true }
-        }
-        return null // untrusted sender has no owner window
+        return null
       }
     }
 
-    // Register the actual production handlers
+    // Register the actual production handlers with complete trusted origin options
     registerDownloadFileHandlers({
       ipcMain: ipcMainMock,
-      BrowserWindow: mockBrowserWindow,
+      BrowserWindow: testIpcBrowserWindow,
       shell: shellMock,
-      getDownloadHistoryDetails
+      getDownloadHistoryDetails,
+      getTrustedWindow: () => testTrustedWindow,
+      isDev: true,
+      rendererUrl: 'http://localhost:5173'
     })
 
     assert.ok(registeredHandlers.has('shell:open-file'), 'shell:open-file must be registered')
@@ -734,9 +1087,11 @@ async function runStep14Tests() {
     const openFileHandler = registeredHandlers.get('shell:open-file')
     const openFolderHandler = registeredHandlers.get('shell:open-folder')
 
+    const trustedEvent = { sender: testTrustedSender, senderFrame: testTrustedFrame }
+
     // Scenario 1: Valid completed Job ID -> File opens
     openedPaths = []
-    const openRes = await openFileHandler({ sender: trustedSender }, validCompletedJob.id)
+    const openRes = await openFileHandler(trustedEvent, validCompletedJob.id)
     assert.deepEqual(openRes, { success: true })
     assert.equal(openedPaths.length, 1)
     assert.equal(openedPaths[0], validTestFilePath)
@@ -744,7 +1099,7 @@ async function runStep14Tests() {
 
     // Scenario 2: Valid completed Job ID -> Folder opens
     shownFolders = []
-    const folderRes = await openFolderHandler({ sender: trustedSender }, validCompletedJob.id)
+    const folderRes = await openFolderHandler(trustedEvent, validCompletedJob.id)
     assert.deepEqual(folderRes, { success: true })
     assert.equal(shownFolders.length, 1)
     assert.equal(shownFolders[0], validTestFilePath)
@@ -765,11 +1120,11 @@ async function runStep14Tests() {
       NaN
     ]
     for (const badId of invalidIds) {
-      const badFileRes = await openFileHandler({ sender: trustedSender }, badId)
+      const badFileRes = await openFileHandler(trustedEvent, badId)
       assert.equal(badFileRes.success, false, `Bad ID ${badId} must be rejected for open-file`)
       assert.equal(badFileRes.filePath, undefined)
 
-      const badFolderRes = await openFolderHandler({ sender: trustedSender }, badId)
+      const badFolderRes = await openFolderHandler(trustedEvent, badId)
       assert.equal(badFolderRes.success, false, `Bad ID ${badId} must be rejected for open-folder`)
       assert.equal(badFolderRes.filePath, undefined)
     }
@@ -781,7 +1136,7 @@ async function runStep14Tests() {
     )
 
     // Scenario 4: Non-existent Job ID
-    const notFoundRes = await openFileHandler({ sender: trustedSender }, 999999)
+    const notFoundRes = await openFileHandler(trustedEvent, 999999)
     assert.equal(notFoundRes.success, false)
     assert.equal(openedPaths.length, 0)
 
@@ -792,7 +1147,7 @@ async function runStep14Tests() {
       quality: '1080p'
     })
     await DownloadJob.update({ status: 'completed' }, { where: { id: noFileJob.id } })
-    const noFileRes = await openFileHandler({ sender: trustedSender }, noFileJob.id)
+    const noFileRes = await openFileHandler(trustedEvent, noFileJob.id)
     assert.equal(noFileRes.success, false)
     assert.equal(openedPaths.length, 0)
 
@@ -802,7 +1157,7 @@ async function runStep14Tests() {
       outputFormat: 'mp4',
       quality: '720p'
     })
-    const incompleteRes = await openFileHandler({ sender: trustedSender }, incompleteJob.id)
+    const incompleteRes = await openFileHandler(trustedEvent, incompleteJob.id)
     assert.equal(incompleteRes.success, false)
     assert.equal(openedPaths.length, 0)
 
@@ -824,7 +1179,7 @@ async function runStep14Tests() {
       file_format: 'mp4',
       file_size: 100
     })
-    const missingRes = await openFileHandler({ sender: trustedSender }, missingFileJob.id)
+    const missingRes = await openFileHandler(trustedEvent, missingFileJob.id)
     assert.equal(missingRes.success, false)
     assert.equal(openedPaths.length, 0)
 
@@ -845,7 +1200,7 @@ async function runStep14Tests() {
       file_format: 'mp4',
       file_size: 100
     })
-    const relativeRes = await openFileHandler({ sender: trustedSender }, relativeJob.id)
+    const relativeRes = await openFileHandler(trustedEvent, relativeJob.id)
     assert.equal(relativeRes.success, false)
     assert.equal(openedPaths.length, 0)
     assert.equal(
@@ -874,7 +1229,7 @@ async function runStep14Tests() {
         file_format: 'mp4',
         file_size: 32
       })
-      const symlinkRes = await openFileHandler({ sender: trustedSender }, symlinkJob.id)
+      const symlinkRes = await openFileHandler(trustedEvent, symlinkJob.id)
       assert.equal(symlinkRes.success, false, 'Symlink download files must be rejected')
       assert.equal(openedPaths.length, 0, 'shell.openPath must never be called on symlinks')
       console.log('   ↳ Symlink security test: PASS (symlinks correctly rejected)')
@@ -887,36 +1242,64 @@ async function runStep14Tests() {
     }
 
     // Scenario 10: Destroyed BrowserWindow
+    const destroyedEvent = { sender: testTrustedSender, senderFrame: testTrustedFrame }
+    const destroyedIpcBrowserWindow = {
+      fromWebContents: () => testDestroyedWindow
+    }
+    const destroyedHandlers = new Map()
+    registerDownloadFileHandlers({
+      ipcMain: { handle: (ch, fn) => destroyedHandlers.set(ch, fn) },
+      BrowserWindow: destroyedIpcBrowserWindow,
+      shell: shellMock,
+      getDownloadHistoryDetails,
+      getTrustedWindow: () => testDestroyedWindow,
+      isDev: true,
+      rendererUrl: 'http://localhost:5173'
+    })
     await assert.rejects(
-      async () => openFileHandler({ sender: destroyedSender }, validCompletedJob.id),
+      async () => destroyedHandlers.get('shell:open-file')(destroyedEvent, validCompletedJob.id),
       /Unauthorized IPC sender/
     )
 
     // Scenario 11: Unauthorized sender
     await assert.rejects(
-      async () => openFileHandler({ sender: untrustedSender }, validCompletedJob.id),
+      async () =>
+        openFileHandler(
+          { sender: testUntrustedSender, senderFrame: testTrustedFrame },
+          validCompletedJob.id
+        ),
       /Unauthorized IPC sender/
     )
 
-    // Scenario 12: Electron openPath returns error string
+    // Scenario 12: Unauthorized origin (e.g. malicious origin)
+    await assert.rejects(
+      async () =>
+        openFileHandler(
+          { sender: testTrustedSender, senderFrame: { url: 'https://malicious.example.com' } },
+          validCompletedJob.id
+        ),
+      /Unauthorized IPC sender/
+    )
+
+    // Scenario 13: Electron openPath returns error string
     openPathReturnError = 'Failed to launch associated media player'
-    const openPathErrRes = await openFileHandler({ sender: trustedSender }, validCompletedJob.id)
+    const openPathErrRes = await openFileHandler(trustedEvent, validCompletedJob.id)
     assert.deepEqual(openPathErrRes, {
       success: false,
       error: 'The downloaded file could not be opened.'
     })
     openPathReturnError = null
 
-    // Scenario 13: Electron shell throws exception
+    // Scenario 14: Electron shell throws exception
     shellShouldThrow = true
-    const throwRes = await openFileHandler({ sender: trustedSender }, validCompletedJob.id)
+    const throwRes = await openFileHandler(trustedEvent, validCompletedJob.id)
     assert.deepEqual(throwRes, {
       success: false,
       error: 'The downloaded file could not be opened.'
     })
     shellShouldThrow = false
 
-    // Scenario 14: Preload & Main Process IPC Contract
+    // Scenario 15: Preload & Main Process IPC Contract
     const preloadPath = path.resolve(process.cwd(), 'src', 'preload', 'index.js')
     const preloadSource = await fs.readFile(preloadPath, 'utf-8')
     assert.ok(preloadSource.includes('openFile: (jobId)'), 'Preload must accept jobId for openFile')
@@ -939,6 +1322,10 @@ async function runStep14Tests() {
     assert.ok(
       mainIndexSource.includes('registerDownloadFileHandlers'),
       'Main process must register handlers via registerDownloadFileHandlers'
+    )
+    assert.ok(
+      mainIndexSource.includes('getStartupWindow'),
+      'Main process must pass getStartupWindow to registerDownloadFileHandlers'
     )
 
     console.log('✓ Group 7 passed: File & folder access validation and IPC contracts confirmed.\n')

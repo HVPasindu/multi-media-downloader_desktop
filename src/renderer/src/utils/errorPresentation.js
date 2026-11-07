@@ -260,14 +260,19 @@ export function getFriendlyErrorInfo(errorOrCode, fallbackMessage = null) {
   }
 }
 
+const SENSITIVE_VALUE_PATTERN =
+  /(?:^|[?&;,\s"'`([])(?:po[\s_-]?token|visitor[\s_-]?data|session[\s_-]?id|auth[\s_-]?token|access[\s_-]?token|refresh[\s_-]?token|api[\s_-]?key|client[\s_-]?secret|password|authorization|cookie|set-cookie|signature|sig|SAPISID|__Secure-3PSID|SID|HSID|SSID|APISID|LOGIN_INFO)\s*[:=]\s*["']?[^&\s,;"'`)]+/i
+
 const UNSAFE_ERROR_PATTERNS = [
   /\b(?:node_modules|node:internal|Sequelize\w*Error|SQLITE_[A-Z_]+|SQLSTATE|TypeError|ReferenceError|SyntaxError)\b/i,
   /(?:^|\n)\s*at\s+.+:\d+:\d+/i,
-  /\b(?:authorization|cookie|set-cookie|x-api-key|api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|password)\s*[:=]\s*\S+/i,
   /\bBearer\s+[A-Za-z0-9._~+/-]{8,}/i,
-  /(?:^|[\s("'=])(?:[A-Za-z]:[\\/]|\\\\[^\\/\s]+\\[^\\/\s]+)/i,
-  /(?:^|[\s("'=])\/(?:[^/\s"'<>|]+\/)*[^/\s"'<>|]+/i,
-  /\b(?:SELECT\s+[\s\S]+?\s+FROM|INSERT\s+INTO|UPDATE\s+\S+\s+SET|DELETE\s+FROM)\b/i
+  /\b(?:SELECT\s+[\s\S]+?\s+FROM|INSERT\s+INTO|UPDATE\s+\S+\s+SET|DELETE\s+FROM)\b/i,
+  SENSITIVE_VALUE_PATTERN,
+  /file:\/\/\/?/i,
+  /(?:^|[=:,(["'\s])(?:[A-Za-z]:[\\/]|\\\\[^\\/\s]+\\[^\\/\s]+)/i,
+  /(?:^|[=:,(["'\s])(?!(?:https?|ftp):\/\/)\/(?:tmp|root|opt|srv|run|proc|sys|dev|etc|var|usr|Volumes|Applications|Users|home|private)(?:[\\/\s"'`),;:]|$)/i,
+  /(?:^|[=:,(["'\s])(?!(?:https?|ftp):\/\/)\/(?:[^/\s"'<>|]+\/)+[^/\s"'<>|]+/i
 ]
 
 /**
@@ -314,5 +319,29 @@ export function getSafeFriendlyErrorInfo(errorOrCode, fallbackMessage = null) {
   return {
     ...info,
     message: safeFallback || mapping.defaultMessage
+  }
+}
+
+/**
+ * Sanitizes startup status to ensure no raw technical exceptions, internal paths,
+ * or credentials leak into the splash screen or startup status state.
+ *
+ * @param {object|null|undefined} status
+ * @returns {object|null|undefined}
+ */
+export function sanitizeStartupStatus(status) {
+  if (!status || status.state !== 'error') {
+    return status
+  }
+
+  const safeInfo = getSafeFriendlyErrorInfo(
+    status.error || status.message,
+    'The application could not complete startup. Please restart the application.'
+  )
+
+  return {
+    ...status,
+    message: safeInfo.message,
+    error: safeInfo.message
   }
 }

@@ -1,14 +1,67 @@
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+/**
+ * Validates whether an incoming IPC event originates from the authentic,
+ * trusted Main Window's top-level frame matching development or production origin.
+ *
+ * @param {import('electron').IpcMainInvokeEvent} event
+ * @param {object} options
+ * @returns {boolean}
+ */
+export function isTrustedDownloadIpcSender(event, options = {}) {
+  const { BrowserWindow, getTrustedWindow, isDev, rendererUrl, rendererFilePath } = options
+
+  const trustedWindow = getTrustedWindow?.()
+  const sender = event?.sender
+
+  if (
+    !trustedWindow ||
+    (typeof trustedWindow.isDestroyed === 'function' && trustedWindow.isDestroyed())
+  ) {
+    return false
+  }
+
+  if (!sender) {
+    return false
+  }
+
+  const ownerWindow = BrowserWindow?.fromWebContents?.(sender)
+
+  if (ownerWindow !== trustedWindow || sender !== trustedWindow.webContents) {
+    return false
+  }
+
+  if (!event.senderFrame || event.senderFrame !== sender.mainFrame) {
+    return false
+  }
+
+  try {
+    const actualUrl = new URL(event.senderFrame.url)
+
+    if (isDev) {
+      if (!rendererUrl) return false
+      const expectedUrl = new URL(rendererUrl)
+      return actualUrl.origin === expectedUrl.origin
+    }
+
+    if (actualUrl.protocol !== 'file:' || !rendererFilePath) {
+      return false
+    }
+
+    return path.resolve(fileURLToPath(actualUrl)) === path.resolve(rendererFilePath)
+  } catch {
+    return false
+  }
+}
+
 /**
  * IPC handler registration for opening downloaded media files and enclosing folders securely.
  * Replaces raw filesystem paths with validated Job IDs and queries SQLite via getDownloadHistoryDetails.
  */
+export function registerDownloadFileHandlers(options) {
+  const { ipcMain, shell, getDownloadHistoryDetails } = options
 
-export function registerDownloadFileHandlers({
-  ipcMain,
-  BrowserWindow,
-  shell,
-  getDownloadHistoryDetails
-}) {
   async function getVerifiedDownloadFilePath(jobId) {
     if (typeof jobId !== 'number' || !Number.isSafeInteger(jobId) || jobId <= 0) {
       return {
@@ -48,8 +101,7 @@ export function registerDownloadFileHandlers({
   }
 
   ipcMain.handle('shell:open-file', async (event, jobId) => {
-    const ownerWindow = BrowserWindow.fromWebContents(event?.sender)
-    if (!ownerWindow || ownerWindow.isDestroyed()) {
+    if (!isTrustedDownloadIpcSender(event, options)) {
       throw new Error('Unauthorized IPC sender')
     }
 
@@ -77,8 +129,7 @@ export function registerDownloadFileHandlers({
   })
 
   ipcMain.handle('shell:open-folder', async (event, jobId) => {
-    const ownerWindow = BrowserWindow.fromWebContents(event?.sender)
-    if (!ownerWindow || ownerWindow.isDestroyed()) {
+    if (!isTrustedDownloadIpcSender(event, options)) {
       throw new Error('Unauthorized IPC sender')
     }
 

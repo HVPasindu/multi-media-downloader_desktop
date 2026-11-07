@@ -23,6 +23,15 @@ export function setStartupWindow(window) {
 }
 
 /**
+ * Retrieves the currently registered primary application BrowserWindow.
+ *
+ * @returns {import('electron').BrowserWindow|null}
+ */
+export function getStartupWindow() {
+  return mainWindowRef
+}
+
+/**
  * Retrieves the latest startup status snapshot.
  * Useful for the renderer when mounting or polling initial state.
  *

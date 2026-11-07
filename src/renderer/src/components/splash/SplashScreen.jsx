@@ -3,6 +3,7 @@ import { motion } from 'framer-motion'
 import { AlertCircle, RotateCcw, RefreshCw, Sparkles } from 'lucide-react'
 import officialLogo from '../../assets/branding/official-cloud-logo-transparent.png'
 import LoadingIndicator from '../common/LoadingIndicator'
+import { getSafeFriendlyErrorInfo } from '../../utils/errorPresentation'
 
 // Lazy-load the isolated Three.js 3D decoration
 const SplashDecoration3D = lazy(() => import('../../features/three/SplashDecoration3D'))
@@ -48,6 +49,10 @@ export default function SplashScreen({
 }) {
   const isError = status?.state === 'error' || isHealthError
   const statusText = getStatusDisplay(status)
+  const safeStartupError = getSafeFriendlyErrorInfo(
+    status?.error || status?.message,
+    'Connection to local services could not be established.'
+  ).message
 
   return (
     <div className="relative w-full h-full flex flex-col items-center justify-center bg-[#040B1C] text-text overflow-hidden select-none">
@@ -142,9 +147,7 @@ export default function SplashScreen({
                 <span className="text-sm font-semibold">Startup Interrupted</span>
               </div>
               <p className="text-xs text-text-muted text-center break-words max-h-24 overflow-y-auto px-2">
-                {status?.error ||
-                  status?.message ||
-                  'Connection to local services could not be established.'}
+                {safeStartupError}
               </p>
 
               {/* Action Buttons for Safe Recovery */}
