@@ -14,9 +14,15 @@ import { normalizeDownloadJob } from '../src/renderer/src/utils/downloadPresenta
 import {
   getFriendlyErrorInfo,
   getSafeFriendlyErrorInfo,
+  containsUnsafeErrorDetails,
   extractErrorCode,
   extractCleanMessage
 } from '../src/renderer/src/utils/errorPresentation.js'
+import {
+  getRetryButtonState,
+  createRetryGuard
+} from '../src/renderer/src/utils/retryButtonState.js'
+import { registerDownloadFileHandlers } from '../src/main/ipc/downloadFileHandlers.js'
 import {
   seedKnownFailures,
   notifyLiveJobFailure
@@ -404,121 +410,238 @@ async function runStep14Tests() {
     const retryRes3 = await retryDownloadJob(888888)
     assert.equal(retryRes3.outcome, 'not_found', 'Retrying non-existent job must return not_found')
 
-    // Test FIX 04 UI Retry loading-state logic
-    let retryingJobId = null
-
-    function isButtonDisabled(retryingId) {
-      return retryingId !== null
-    }
-
-    function isSpinnerActive(jobId, retryingId) {
-      return retryingId === jobId
-    }
-
-    // Initial state: no retry
-    assert.equal(isButtonDisabled(retryingJobId), false, 'When idle, buttons are enabled')
-    assert.equal(isSpinnerActive(12, retryingJobId), false, 'When idle, spinner is off')
-
-    // Trigger retry on Job 12
-    retryingJobId = 12
-    assert.equal(
-      isButtonDisabled(retryingJobId),
-      true,
-      'All retry buttons disabled when Job 12 is retrying'
+    // 5.1 Test actual production helper getRetryButtonState (Task 03)
+    assert.deepEqual(
+      getRetryButtonState(null, 17),
+      { disabled: false, isSpinning: false },
+      'Initial state: not retrying, button enabled, no spin'
     )
-    assert.equal(isSpinnerActive(12, retryingJobId), true, 'Spinner active on retrying Job 12')
-    assert.equal(isSpinnerActive(15, retryingJobId), false, 'Spinner NOT active on other Job 15')
 
-    // Handler guard prevents double-execution
-    let callExecuted = false
-    function triggerRetry() {
-      if (retryingJobId !== null) return
-      callExecuted = true
+    assert.deepEqual(
+      getRetryButtonState(17, 17),
+      { disabled: true, isSpinning: true },
+      'Active retrying item: button disabled, spinning'
+    )
+
+    assert.deepEqual(
+      getRetryButtonState(17, 20),
+      { disabled: true, isSpinning: false },
+      'Other item while retry in progress: button disabled, not spinning'
+    )
+
+    assert.deepEqual(
+      getRetryButtonState(null, 20),
+      { disabled: false, isSpinning: false },
+      'Retry finished: all buttons re-enabled'
+    )
+
+    // 5.2 Test production createRetryGuard logic
+    const retryGuard = createRetryGuard()
+    assert.equal(retryGuard.tryStart(), true, 'First retry attempt acquires lock')
+    assert.equal(retryGuard.tryStart(), false, 'Concurrent attempt while locked is rejected')
+    assert.equal(retryGuard.tryStart(), false, 'Third attempt while locked is rejected')
+    retryGuard.finish()
+    assert.equal(retryGuard.tryStart(), true, 'Lock re-acquired after finish')
+    retryGuard.finish()
+
+    // 5.3 Test error release in try/catch/finally
+    const failureGuard = createRetryGuard()
+    assert.equal(failureGuard.tryStart(), true)
+    try {
+      throw new Error('Simulated network drop during retry')
+    } catch {
+      // Caught
+    } finally {
+      failureGuard.finish()
     }
-    triggerRetry()
-    assert.equal(callExecuted, false, 'Handler guard strictly rejects concurrent clicks')
+    assert.equal(
+      failureGuard.tryStart(),
+      true,
+      'Guard must be released on failure in finally block'
+    )
+    failureGuard.finish()
 
-    // Reset after completion
-    retryingJobId = null
-    assert.equal(isButtonDisabled(retryingJobId), false, 'Buttons re-enabled after retry completes')
+    // 5.4 Test independent guard instances for DownloadsPage and HistoryPage
+    const downloadsGuard = createRetryGuard()
+    const historyGuard = createRetryGuard()
+    assert.equal(downloadsGuard.tryStart(), true)
+    assert.equal(historyGuard.tryStart(), true, 'History page has its own independent guard')
+    downloadsGuard.finish()
+    historyGuard.finish()
+
+    // 5.5 Verify both pages import and wire the shared production retry utilities
+    const downloadsPageSource = await fs.readFile(
+      path.resolve(process.cwd(), 'src/renderer/src/pages/DownloadsPage.jsx'),
+      'utf-8'
+    )
+    const historyPageSource = await fs.readFile(
+      path.resolve(process.cwd(), 'src/renderer/src/pages/HistoryPage.jsx'),
+      'utf-8'
+    )
+
+    assert.ok(
+      downloadsPageSource.includes(
+        "import { getRetryButtonState, createRetryGuard } from '../utils/retryButtonState'"
+      ),
+      'DownloadsPage must import getRetryButtonState and createRetryGuard'
+    )
+    assert.ok(
+      historyPageSource.includes(
+        "import { getRetryButtonState, createRetryGuard } from '../utils/retryButtonState'"
+      ),
+      'HistoryPage must import getRetryButtonState and createRetryGuard'
+    )
+    assert.ok(
+      downloadsPageSource.includes('retryGuardRef.current.tryStart()'),
+      'DownloadsPage must guard retry handler with retryGuard'
+    )
+    assert.ok(
+      historyPageSource.includes('retryGuardRef.current.tryStart()'),
+      'HistoryPage must guard retry handler with retryGuard'
+    )
+    assert.ok(
+      downloadsPageSource.includes('getRetryButtonState(retryingJobId, item.id)'),
+      'DownloadsPage must calculate button state with getRetryButtonState'
+    )
+    assert.ok(
+      historyPageSource.includes('getRetryButtonState(retryingJobId, item.id)'),
+      'HistoryPage must calculate button state with getRetryButtonState'
+    )
 
     console.log(
-      '✓ Group 5 passed: Retry preserves Job ID and global button loading-state is consistent.\n'
+      '✓ Group 5 passed: Production retry state, concurrency guards, and page wiring confirmed.\n'
     )
 
     // ----------------------------------------------------------------
-    // 6. Consistent Safe Error Handling (FIX 03)
+    // 6. Complete Safe Error Sanitization (Task 01)
     // ----------------------------------------------------------------
-    console.log('--- 6. Testing Error Presentation & Safe Sanitization (FIX 03) ---')
+    console.log('--- 6. Testing Error Presentation & Complete Safe Sanitization (Task 01) ---')
 
-    // Test 6.0: getFriendlyErrorInfo backward compatibility preserved
+    // 6.0 Backward compatibility preserved
     assert.equal(getFriendlyErrorInfo('[NETWORK_ERROR] legacy check').code, 'NETWORK_ERROR')
 
-    // Test 6.1: Friendly error mapping for CANCELLED
+    // 6.1 Friendly error mapping for CANCELLED & NETWORK_ERROR
     const cancelErrInfo = getSafeFriendlyErrorInfo('[CANCELLED] Download was cancelled by user')
     assert.equal(cancelErrInfo.code, 'CANCELLED')
     assert.equal(cancelErrInfo.title, 'Download Cancelled')
     assert.ok(cancelErrInfo.isRetryable)
 
-    // Test 6.2: Friendly error mapping for NETWORK_ERROR
     const networkErrInfo = getSafeFriendlyErrorInfo('[NETWORK_ERROR] Connection reset by peer')
     assert.equal(networkErrInfo.code, 'NETWORK_ERROR')
     assert.equal(networkErrInfo.title, 'Network Connection Error')
     assert.equal(networkErrInfo.guidance, 'Check internet connection')
     assert.equal(networkErrInfo.message, 'Connection reset by peer')
 
-    // Test 6.3: Clean message and error code extraction
+    // 6.2 Code and clean message extraction
     assert.equal(extractErrorCode('[DATABASE_ERROR] SQLite database is locked'), 'DATABASE_ERROR')
     assert.equal(
       extractCleanMessage('[DATABASE_ERROR] SQLite database is locked'),
       'SQLite database is locked'
     )
 
-    // Test 6.4: Technical database and sequelize error suppression
-    const dbErr = getSafeFriendlyErrorInfo(
-      'SequelizeDatabaseError: SQLITE_BUSY: database is locked'
+    // 6.3 Required OS Path Sanitization Cases (Task 01 Table)
+    const requiredPathInputs = [
+      '/tmp/applan2/file.bin',
+      '/root/private/file.bin',
+      '/opt/application/file.db',
+      '/srv/application/file.mp4',
+      '/private/var/data/file.bin',
+      '/run/application/session.json',
+      '/proc/process/data',
+      '/sys/device/config',
+      '/dev/sda',
+      '/Volumes/Drive/file.mp4',
+      '/Applications/App/file.bin',
+      'C:\\Users\\Admin\\secret.bin',
+      'C:/Users/Admin/secret.bin',
+      '\\\\SERVER\\Share\\secret.bin'
+    ]
+
+    for (const pathInput of requiredPathInputs) {
+      assert.equal(
+        containsUnsafeErrorDetails(pathInput),
+        true,
+        `Path input must be detected as unsafe: ${pathInput}`
+      )
+      const sanitized = getSafeFriendlyErrorInfo(pathInput)
+      assert.ok(
+        !sanitized.message.includes(pathInput),
+        `Path must never appear in user message: ${pathInput}`
+      )
+    }
+
+    // 6.4 Technical / stack / database / token sanitization
+    const technicalInputs = [
+      'Error: Download failed\n    at Object.<anonymous> (test.js:12:34)',
+      'at Object.run (node:internal/modules/cjs/loader:123:45)',
+      'SequelizeDatabaseError: table does not exist',
+      'SQLITE_BUSY: database is locked',
+      'SELECT * FROM users WHERE id = 1',
+      'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9',
+      'Authorization: Basic dXNlcjpwYXNz',
+      'cookie: session_id=12345678',
+      'password=supersecret',
+      'a'.repeat(241)
+    ]
+
+    for (const techInput of technicalInputs) {
+      assert.equal(
+        containsUnsafeErrorDetails(techInput),
+        true,
+        `Technical input must be detected as unsafe: ${techInput.slice(0, 30)}`
+      )
+      const sanitized = getSafeFriendlyErrorInfo(techInput)
+      assert.ok(
+        !sanitized.message.includes('SQLITE_BUSY') &&
+          !sanitized.message.includes('Sequelize') &&
+          !sanitized.message.includes('node:internal') &&
+          !sanitized.message.includes('Bearer ') &&
+          !sanitized.message.includes('password='),
+        'Unsafe details must be completely sanitized from user message'
+      )
+    }
+
+    // 6.5 Safe fallback preservation
+    const safeFallbackRes = getSafeFriendlyErrorInfo(
+      'TypeError: internal failure',
+      'Unable to load download history.'
+    )
+    assert.equal(
+      safeFallbackRes.message,
+      'Unable to load download history.',
+      'Safe fallback message must be preserved when raw error is technical'
+    )
+
+    // 6.6 Unsafe fallback rejection
+    const unsafeFallbackRes = getSafeFriendlyErrorInfo(
+      'TypeError: internal failure',
+      'Failed at C:\\Users\\Admin\\secret.db'
     )
     assert.ok(
-      !dbErr.message.includes('SQLITE_BUSY'),
-      'Technical database error names must not be exposed'
+      !unsafeFallbackRes.message.includes('secret.db'),
+      'Unsafe fallback must be rejected in favor of default message'
     )
-    assert.ok(!dbErr.message.includes('Sequelize'), 'Sequelize references must not be exposed')
+    assert.equal(unsafeFallbackRes.message, 'The download failed due to an unexpected error.')
 
-    // Test 6.5: JavaScript TypeError suppression
-    const typeErr = getSafeFriendlyErrorInfo(
-      'TypeError: Cannot read properties of undefined (reading "id")'
+    // 6.7 Safe plain user message preservation
+    const plainSafeMsg = getSafeFriendlyErrorInfo(
+      'The requested video is no longer available online.'
     )
-    assert.ok(!typeErr.message.includes('TypeError'), 'TypeError details must not be exposed')
-
-    // Test 6.6: Full stack trace suppression
-    const stackTraceErr = getSafeFriendlyErrorInfo(
-      'Error: Download failed\n    at Object.<anonymous> (I:\\acpt\\projects\\app\\src\\index.js:12:34)\n    at Module._compile (node:internal/modules/cjs/loader:123:45)'
-    )
-    assert.ok(
-      !stackTraceErr.message.includes('at Object.<anonymous>'),
-      'Stack traces must be stripped'
-    )
-    assert.ok(
-      !stackTraceErr.message.includes('node:internal'),
-      'Node internal paths must be stripped'
+    assert.equal(
+      plainSafeMsg.message,
+      'The requested video is no longer available online.',
+      'Safe plain user message must be preserved'
     )
 
-    // Test 6.7: Absolute filesystem paths suppression (Windows & Linux)
-    const winPathErr = getSafeFriendlyErrorInfo(
-      'Failed writing to C:\\Users\\Administrator\\AppData\\secret.bin'
+    // 6.8 HTTP/HTTPS URL preservation
+    const urlSafeMsg = getSafeFriendlyErrorInfo('Unable to access https://example.com/video')
+    assert.equal(
+      urlSafeMsg.message,
+      'Unable to access https://example.com/video',
+      'Valid HTTP/HTTPS URL must not be mistaken for local filesystem path'
     )
-    assert.ok(!winPathErr.message.includes('C:\\Users'), 'Windows user paths must be stripped')
 
-    const linuxPathErr = getSafeFriendlyErrorInfo(
-      'Failed writing to /home/appuser/downloads/secret.bin'
-    )
-    assert.ok(!linuxPathErr.message.includes('/home/appuser'), 'Linux user paths must be stripped')
-
-    // Test 6.8: Safe plain user message preserved
-    const safeMsg = getSafeFriendlyErrorInfo('The requested video is no longer available online.')
-    assert.equal(safeMsg.message, 'The requested video is no longer available online.')
-
-    // Test 6.9: Notification suppression for historical failures
+    // 6.9 Historical failure popup suppression
     seedKnownFailures([101, 102])
     const popupResult1 = notifyLiveJobFailure(101, {
       title: 'Should be suppressed',
@@ -527,13 +650,13 @@ async function runStep14Tests() {
     assert.equal(popupResult1, undefined, 'Pre-seeded historical failures must not trigger popups')
 
     console.log(
-      '✓ Group 6 passed: Consistent safe error presentation and technical suppression verified.\n'
+      '✓ Group 6 passed: Complete safe error sanitization and fallback protection verified.\n'
     )
 
     // ----------------------------------------------------------------
-    // 7. File & Folder Access Verification (FIX 02)
+    // 7. Actual Main Process IPC Security Handler Testing (Task 02)
     // ----------------------------------------------------------------
-    console.log('--- 7. Testing File & Folder Access Verification (FIX 02) ---')
+    console.log('--- 7. Testing Actual Registered IPC Security Handlers (Task 02) ---')
 
     // Create a real completed test file
     const validTestFilePath = path.join(testDb.tempDir, 'valid_download_clip.mp4')
@@ -556,13 +679,134 @@ async function runStep14Tests() {
       file_size: 32
     })
 
-    // 7.1 Valid completed file returns 'available'
-    const validDetails = await getDownloadHistoryDetails(validCompletedJob.id)
-    assert.ok(validDetails, 'History details should exist')
-    assert.equal(validDetails.file_status, 'available')
-    assert.equal(validDetails.file.file_path, validTestFilePath)
+    // Setup IPC test harness with real registered handlers
+    const registeredHandlers = new Map()
+    const ipcMainMock = {
+      handle: (channel, handler) => {
+        registeredHandlers.set(channel, handler)
+      }
+    }
 
-    // 7.2 Missing file returns 'missing'
+    let openedPaths = []
+    let shownFolders = []
+    let openPathReturnError = null
+    let shellShouldThrow = false
+
+    const shellMock = {
+      openPath: async (filePath) => {
+        if (shellShouldThrow) throw new Error('OS shell error')
+        openedPaths.push(filePath)
+        return openPathReturnError
+      },
+      showItemInFolder: (filePath) => {
+        if (shellShouldThrow) throw new Error('OS shell folder error')
+        shownFolders.push(filePath)
+      }
+    }
+
+    const trustedSender = { id: 1 }
+    const untrustedSender = { id: 99 }
+    const destroyedSender = { id: 2 }
+
+    const mockBrowserWindow = {
+      fromWebContents: (sender) => {
+        if (sender === trustedSender) {
+          return { isDestroyed: () => false }
+        }
+        if (sender === destroyedSender) {
+          return { isDestroyed: () => true }
+        }
+        return null // untrusted sender has no owner window
+      }
+    }
+
+    // Register the actual production handlers
+    registerDownloadFileHandlers({
+      ipcMain: ipcMainMock,
+      BrowserWindow: mockBrowserWindow,
+      shell: shellMock,
+      getDownloadHistoryDetails
+    })
+
+    assert.ok(registeredHandlers.has('shell:open-file'), 'shell:open-file must be registered')
+    assert.ok(registeredHandlers.has('shell:open-folder'), 'shell:open-folder must be registered')
+
+    const openFileHandler = registeredHandlers.get('shell:open-file')
+    const openFolderHandler = registeredHandlers.get('shell:open-folder')
+
+    // Scenario 1: Valid completed Job ID -> File opens
+    openedPaths = []
+    const openRes = await openFileHandler({ sender: trustedSender }, validCompletedJob.id)
+    assert.deepEqual(openRes, { success: true })
+    assert.equal(openedPaths.length, 1)
+    assert.equal(openedPaths[0], validTestFilePath)
+    assert.equal(openRes.filePath, undefined, 'IPC response must NEVER expose filePath')
+
+    // Scenario 2: Valid completed Job ID -> Folder opens
+    shownFolders = []
+    const folderRes = await openFolderHandler({ sender: trustedSender }, validCompletedJob.id)
+    assert.deepEqual(folderRes, { success: true })
+    assert.equal(shownFolders.length, 1)
+    assert.equal(shownFolders[0], validTestFilePath)
+    assert.equal(folderRes.filePath, undefined, 'IPC response must NEVER expose filePath')
+
+    // Scenario 3: Invalid Job IDs (negative, zero, string "17", string path, object, null)
+    openedPaths = []
+    shownFolders = []
+    const invalidIds = [
+      -1,
+      0,
+      '17',
+      'valid_download_clip.mp4',
+      'C:\\Windows\\System32',
+      null,
+      undefined,
+      {},
+      NaN
+    ]
+    for (const badId of invalidIds) {
+      const badFileRes = await openFileHandler({ sender: trustedSender }, badId)
+      assert.equal(badFileRes.success, false, `Bad ID ${badId} must be rejected for open-file`)
+      assert.equal(badFileRes.filePath, undefined)
+
+      const badFolderRes = await openFolderHandler({ sender: trustedSender }, badId)
+      assert.equal(badFolderRes.success, false, `Bad ID ${badId} must be rejected for open-folder`)
+      assert.equal(badFolderRes.filePath, undefined)
+    }
+    assert.equal(openedPaths.length, 0, 'shell.openPath must never be called for invalid IDs')
+    assert.equal(
+      shownFolders.length,
+      0,
+      'shell.showItemInFolder must never be called for invalid IDs'
+    )
+
+    // Scenario 4: Non-existent Job ID
+    const notFoundRes = await openFileHandler({ sender: trustedSender }, 999999)
+    assert.equal(notFoundRes.success, false)
+    assert.equal(openedPaths.length, 0)
+
+    // Scenario 5: Job without DownloadFile record
+    const noFileJob = await createDownloadJob({
+      mediaItemId: testMedia.id,
+      outputFormat: 'mp4',
+      quality: '1080p'
+    })
+    await DownloadJob.update({ status: 'completed' }, { where: { id: noFileJob.id } })
+    const noFileRes = await openFileHandler({ sender: trustedSender }, noFileJob.id)
+    assert.equal(noFileRes.success, false)
+    assert.equal(openedPaths.length, 0)
+
+    // Scenario 6: Incomplete job
+    const incompleteJob = await createDownloadJob({
+      mediaItemId: testMedia.id,
+      outputFormat: 'mp4',
+      quality: '720p'
+    })
+    const incompleteRes = await openFileHandler({ sender: trustedSender }, incompleteJob.id)
+    assert.equal(incompleteRes.success, false)
+    assert.equal(openedPaths.length, 0)
+
+    // Scenario 7: Missing file on disk
     const missingFilePath = path.join(testDb.tempDir, 'non_existent_file.mp4')
     const missingFileJob = await createDownloadJob({
       mediaItemId: testMedia.id,
@@ -580,42 +824,99 @@ async function runStep14Tests() {
       file_format: 'mp4',
       file_size: 100
     })
+    const missingRes = await openFileHandler({ sender: trustedSender }, missingFileJob.id)
+    assert.equal(missingRes.success, false)
+    assert.equal(openedPaths.length, 0)
 
-    const missingDetails = await getDownloadHistoryDetails(missingFileJob.id)
-    assert.equal(
-      missingDetails.file_status,
-      'missing',
-      'Missing disk file must report status missing'
-    )
-
-    // 7.3 Incomplete job returns 'not_applicable'
-    const incompleteJob = await createDownloadJob({
+    // Scenario 8: Relative path rejected
+    const relativeJob = await createDownloadJob({
       mediaItemId: testMedia.id,
       outputFormat: 'mp4',
       quality: '720p'
     })
-    const incompleteAvail = await checkFileAvailability(validTestFilePath, incompleteJob.status)
-    assert.equal(incompleteAvail, 'not_applicable', 'Incomplete job must return not_applicable')
-
-    // 7.4 Relative path returns 'unavailable'
-    const relativeAvail = await checkFileAvailability('relative/path/clip.mp4', 'completed')
-    assert.equal(relativeAvail, 'unavailable', 'Non-absolute path must return unavailable')
-
-    // 7.5 Invalid Job ID rejection
-    await assert.rejects(
-      async () => getDownloadHistoryDetails(-1),
-      /A valid Download Job ID is required/
+    await DownloadJob.update(
+      { status: 'completed', progress: 100 },
+      { where: { id: relativeJob.id } }
     )
-    await assert.rejects(
-      async () => getDownloadHistoryDetails(0),
-      /A valid Download Job ID is required/
-    )
-    await assert.rejects(
-      async () => getDownloadHistoryDetails('not-a-number'),
-      /A valid Download Job ID is required/
+    await DownloadFile.create({
+      download_job_id: relativeJob.id,
+      file_name: 'relative.mp4',
+      file_path: 'relative/path/clip.mp4',
+      file_format: 'mp4',
+      file_size: 100
+    })
+    const relativeRes = await openFileHandler({ sender: trustedSender }, relativeJob.id)
+    assert.equal(relativeRes.success, false)
+    assert.equal(openedPaths.length, 0)
+    assert.equal(
+      await checkFileAvailability('relative/path/clip.mp4', 'completed'),
+      'unavailable',
+      'checkFileAvailability rejects relative paths'
     )
 
-    // 7.6 Preload & Main Process IPC Contract
+    // Scenario 9: Symlink file safety
+    try {
+      const symlinkPath = path.join(testDb.tempDir, 'symlink_clip.mp4')
+      await fs.symlink(validTestFilePath, symlinkPath, 'file')
+      const symlinkJob = await createDownloadJob({
+        mediaItemId: testMedia.id,
+        outputFormat: 'mp4',
+        quality: '720p'
+      })
+      await DownloadJob.update(
+        { status: 'completed', progress: 100 },
+        { where: { id: symlinkJob.id } }
+      )
+      await DownloadFile.create({
+        download_job_id: symlinkJob.id,
+        file_name: 'symlink_clip.mp4',
+        file_path: symlinkPath,
+        file_format: 'mp4',
+        file_size: 32
+      })
+      const symlinkRes = await openFileHandler({ sender: trustedSender }, symlinkJob.id)
+      assert.equal(symlinkRes.success, false, 'Symlink download files must be rejected')
+      assert.equal(openedPaths.length, 0, 'shell.openPath must never be called on symlinks')
+      console.log('   ↳ Symlink security test: PASS (symlinks correctly rejected)')
+    } catch (symlinkErr) {
+      if (['EPERM', 'ENOSYS'].includes(symlinkErr.code)) {
+        console.log('   ↳ Symlink creation not permitted in this OS environment: SKIPPED')
+      } else {
+        throw symlinkErr
+      }
+    }
+
+    // Scenario 10: Destroyed BrowserWindow
+    await assert.rejects(
+      async () => openFileHandler({ sender: destroyedSender }, validCompletedJob.id),
+      /Unauthorized IPC sender/
+    )
+
+    // Scenario 11: Unauthorized sender
+    await assert.rejects(
+      async () => openFileHandler({ sender: untrustedSender }, validCompletedJob.id),
+      /Unauthorized IPC sender/
+    )
+
+    // Scenario 12: Electron openPath returns error string
+    openPathReturnError = 'Failed to launch associated media player'
+    const openPathErrRes = await openFileHandler({ sender: trustedSender }, validCompletedJob.id)
+    assert.deepEqual(openPathErrRes, {
+      success: false,
+      error: 'The downloaded file could not be opened.'
+    })
+    openPathReturnError = null
+
+    // Scenario 13: Electron shell throws exception
+    shellShouldThrow = true
+    const throwRes = await openFileHandler({ sender: trustedSender }, validCompletedJob.id)
+    assert.deepEqual(throwRes, {
+      success: false,
+      error: 'The downloaded file could not be opened.'
+    })
+    shellShouldThrow = false
+
+    // Scenario 14: Preload & Main Process IPC Contract
     const preloadPath = path.resolve(process.cwd(), 'src', 'preload', 'index.js')
     const preloadSource = await fs.readFile(preloadPath, 'utf-8')
     assert.ok(preloadSource.includes('openFile: (jobId)'), 'Preload must accept jobId for openFile')
@@ -636,16 +937,8 @@ async function runStep14Tests() {
     const mainIndexPath = path.resolve(process.cwd(), 'src', 'main', 'index.js')
     const mainIndexSource = await fs.readFile(mainIndexPath, 'utf-8')
     assert.ok(
-      mainIndexSource.includes('shell:open-file'),
-      'Main process must handle shell:open-file'
-    )
-    assert.ok(
-      mainIndexSource.includes('shell:open-folder'),
-      'Main process must handle shell:open-folder'
-    )
-    assert.ok(
-      mainIndexSource.includes('getVerifiedDownloadFilePath'),
-      'Main process must validate file via getVerifiedDownloadFilePath helper'
+      mainIndexSource.includes('registerDownloadFileHandlers'),
+      'Main process must register handlers via registerDownloadFileHandlers'
     )
 
     console.log('✓ Group 7 passed: File & folder access validation and IPC contracts confirmed.\n')

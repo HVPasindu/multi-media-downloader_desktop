@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   Search,
   SlidersHorizontal,
@@ -30,6 +30,7 @@ import {
 import { normalizeDownloadJob, formatBytes } from '../utils/downloadPresentation'
 import { showConfirm, showToast, showError } from '../utils/notificationService'
 import { getSafeFriendlyErrorInfo } from '../utils/errorPresentation'
+import { getRetryButtonState, createRetryGuard } from '../utils/retryButtonState'
 
 /**
  * Extracts a clean subtitle from statusText without repeating the main status label
@@ -81,6 +82,10 @@ export default function HistoryPage() {
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState(null)
   const [retryingJobId, setRetryingJobId] = useState(null)
+  const retryGuardRef = useRef(null)
+  if (retryGuardRef.current === null) {
+    retryGuardRef.current = createRetryGuard()
+  }
   const [showDateFilter, setShowDateFilter] = useState(false)
   const [fromDate, setFromDate] = useState('')
   const [toDate, setToDate] = useState('')
@@ -439,7 +444,7 @@ export default function HistoryPage() {
 
   // Retry a failed or cancelled record (Step 05.13, FIX 03 & FIX 04)
   const handleRetryRecord = async (id) => {
-    if (retryingJobId !== null) return
+    if (!retryGuardRef.current.tryStart()) return
     try {
       setRetryingJobId(id)
       const res = await retryDownload(id)
@@ -458,6 +463,7 @@ export default function HistoryPage() {
       )
       showError(errorInfo.title || 'Retry Error', errorInfo.message)
     } finally {
+      retryGuardRef.current.finish()
       setRetryingJobId(null)
     }
   }
@@ -654,6 +660,7 @@ export default function HistoryPage() {
               {historyItems.map((item, idx) => {
                 const isSelected = selectedIds.includes(item.id)
                 const isFailed = item.status === 'failed' || item.status === 'cancelled'
+                const retryButtonState = getRetryButtonState(retryingJobId, item.id)
 
                 return (
                   <tr
@@ -760,12 +767,12 @@ export default function HistoryPage() {
                           <button
                             type="button"
                             onClick={() => handleRetryRecord(item.id)}
-                            disabled={retryingJobId !== null}
+                            disabled={retryButtonState.disabled}
                             className="w-7 h-7 rounded-lg bg-[#040B1C] hover:bg-[#102449] border border-primary/20 flex items-center justify-center text-text-muted hover:text-[#19D8FF] transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
                             title="Retry download"
                           >
                             <RotateCcw
-                              className={`w-3.5 h-3.5 ${retryingJobId === item.id ? 'animate-spin text-[#19D8FF]' : ''}`}
+                              className={`w-3.5 h-3.5 ${retryButtonState.isSpinning ? 'animate-spin text-[#19D8FF]' : ''}`}
                             />
                           </button>
                         ) : (

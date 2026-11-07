@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   Search,
   SlidersHorizontal,
@@ -29,6 +29,7 @@ import {
   getDownloadSummary
 } from '../services/downloadsApi'
 import { getSafeFriendlyErrorInfo } from '../utils/errorPresentation'
+import { getRetryButtonState, createRetryGuard } from '../utils/retryButtonState'
 import { showError, showToast, showConfirm } from '../utils/notificationService'
 
 /**
@@ -62,6 +63,10 @@ export default function DownloadsPage() {
   const [currentPage, setCurrentPage] = useState(1)
   const [retryingJobId, setRetryingJobId] = useState(null)
   const [cancellingJobId, setCancellingJobId] = useState(null)
+  const retryGuardRef = useRef(null)
+  if (retryGuardRef.current === null) {
+    retryGuardRef.current = createRetryGuard()
+  }
 
   // Status mapping for server-side queries
   const statusFilter = activeTab === 'all' || activeTab === 'failed' ? null : activeTab
@@ -165,7 +170,7 @@ export default function DownloadsPage() {
   }
 
   const handleRetryJob = async (jobId) => {
-    if (retryingJobId !== null) return
+    if (!retryGuardRef.current.tryStart()) return
     try {
       setRetryingJobId(jobId)
       const res = await retryDownload(jobId)
@@ -184,6 +189,7 @@ export default function DownloadsPage() {
       )
       showError(errorInfo.title || 'Retry Error', errorInfo.message)
     } finally {
+      retryGuardRef.current.finish()
       setRetryingJobId(null)
     }
   }
@@ -455,6 +461,7 @@ export default function DownloadsPage() {
                 const showRecoveryInfo = isDownloading || isInterrupted || isResuming
                 const canCancel = isDownloading || isQueued || isInterrupted || isResuming
                 const itemIndex = offset + idx + 1
+                const retryButtonState = getRetryButtonState(retryingJobId, item.id)
 
                 return (
                   <tr key={item.id} className="hover:bg-[#0B1C38]/40 transition-colors group">
@@ -578,12 +585,12 @@ export default function DownloadsPage() {
                           <button
                             type="button"
                             onClick={() => handleRetryJob(item.id)}
-                            disabled={retryingJobId !== null}
+                            disabled={retryButtonState.disabled}
                             className="px-2.5 py-1 rounded-lg bg-[#040B1C]/80 hover:bg-[#102449] border border-primary/20 hover:border-primary/40 text-text-muted hover:text-white flex items-center gap-1.5 transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
                             title="Retry download"
                           >
                             <RotateCcw
-                              className={`w-3.5 h-3.5 text-[#19D8FF] ${retryingJobId === item.id ? 'animate-spin' : ''}`}
+                              className={`w-3.5 h-3.5 text-[#19D8FF] ${retryButtonState.isSpinning ? 'animate-spin' : ''}`}
                             />
                             <span className="text-[11px] font-bold">Retry</span>
                           </button>

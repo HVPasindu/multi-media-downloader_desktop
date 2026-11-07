@@ -49,7 +49,10 @@ const TOP_LEVEL_FILES = [
   'eslint.config.mjs',
   'package.json',
   'package-lock.json',
-  'README.md'
+  'README.md',
+  'STEP_05_11_TO_05_14_IMPLEMENTATION_REPORT.md',
+  'STEP_05_11_TO_05_14_REVIEW_CORRECTIONS_REPORT.md',
+  'STEP_05_11_TO_05_14_FINAL_ACCEPTANCE_REPORT.md'
 ]
 
 const TOP_LEVEL_DIRS = ['.git', '.vscode', 'build', 'docs', 'scripts', 'src', 'tests']

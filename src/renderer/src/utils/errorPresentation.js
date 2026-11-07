@@ -260,10 +260,38 @@ export function getFriendlyErrorInfo(errorOrCode, fallbackMessage = null) {
   }
 }
 
+const UNSAFE_ERROR_PATTERNS = [
+  /\b(?:node_modules|node:internal|Sequelize\w*Error|SQLITE_[A-Z_]+|SQLSTATE|TypeError|ReferenceError|SyntaxError)\b/i,
+  /(?:^|\n)\s*at\s+.+:\d+:\d+/i,
+  /\b(?:authorization|cookie|set-cookie|x-api-key|api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|password)\s*[:=]\s*\S+/i,
+  /\bBearer\s+[A-Za-z0-9._~+/-]{8,}/i,
+  /(?:^|[\s("'=])(?:[A-Za-z]:[\\/]|\\\\[^\\/\s]+\\[^\\/\s]+)/i,
+  /(?:^|[\s("'=])\/(?:[^/\s"'<>|]+\/)*[^/\s"'<>|]+/i,
+  /\b(?:SELECT\s+[\s\S]+?\s+FROM|INSERT\s+INTO|UPDATE\s+\S+\s+SET|DELETE\s+FROM)\b/i
+]
+
 /**
- * Enhanced safe wrapper around getFriendlyErrorInfo (FIX 03).
+ * Checks whether an error message contains internal technical details,
+ * system paths, database errors, secrets, tokens, or excessive length.
+ *
+ * @param {string|null|undefined} value
+ * @returns {boolean}
+ */
+export function containsUnsafeErrorDetails(value) {
+  const message = String(value ?? '').trim()
+
+  if (!message || message.length > 240) {
+    return true
+  }
+
+  return UNSAFE_ERROR_PATTERNS.some((pattern) => pattern.test(message))
+}
+
+/**
+ * Enhanced safe wrapper around getFriendlyErrorInfo.
  * Guarantees that internal stack traces, technical database exceptions,
- * internal filesystem paths, and authorization headers are never exposed to users.
+ * internal filesystem paths, tokens, and secrets are never exposed to users.
+ * Checks BOTH the extracted error message and any caller-provided fallback message.
  *
  * @param {string|object|null|undefined} errorOrCode
  * @param {string} [fallbackMessage]
@@ -272,21 +300,19 @@ export function getFriendlyErrorInfo(errorOrCode, fallbackMessage = null) {
 export function getSafeFriendlyErrorInfo(errorOrCode, fallbackMessage = null) {
   const info = getFriendlyErrorInfo(errorOrCode, fallbackMessage)
 
-  const message = String(info.message || '').trim()
-
-  const technicalPattern =
-    /(?:\bat\s.+:\d+:\d+|node_modules|Sequelize|SQLITE_[A-Z_]+|TypeError|ReferenceError|SyntaxError|(?:[A-Za-z]:\\)|\/(?:home|Users|mnt|etc|var|usr)\/|stack trace|Bearer\s+\S+|authorization:|cookie:)/i
-
-  const isUnsafe = !message || message.length > 240 || technicalPattern.test(message)
-
-  if (!isUnsafe) {
+  if (!containsUnsafeErrorDetails(info.message)) {
     return info
   }
+
+  const safeFallback =
+    typeof fallbackMessage === 'string' && !containsUnsafeErrorDetails(fallbackMessage)
+      ? fallbackMessage.trim()
+      : null
 
   const mapping = ERROR_PRESENTATION_MAP[info.code] || ERROR_PRESENTATION_MAP.UNKNOWN_ERROR
 
   return {
     ...info,
-    message: fallbackMessage || mapping.defaultMessage
+    message: safeFallback || mapping.defaultMessage
   }
 }
