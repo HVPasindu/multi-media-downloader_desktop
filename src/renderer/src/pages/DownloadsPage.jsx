@@ -28,7 +28,7 @@ import {
   clearDownloadHistory,
   getDownloadSummary
 } from '../services/downloadsApi'
-import { getFriendlyErrorInfo } from '../utils/errorPresentation'
+import { getSafeFriendlyErrorInfo } from '../utils/errorPresentation'
 import { showError, showToast, showConfirm } from '../utils/notificationService'
 
 /**
@@ -165,7 +165,7 @@ export default function DownloadsPage() {
   }
 
   const handleRetryJob = async (jobId) => {
-    if (retryingJobId) return
+    if (retryingJobId !== null) return
     try {
       setRetryingJobId(jobId)
       const res = await retryDownload(jobId)
@@ -174,12 +174,13 @@ export default function DownloadsPage() {
         if (typeof retry === 'function') retry()
         fetchGlobalCounts()
       } else {
-        const errorInfo = getFriendlyErrorInfo(res.data?.message || 'Failed to retry download')
+        const errorInfo = getSafeFriendlyErrorInfo(res.data, 'Failed to retry download.')
         showError(errorInfo.title || 'Retry Failed', errorInfo.message)
       }
     } catch (err) {
-      const errorInfo = getFriendlyErrorInfo(
-        err?.message || 'An unexpected error occurred while retrying.'
+      const errorInfo = getSafeFriendlyErrorInfo(
+        err,
+        'An unexpected error occurred while retrying.'
       )
       showError(errorInfo.title || 'Retry Error', errorInfo.message)
     } finally {
@@ -189,7 +190,7 @@ export default function DownloadsPage() {
 
   // Cancel an active or queued download job (Step 05.11 & 05.13)
   const handleCancelJob = async (jobId) => {
-    if (cancellingJobId) return
+    if (cancellingJobId !== null) return
 
     const confirmed = await showConfirm(
       'Cancel Download?',
@@ -214,10 +215,11 @@ export default function DownloadsPage() {
         if (typeof retry === 'function') retry()
         fetchGlobalCounts()
       } else if (res.status === 409) {
-        showError(
-          'Cannot Cancel',
-          res.data?.message || 'Download is already completed or terminated.'
+        const errorInfo = getSafeFriendlyErrorInfo(
+          res.data,
+          'Download is already completed or terminated.'
         )
+        showError('Cannot Cancel', errorInfo.message)
         if (typeof retry === 'function') retry()
         fetchGlobalCounts()
       } else if (res.status === 404) {
@@ -225,12 +227,13 @@ export default function DownloadsPage() {
         if (typeof retry === 'function') retry()
         fetchGlobalCounts()
       } else {
-        const errorInfo = getFriendlyErrorInfo(res.data?.message || 'Failed to cancel download.')
+        const errorInfo = getSafeFriendlyErrorInfo(res.data, 'Failed to cancel download.')
         showError(errorInfo.title || 'Cancellation Failed', errorInfo.message)
       }
     } catch (err) {
-      const errorInfo = getFriendlyErrorInfo(
-        err?.message || 'An unexpected error occurred while cancelling.'
+      const errorInfo = getSafeFriendlyErrorInfo(
+        err,
+        'An unexpected error occurred while cancelling.'
       )
       showError(errorInfo.title || 'Cancellation Error', errorInfo.message)
     } finally {
@@ -262,10 +265,12 @@ export default function DownloadsPage() {
         if (typeof retry === 'function') retry()
         fetchGlobalCounts()
       } else {
-        showError('Clear Failed', res.data?.message || 'Failed to clear completed downloads.')
+        const errorInfo = getSafeFriendlyErrorInfo(res.data, 'Failed to clear completed downloads.')
+        showError('Clear Failed', errorInfo.message)
       }
     } catch (err) {
-      showError('Clear Failed', err?.message || 'An unexpected error occurred.')
+      const errorInfo = getSafeFriendlyErrorInfo(err, 'Unable to clear completed downloads.')
+      showError('Clear Failed', errorInfo.message)
     }
   }
 
@@ -293,10 +298,12 @@ export default function DownloadsPage() {
         if (typeof retry === 'function') retry()
         fetchGlobalCounts()
       } else {
-        showError('Clear Failed', res.data?.message || 'Failed to clear failed downloads.')
+        const errorInfo = getSafeFriendlyErrorInfo(res.data, 'Failed to clear failed downloads.')
+        showError('Clear Failed', errorInfo.message)
       }
     } catch (err) {
-      showError('Clear Failed', err?.message || 'An unexpected error occurred.')
+      const errorInfo = getSafeFriendlyErrorInfo(err, 'Unable to clear failed downloads.')
+      showError('Clear Failed', errorInfo.message)
     }
   }
 
@@ -446,6 +453,7 @@ export default function DownloadsPage() {
                 const isResuming = item.displayStatus === 'resuming'
                 const isQueued = item.status === 'queued' && !isResuming
                 const showRecoveryInfo = isDownloading || isInterrupted || isResuming
+                const canCancel = isDownloading || isQueued || isInterrupted || isResuming
                 const itemIndex = offset + idx + 1
 
                 return (
@@ -570,8 +578,8 @@ export default function DownloadsPage() {
                           <button
                             type="button"
                             onClick={() => handleRetryJob(item.id)}
-                            disabled={retryingJobId === item.id}
-                            className="px-2.5 py-1 rounded-lg bg-[#040B1C]/80 hover:bg-[#102449] border border-primary/20 hover:border-primary/40 text-text-muted hover:text-white flex items-center gap-1.5 transition-all cursor-pointer shadow-sm"
+                            disabled={retryingJobId !== null}
+                            className="px-2.5 py-1 rounded-lg bg-[#040B1C]/80 hover:bg-[#102449] border border-primary/20 hover:border-primary/40 text-text-muted hover:text-white flex items-center gap-1.5 transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
                             title="Retry download"
                           >
                             <RotateCcw
@@ -605,7 +613,7 @@ export default function DownloadsPage() {
                         )}
 
                         {/* Cancel / Stop Button (only for active jobs) */}
-                        {(isDownloading || isQueued || item.status === 'interrupted') && (
+                        {canCancel && (
                           <button
                             type="button"
                             onClick={() => handleCancelJob(item.id)}

@@ -10,6 +10,7 @@ import {
 
 import { initializeDatabase } from './backend/config/database.js'
 import { recoverInterruptedDownloadJobs } from './backend/services/downloadRecoveryService.js'
+import { getDownloadHistoryDetails } from './backend/services/downloadHistoryService.js'
 
 import { getDatabase } from './backend/config/database.js'
 import { getSavedDownloadPath } from './backend/services/downloadSettingsService.js'
@@ -169,39 +170,96 @@ app.whenReady().then(async () => {
       return await getDefaultDownloadPath()
     })
 
-    // Step 05.12 - Secure IPC handlers to open downloaded media file or its folder
-    ipcMain.handle('shell:open-file', async (event, filePath) => {
+    // Step 05.12 - Shared validator for database-recorded file paths (FIX 02)
+    async function getVerifiedDownloadFilePath(jobId) {
+      const id = Number(jobId)
+
+      if (!Number.isSafeInteger(id) || id <= 0) {
+        return {
+          success: false,
+          error: 'Invalid download record.'
+        }
+      }
+
+      let details
+      try {
+        details = await getDownloadHistoryDetails(id)
+      } catch {
+        return {
+          success: false,
+          error: 'Invalid download record.'
+        }
+      }
+
+      if (!details || details.job?.status !== 'completed') {
+        return {
+          success: false,
+          error: 'Completed download record not found.'
+        }
+      }
+
+      if (details.file_status !== 'available' || !details.file?.file_path) {
+        return {
+          success: false,
+          error: 'Downloaded file is not available.'
+        }
+      }
+
+      return {
+        success: true,
+        filePath: details.file.file_path
+      }
+    }
+
+    // Step 05.12 - Secure IPC handlers to open downloaded media file or its folder (FIX 02)
+    ipcMain.handle('shell:open-file', async (event, jobId) => {
       const ownerWindow = BrowserWindow.fromWebContents(event.sender)
       if (!ownerWindow || ownerWindow.isDestroyed()) {
         throw new Error('Unauthorized IPC sender')
       }
-      if (typeof filePath !== 'string' || !filePath.trim()) {
-        return { success: false, error: 'Invalid file path' }
-      }
+
       try {
-        const errorMsg = await shell.openPath(filePath.trim())
-        if (errorMsg) {
-          return { success: false, error: errorMsg }
+        const verified = await getVerifiedDownloadFilePath(jobId)
+        if (!verified.success) {
+          return verified
         }
+
+        const errorMsg = await shell.openPath(verified.filePath)
+        if (errorMsg) {
+          return {
+            success: false,
+            error: 'The downloaded file could not be opened.'
+          }
+        }
+
         return { success: true }
-      } catch (err) {
-        return { success: false, error: err?.message || 'Failed to open file' }
+      } catch {
+        return {
+          success: false,
+          error: 'The downloaded file could not be opened.'
+        }
       }
     })
 
-    ipcMain.handle('shell:open-folder', async (event, filePath) => {
+    ipcMain.handle('shell:open-folder', async (event, jobId) => {
       const ownerWindow = BrowserWindow.fromWebContents(event.sender)
       if (!ownerWindow || ownerWindow.isDestroyed()) {
         throw new Error('Unauthorized IPC sender')
       }
-      if (typeof filePath !== 'string' || !filePath.trim()) {
-        return { success: false, error: 'Invalid file path' }
-      }
+
       try {
-        shell.showItemInFolder(filePath.trim())
+        const verified = await getVerifiedDownloadFilePath(jobId)
+        if (!verified.success) {
+          return verified
+        }
+
+        shell.showItemInFolder(verified.filePath)
         return { success: true }
-      } catch (err) {
-        return { success: false, error: err?.message || 'Failed to open folder' }
+      } catch {
+        return {
+          success: false,
+          error: 'The enclosing folder could not be opened.'
+        }
       }
     })
 

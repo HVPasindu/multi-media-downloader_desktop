@@ -12,12 +12,12 @@ const api = {
     return ipcRenderer.invoke('downloads:get-folder')
   },
 
-  openFile: (filePath) => {
-    return ipcRenderer.invoke('shell:open-file', filePath)
+  openFile: (jobId) => {
+    return ipcRenderer.invoke('shell:open-file', jobId)
   },
 
-  openFolder: (filePath) => {
-    return ipcRenderer.invoke('shell:open-folder', filePath)
+  openFolder: (jobId) => {
+    return ipcRenderer.invoke('shell:open-folder', jobId)
   },
 
   request: (options) => {

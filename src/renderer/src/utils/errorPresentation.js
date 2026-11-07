@@ -259,3 +259,34 @@ export function getFriendlyErrorInfo(errorOrCode, fallbackMessage = null) {
     isRetryable: mapping.isRetryable
   }
 }
+
+/**
+ * Enhanced safe wrapper around getFriendlyErrorInfo (FIX 03).
+ * Guarantees that internal stack traces, technical database exceptions,
+ * internal filesystem paths, and authorization headers are never exposed to users.
+ *
+ * @param {string|object|null|undefined} errorOrCode
+ * @param {string} [fallbackMessage]
+ * @returns {{ code: string, title: string, message: string, guidance: string, isRetryable: boolean }}
+ */
+export function getSafeFriendlyErrorInfo(errorOrCode, fallbackMessage = null) {
+  const info = getFriendlyErrorInfo(errorOrCode, fallbackMessage)
+
+  const message = String(info.message || '').trim()
+
+  const technicalPattern =
+    /(?:\bat\s.+:\d+:\d+|node_modules|Sequelize|SQLITE_[A-Z_]+|TypeError|ReferenceError|SyntaxError|(?:[A-Za-z]:\\)|\/(?:home|Users|mnt|etc|var|usr)\/|stack trace|Bearer\s+\S+|authorization:|cookie:)/i
+
+  const isUnsafe = !message || message.length > 240 || technicalPattern.test(message)
+
+  if (!isUnsafe) {
+    return info
+  }
+
+  const mapping = ERROR_PRESENTATION_MAP[info.code] || ERROR_PRESENTATION_MAP.UNKNOWN_ERROR
+
+  return {
+    ...info,
+    message: fallbackMessage || mapping.defaultMessage
+  }
+}

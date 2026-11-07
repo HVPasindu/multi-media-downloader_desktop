@@ -29,7 +29,7 @@ import {
 } from '../services/downloadsApi'
 import { normalizeDownloadJob, formatBytes } from '../utils/downloadPresentation'
 import { showConfirm, showToast, showError } from '../utils/notificationService'
-import { getFriendlyErrorInfo } from '../utils/errorPresentation'
+import { getSafeFriendlyErrorInfo } from '../utils/errorPresentation'
 
 /**
  * Extracts a clean subtitle from statusText without repeating the main status label
@@ -165,11 +165,13 @@ export default function HistoryPage() {
         )
         setError(null)
       } else {
-        setError(res.data?.message || 'Failed to load download history.')
+        const errorInfo = getSafeFriendlyErrorInfo(res.data, 'Failed to load download history.')
+        setError(errorInfo.message)
       }
     } catch (err) {
       console.warn('History fetch error:', err)
-      setError('Unable to load history. Please retry.')
+      const errorInfo = getSafeFriendlyErrorInfo(err, 'Unable to load history. Please retry.')
+      setError(errorInfo.message)
     } finally {
       setIsLoading(false)
     }
@@ -282,7 +284,11 @@ export default function HistoryPage() {
           showError('Delete Failed', 'Failed to delete selected records.')
         }
       } catch (err) {
-        showError('Delete Failed', err?.message || 'An unexpected error occurred.')
+        const errorInfo = getSafeFriendlyErrorInfo(
+          err,
+          'An unexpected error occurred while deleting records.'
+        )
+        showError('Delete Failed', errorInfo.message)
       }
       return
     }
@@ -310,10 +316,12 @@ export default function HistoryPage() {
         fetchHistory()
         fetchSummary()
       } else {
-        showError('Clear Failed', res.data?.message || 'Failed to clear download history.')
+        const errorInfo = getSafeFriendlyErrorInfo(res.data, 'Failed to clear download history.')
+        showError('Clear Failed', errorInfo.message)
       }
     } catch (err) {
-      showError('Clear Failed', err?.message || 'An unexpected error occurred.')
+      const errorInfo = getSafeFriendlyErrorInfo(err, 'Unable to clear download history.')
+      showError('Clear Failed', errorInfo.message)
     }
   }
 
@@ -338,10 +346,15 @@ export default function HistoryPage() {
         fetchHistory()
         fetchSummary()
       } else {
-        showError('Delete Failed', res.data?.message || 'Failed to delete record.')
+        const errorInfo = getSafeFriendlyErrorInfo(res.data, 'Failed to delete record.')
+        showError('Delete Failed', errorInfo.message)
       }
     } catch (err) {
-      showError('Delete Error', err?.message || 'An unexpected error occurred.')
+      const errorInfo = getSafeFriendlyErrorInfo(
+        err,
+        'An unexpected error occurred while deleting the record.'
+      )
+      showError('Delete Error', errorInfo.message)
     }
   }
 
@@ -368,52 +381,65 @@ export default function HistoryPage() {
     setSelectedIds([])
   }
 
-  // Open media file using native OS application (Step 05.12)
-  const handleOpenFile = async (filePath) => {
-    if (!filePath || filePath === '—') {
-      showError('File Not Available', 'The file path is not recorded or unavailable.')
+  // Open media file using native OS application (Step 05.12, FIX 02 & FIX 03)
+  const handleOpenFile = async (jobId) => {
+    if (!jobId) {
+      showError('File Not Available', 'The download record ID is invalid or unavailable.')
       return
     }
     try {
       if (window.api?.openFile) {
-        const res = await window.api.openFile(filePath)
+        const res = await window.api.openFile(jobId)
         if (!res?.success) {
-          showError(
-            'Cannot Open File',
-            res?.error || 'The file could not be opened. It may have been moved or deleted.'
+          const errorInfo = getSafeFriendlyErrorInfo(
+            res?.error,
+            'The downloaded file could not be opened.'
           )
+          showError(errorInfo.title, errorInfo.message)
         }
       } else {
         showError('Not Supported', 'Opening files is not supported in this environment.')
       }
     } catch (err) {
-      showError('Open File Failed', err?.message || 'An unexpected error occurred.')
+      const errorInfo = getSafeFriendlyErrorInfo(
+        err,
+        'An unexpected error occurred while opening the file.'
+      )
+      showError(errorInfo.title, errorInfo.message)
     }
   }
 
-  // Open enclosing folder in OS file manager (Step 05.12)
-  const handleOpenFolder = async (filePath) => {
-    if (!filePath || filePath === '—') {
-      showError('Folder Not Available', 'The file path is not recorded or unavailable.')
+  // Open enclosing folder in OS file manager (Step 05.12, FIX 02 & FIX 03)
+  const handleOpenFolder = async (jobId) => {
+    if (!jobId) {
+      showError('Folder Not Available', 'The download record ID is invalid or unavailable.')
       return
     }
     try {
       if (window.api?.openFolder) {
-        const res = await window.api.openFolder(filePath)
+        const res = await window.api.openFolder(jobId)
         if (!res?.success) {
-          showError('Cannot Open Folder', res?.error || 'The enclosing folder could not be opened.')
+          const errorInfo = getSafeFriendlyErrorInfo(
+            res?.error,
+            'The enclosing folder could not be opened.'
+          )
+          showError(errorInfo.title, errorInfo.message)
         }
       } else {
         showError('Not Supported', 'Opening folders is not supported in this environment.')
       }
     } catch (err) {
-      showError('Open Folder Failed', err?.message || 'An unexpected error occurred.')
+      const errorInfo = getSafeFriendlyErrorInfo(
+        err,
+        'An unexpected error occurred while opening the folder.'
+      )
+      showError(errorInfo.title, errorInfo.message)
     }
   }
 
-  // Retry a failed or cancelled record (Step 05.13)
+  // Retry a failed or cancelled record (Step 05.13, FIX 03 & FIX 04)
   const handleRetryRecord = async (id) => {
-    if (retryingJobId) return
+    if (retryingJobId !== null) return
     try {
       setRetryingJobId(id)
       const res = await retryDownload(id)
@@ -422,14 +448,13 @@ export default function HistoryPage() {
         fetchHistory()
         fetchSummary()
       } else {
-        const errorInfo = getFriendlyErrorInfo(
-          res.data?.message || res.data?.error || 'Failed to retry download'
-        )
+        const errorInfo = getSafeFriendlyErrorInfo(res.data, 'Failed to retry download.')
         showError(errorInfo.title || 'Retry Failed', errorInfo.message)
       }
     } catch (err) {
-      const errorInfo = getFriendlyErrorInfo(
-        err?.message || 'An unexpected error occurred while retrying.'
+      const errorInfo = getSafeFriendlyErrorInfo(
+        err,
+        'An unexpected error occurred while retrying.'
       )
       showError(errorInfo.title || 'Retry Error', errorInfo.message)
     } finally {
@@ -735,8 +760,8 @@ export default function HistoryPage() {
                           <button
                             type="button"
                             onClick={() => handleRetryRecord(item.id)}
-                            disabled={retryingJobId === item.id}
-                            className="w-7 h-7 rounded-lg bg-[#040B1C] hover:bg-[#102449] border border-primary/20 flex items-center justify-center text-text-muted hover:text-[#19D8FF] transition-all cursor-pointer shadow-sm"
+                            disabled={retryingJobId !== null}
+                            className="w-7 h-7 rounded-lg bg-[#040B1C] hover:bg-[#102449] border border-primary/20 flex items-center justify-center text-text-muted hover:text-[#19D8FF] transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
                             title="Retry download"
                           >
                             <RotateCcw
@@ -746,7 +771,7 @@ export default function HistoryPage() {
                         ) : (
                           <button
                             type="button"
-                            onClick={() => handleOpenFile(item.savedTo)}
+                            onClick={() => handleOpenFile(item.id)}
                             disabled={!item.filePath || item.filePath === '—'}
                             className={`w-7 h-7 rounded-lg border flex items-center justify-center transition-all ${
                               item.filePath && item.filePath !== '—'
@@ -766,7 +791,7 @@ export default function HistoryPage() {
                         {/* Open Enclosing Folder Button */}
                         <button
                           type="button"
-                          onClick={() => handleOpenFolder(item.savedTo)}
+                          onClick={() => handleOpenFolder(item.id)}
                           disabled={!item.filePath || item.filePath === '—'}
                           className={`w-7 h-7 rounded-lg border flex items-center justify-center transition-all ${
                             item.filePath && item.filePath !== '—'
