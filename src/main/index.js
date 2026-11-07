@@ -10,6 +10,8 @@ import {
 
 import { initializeDatabase } from './backend/config/database.js'
 import { recoverInterruptedDownloadJobs } from './backend/services/downloadRecoveryService.js'
+import { getDownloadHistoryDetails } from './backend/services/downloadHistoryService.js'
+import { registerDownloadFileHandlers } from './ipc/downloadFileHandlers.js'
 
 import { getDatabase } from './backend/config/database.js'
 import { getSavedDownloadPath } from './backend/services/downloadSettingsService.js'
@@ -22,6 +24,7 @@ import {
 import { getSessionToken } from './backend/services/localApiSecurityService.js'
 import {
   setStartupWindow,
+  getStartupWindow,
   getStartupStatus,
   updateStartupStatus,
   restartApplication
@@ -169,6 +172,18 @@ app.whenReady().then(async () => {
       return await getDefaultDownloadPath()
     })
 
+    // Step 05.12 & Task 04 - Secure IPC handlers to open downloaded media file or its folder (FIX 02 & Task 04)
+    registerDownloadFileHandlers({
+      ipcMain,
+      BrowserWindow,
+      shell,
+      getDownloadHistoryDetails,
+      getTrustedWindow: getStartupWindow,
+      isDev: is.dev,
+      rendererUrl: process.env['ELECTRON_RENDERER_URL'],
+      rendererFilePath: join(__dirname, '../renderer/index.html')
+    })
+
     // Step 04.41 - Provide a secure, authenticated IPC bridge for renderer API requests
     ipcMain.handle('api:request', async (event, requestOptions) => {
       // 1. Validate IPC sender - must originate from the trusted application window
@@ -229,12 +244,10 @@ app.whenReady().then(async () => {
     updateStartupStatus('ready', 'Application backend is ready')
   } catch (error) {
     console.error('Application startup failed:', error)
-    updateStartupStatus(
-      'error',
-      'Application startup failed',
-      error instanceof Error ? error.message : String(error)
-    )
-    dialog.showErrorBox('Startup Error', error instanceof Error ? error.message : String(error))
+    const safeStartupError =
+      'Application startup failed. Please restart the application or check the application logs.'
+    updateStartupStatus('error', 'Application startup failed', safeStartupError)
+    dialog.showErrorBox('Startup Error', safeStartupError)
   }
 
   app.on('activate', function () {

@@ -12,6 +12,14 @@ const api = {
     return ipcRenderer.invoke('downloads:get-folder')
   },
 
+  openFile: (jobId) => {
+    return ipcRenderer.invoke('shell:open-file', jobId)
+  },
+
+  openFolder: (jobId) => {
+    return ipcRenderer.invoke('shell:open-folder', jobId)
+  },
+
   request: (options) => {
     return ipcRenderer.invoke('api:request', options)
   }

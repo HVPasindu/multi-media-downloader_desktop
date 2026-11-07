@@ -30,6 +30,7 @@ import { createDownload, listDownloads, deleteDownloadHistory } from '../service
 import { analyzeMedia } from '../services/mediaApi'
 import { normalizeDownloadJob } from '../utils/downloadPresentation'
 import { showConfirm, showToast, showError } from '../utils/notificationService'
+import { getSafeFriendlyErrorInfo } from '../utils/errorPresentation'
 import {
   formatMediaDuration,
   getMediaFormatAvailability,
@@ -518,8 +519,16 @@ export default function DownloaderPage() {
           errorMsg = data.message
         }
 
+        const safeErrorInfo = getSafeFriendlyErrorInfo(
+          {
+            code: errCode,
+            message: errorMsg
+          },
+          'Media analysis failed. Please verify the link and try again.'
+        )
+
         setApiErrorCode(errCode)
-        setApiError(errorMsg)
+        setApiError(safeErrorInfo.message)
         setAnalyzedMedia(null)
       }
     } catch (err) {
@@ -528,12 +537,16 @@ export default function DownloaderPage() {
       }
       setApiErrorCode('NETWORK_ERROR')
       const isIpcError = err?.message?.includes('IPC') || err?.message?.includes('bridge')
-      const errorMsg = isIpcError
+      const fallbackMessage = isIpcError
         ? 'Local analyzer service could not be reached via IPC. Please restart the application.'
-        : err instanceof Error
-          ? err.message
-          : 'An unexpected error occurred while analyzing the media link.'
-      setApiError(errorMsg)
+        : 'An unexpected error occurred while analyzing the media link.'
+
+      const safeErrorInfo = getSafeFriendlyErrorInfo(
+        isIpcError ? fallbackMessage : err,
+        fallbackMessage
+      )
+
+      setApiError(safeErrorInfo.message)
       setAnalyzedMedia(null)
     } finally {
       if (currentRequestId === activeRequestIdRef.current) {
@@ -555,7 +568,12 @@ export default function DownloaderPage() {
         }
       } catch (err) {
         if (isMounted) {
-          setFolderError(err?.message || 'Unable to retrieve saved download folder.')
+          const safeErrorInfo = getSafeFriendlyErrorInfo(
+            err,
+            'Unable to retrieve saved download folder.'
+          )
+
+          setFolderError(safeErrorInfo.message)
         }
       } finally {
         if (isMounted) {
@@ -579,7 +597,9 @@ export default function DownloaderPage() {
         setDownloadFolder(selected)
       }
     } catch (err) {
-      setFolderError(err?.message || 'Failed to update download folder.')
+      const safeErrorInfo = getSafeFriendlyErrorInfo(err, 'Failed to update download folder.')
+
+      setFolderError(safeErrorInfo.message)
     }
   }
 
@@ -731,30 +751,34 @@ export default function DownloaderPage() {
         })
         await Promise.all([fetchRecentDownloads(), refreshDuplicateStatus()])
       } else if (response.status === 200 && response.data?.duplicate) {
+        const safeDuplicateMsg = getSafeFriendlyErrorInfo(
+          response.data.message,
+          'An equivalent download is already active or in queue.'
+        ).message
         setDownloadSubmitFeedback({
           type: 'info',
-          message: response.data.message || 'An equivalent download is already active or in queue.'
+          message: safeDuplicateMsg
         })
         await Promise.all([fetchRecentDownloads(), refreshDuplicateStatus()])
       } else {
-        const errorMsg =
-          response.data?.message ||
+        const safeErrMsg = getSafeFriendlyErrorInfo(
+          response.data?.message,
           `Download request failed with status ${response.status}. Please try again.`
+        ).message
         setDownloadSubmitFeedback({
           type: 'error',
-          message: errorMsg
+          message: safeErrMsg
         })
       }
     } catch (err) {
       const isIpc = err?.message?.includes('IPC') || err?.message?.includes('bridge')
-      const errorMsg = isIpc
+      const fallbackMsg = isIpc
         ? 'Communication with download service failed. Please restart the application.'
-        : err instanceof Error
-          ? err.message
-          : 'An unexpected error occurred while queuing the download.'
+        : 'An unexpected error occurred while queuing the download.'
+      const safeErrorInfo = getSafeFriendlyErrorInfo(isIpc ? fallbackMsg : err, fallbackMsg)
       setDownloadSubmitFeedback({
         type: 'error',
-        message: errorMsg
+        message: safeErrorInfo.message
       })
     } finally {
       setIsSubmittingDownload(false)
@@ -795,7 +819,11 @@ export default function DownloaderPage() {
         showError('Clear Failed', 'Failed to clear recent downloads from database.')
       }
     } catch (err) {
-      showError('Clear Error', err?.message || 'An unexpected error occurred while clearing.')
+      const safeErrorInfo = getSafeFriendlyErrorInfo(
+        err,
+        'An unexpected error occurred while clearing.'
+      )
+      showError('Clear Error', safeErrorInfo.message)
     }
   }
 

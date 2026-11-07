@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { listDownloads, getActiveDownloadsCount } from '../services/downloadsApi'
 import { normalizeDownloadJob } from '../utils/downloadPresentation'
 import { seedKnownFailures, notifyLiveJobFailure } from '../utils/notificationService'
+import { getSafeFriendlyErrorInfo } from '../utils/errorPresentation'
 
 /**
  * Custom hook to coordinate Downloads Manager initial fetch, server-side pagination,
@@ -113,10 +114,11 @@ export function useDownloadsManager({
           initialFetchDoneRef.current = true
         } else {
           if (!initialFetchDoneRef.current) {
-            setError(
-              response.data?.message ||
-                'Failed to load downloads. Please check your connection and retry.'
+            const errorInfo = getSafeFriendlyErrorInfo(
+              response.data,
+              'Failed to load downloads. Please check your connection and retry.'
             )
+            setError(errorInfo.message)
           }
         }
       } catch (err) {
@@ -126,7 +128,11 @@ export function useDownloadsManager({
           isMountedCheck() &&
           requestId === requestCountRef.current
         ) {
-          setError('Failed to connect to local API service. Please retry.')
+          const errorInfo = getSafeFriendlyErrorInfo(
+            err,
+            'Failed to connect to local API service. Please retry.'
+          )
+          setError(errorInfo.message)
         }
       } finally {
         if (requestId === requestCountRef.current) {

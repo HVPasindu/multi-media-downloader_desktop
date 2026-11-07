@@ -91,6 +91,14 @@ const TEST_SUITES = [
     file: 'tests/step12_pagination_search_tests.js'
   },
   {
+    name: 'Phase 05: Step 13 Summary Dynamic Counts & Large Dataset Suite',
+    file: 'tests/step13_summary_large_dataset_tests.js'
+  },
+  {
+    name: 'Phase 05: Step 14 Desktop Frontend & E2E Integration Suite',
+    file: 'tests/step14_frontend_download_api_tests.js'
+  },
+  {
     name: 'Order 10: Progress, ETA, File Size, Same-Job Retry & Clear Failed Suite',
     file: 'tests/download_progress_eta_retry_tests.js'
   }
