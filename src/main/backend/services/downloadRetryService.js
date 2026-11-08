@@ -112,13 +112,27 @@ export async function retryDownloadJob(originalJobId, options = {}) {
     }
 
     // Clean old partial fragments so retry restarts from 0% with clean workspace
+    const cleanPath = await resolveValidatedDownloadPath(getDatabase().models.AppSetting)
+    if (!cleanPath) {
+      return {
+        outcome: 'cleanup_failed',
+        message: 'Unable to resolve download folder path for retry cleanup'
+      }
+    }
+
     try {
-      const cleanPath = await resolveValidatedDownloadPath(getDatabase().models.AppSetting)
-      if (cleanPath) {
-        await cleanupJobTemporaryFiles(originalJob.id, cleanPath)
+      const cleanupResult = await cleanupJobTemporaryFiles(originalJob.id, cleanPath)
+      if (cleanupResult && cleanupResult.success === false) {
+        return {
+          outcome: 'cleanup_failed',
+          message: cleanupResult.error || 'Failed to clean previous partial files for retry'
+        }
       }
     } catch (cleanupErr) {
-      console.warn(`[retry] Failed to clean partial files for job ${originalJob.id}:`, cleanupErr)
+      return {
+        outcome: 'cleanup_failed',
+        message: cleanupErr.message || 'Failed to clean previous partial files for retry'
+      }
     }
 
     // 6. Update the original job from 'failed' or 'cancelled' to 'queued' and reset progress to 0

@@ -177,20 +177,31 @@ export async function cancelDownloadJob(jobId) {
 
   // Handle Paused Job
   if (job.status === 'paused') {
+    try {
+      const cleanPath = await resolveValidatedDownloadPath(getDatabase().models.AppSetting)
+      if (cleanPath) {
+        const cleanupResult = await cleanupJobTemporaryFiles(jobId, cleanPath)
+        if (cleanupResult && cleanupResult.success === false) {
+          return {
+            outcome: 'cleanup_failed',
+            status: 'paused',
+            message: cleanupResult.error || 'Failed to clean partial files during cancellation'
+          }
+        }
+      }
+    } catch (cleanErr) {
+      return {
+        outcome: 'cleanup_failed',
+        status: 'paused',
+        message: cleanErr.message || 'Failed to clean partial files during cancellation'
+      }
+    }
+
     const queueIndex = waitingJobIds.indexOf(jobId)
     if (queueIndex !== -1) {
       waitingJobIds.splice(queueIndex, 1)
     }
     scheduledJobIds.delete(jobId)
-
-    try {
-      const cleanPath = await resolveValidatedDownloadPath(getDatabase().models.AppSetting)
-      if (cleanPath) {
-        await cleanupJobTemporaryFiles(jobId, cleanPath)
-      }
-    } catch {
-      // ignore cleanup errors during cancel
-    }
 
     const [updatedCount] = await DownloadJob.update(
       {
@@ -219,20 +230,31 @@ export async function cancelDownloadJob(jobId) {
 
   // Step 09.B - Handle Interrupted Job (cancellation while waiting for network)
   if (job.status === 'interrupted') {
+    try {
+      const cleanPath = await resolveValidatedDownloadPath(getDatabase().models.AppSetting)
+      if (cleanPath) {
+        const cleanupResult = await cleanupJobTemporaryFiles(jobId, cleanPath)
+        if (cleanupResult && cleanupResult.success === false) {
+          return {
+            outcome: 'cleanup_failed',
+            status: 'interrupted',
+            message: cleanupResult.error || 'Failed to clean partial files during cancellation'
+          }
+        }
+      }
+    } catch (cleanErr) {
+      return {
+        outcome: 'cleanup_failed',
+        status: 'interrupted',
+        message: cleanErr.message || 'Failed to clean partial files during cancellation'
+      }
+    }
+
     const queueIndex = waitingJobIds.indexOf(jobId)
     if (queueIndex !== -1) {
       waitingJobIds.splice(queueIndex, 1)
     }
     scheduledJobIds.delete(jobId)
-
-    try {
-      const cleanPath = await resolveValidatedDownloadPath(getDatabase().models.AppSetting)
-      if (cleanPath) {
-        await cleanupJobTemporaryFiles(jobId, cleanPath)
-      }
-    } catch {
-      // ignore cleanup errors during cancel
-    }
 
     const [updatedCount] = await DownloadJob.update(
       {
@@ -261,6 +283,25 @@ export async function cancelDownloadJob(jobId) {
 
   // 3. Handle Queued Job
   if (job.status === 'queued') {
+    try {
+      const cleanPath = await resolveValidatedDownloadPath(getDatabase().models.AppSetting)
+      if (cleanPath) {
+        const cleanupResult = await cleanupJobTemporaryFiles(jobId, cleanPath)
+        if (cleanupResult && cleanupResult.success === false) {
+          return {
+            outcome: 'cleanup_failed',
+            status: 'queued',
+            message: cleanupResult.error || 'Failed to clean partial files during cancellation'
+          }
+        }
+      }
+    } catch (cleanErr) {
+      return {
+        outcome: 'cleanup_failed',
+        status: 'queued',
+        message: cleanErr.message || 'Failed to clean partial files during cancellation'
+      }
+    }
     const queueIndex = waitingJobIds.indexOf(jobId)
 
     if (queueIndex !== -1) {

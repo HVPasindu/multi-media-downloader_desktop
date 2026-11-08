@@ -383,12 +383,19 @@ export function runYtDlp(args, onProgress = null, onOutputLine = null, options =
         let spawnArgs = args
 
         // On Windows, use the native send-ctrl-break launcher helper which creates the yt-dlp
-        // process with CREATE_NEW_CONSOLE | CREATE_NEW_PROCESS_GROUP and SW_HIDE. This grants
-        // yt-dlp its own isolated console session, prevents signal leakage to parent/terminal,
+        // process with hidden AllocConsole and CREATE_NEW_PROCESS_GROUP. This grants yt-dlp
+        // its own isolated console session, prevents signal leakage to parent/terminal,
         // and enables AttachConsole + GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT) to target
         // this process group safely and reliably.
-        const helperPath = process.platform === 'win32' ? resolveCtrlBreakHelperPath() : null
-        if (helperPath) {
+        if (process.platform === 'win32') {
+          const helperPath = resolveCtrlBreakHelperPath()
+          if (!helperPath) {
+            throw new DownloadError(
+              DOWNLOAD_ERROR_CODES.UNKNOWN_ERROR,
+              'Windows pause helper executable (send-ctrl-break.exe) was not found. Please verify application installation.',
+              { details: { platform: 'win32' } }
+            )
+          }
           spawnExe = helperPath
           spawnArgs = ['spawn', ytDlpExecutable, ...args]
         }
@@ -410,6 +417,14 @@ export function runYtDlp(args, onProgress = null, onOutputLine = null, options =
           cancelPersistedResolver = resolve
         })
 
+        let readyResolver
+        const readyPromise = new Promise((resolve) => {
+          readyResolver = resolve
+        })
+        if (process.platform !== 'win32') {
+          readyResolver(true)
+        }
+
         const processEntry = {
           jobId: options?.jobId,
           managedByJobExecutor: Boolean(options?.managedByJobExecutor),
@@ -418,6 +433,7 @@ export function runYtDlp(args, onProgress = null, onOutputLine = null, options =
           pgid: null,
           cancelRequested: false,
           pauseRequested: false,
+          pausePromise: null,
           shutdownRequested: false,
           // 'downloading' | 'finalizing' — set to 'finalizing' when all streams finish
           // so the Pause endpoint can return 'already_finishing' instead of interrupting
@@ -428,6 +444,7 @@ export function runYtDlp(args, onProgress = null, onOutputLine = null, options =
           closePromise,
           pausePersistedPromise,
           cancelPersistedPromise,
+          readyPromise,
           markClosed(code, sig) {
             if (this.closed) return
             this.closed = true
@@ -487,6 +504,7 @@ export function runYtDlp(args, onProgress = null, onOutputLine = null, options =
               if (!processEntry.pgid) {
                 processEntry.pgid = parsedPid
               }
+              readyResolver(true)
             }
             return
           }
@@ -495,8 +513,18 @@ export function runYtDlp(args, onProgress = null, onOutputLine = null, options =
             const parsedPgid = parseInt(cleanLine.slice(pgidMarker.length).trim(), 10)
             if (Number.isSafeInteger(parsedPgid) && parsedPgid > 0) {
               processEntry.pgid = parsedPgid
+              readyResolver(true)
             }
             return
+          }
+
+          if (
+            cleanLine.includes('APPLAN2_POSTPROCESS:{"status": "started"}') ||
+            cleanLine.includes('[Merger]') ||
+            cleanLine.includes('[ffmpeg]') ||
+            cleanLine.includes('[FixupM4a]')
+          ) {
+            processEntry.phase = 'finalizing'
           }
 
           if (cleanLine.startsWith(fileMarker)) {
@@ -555,6 +583,7 @@ export function runYtDlp(args, onProgress = null, onOutputLine = null, options =
 
         // Handle failure to start yt-dlp
         child.once('error', (error) => {
+          readyResolver(false)
           processEntry.markClosed(1, 'ERROR')
 
           if (processEntry.shutdownRequested) {
@@ -580,6 +609,7 @@ export function runYtDlp(args, onProgress = null, onOutputLine = null, options =
 
         // Handle process completion
         child.once('close', (exitCode, signal) => {
+          readyResolver(false)
           processEntry.markClosed(exitCode, signal)
 
           // Process any remaining output FIRST (before checking exit status)
@@ -826,8 +856,17 @@ export async function cancelRunningDownload(jobId, timeoutMs = 4000) {
   processEntry.cancelRequested = true
 
   try {
-    await terminateDownloadProcessTree(processEntry, timeoutMs)
+    const termResult = await terminateDownloadProcessTree(processEntry, timeoutMs)
+    if (!termResult.success) {
+      processEntry.cancelRequested = false
+      return {
+        success: false,
+        reason: 'termination_failed',
+        error: termResult.error || 'Failed to terminate download process tree'
+      }
+    }
   } catch (error) {
+    processEntry.cancelRequested = false
     console.error(`[download] Error terminating process for job ${jobId}:`, error)
     return {
       success: false,
@@ -838,10 +877,20 @@ export async function cancelRunningDownload(jobId, timeoutMs = 4000) {
 
   // Await SQLite persistence & cleanup completion from executeDownloadJob catch block
   if (processEntry.managedByJobExecutor && processEntry.cancelPersistedPromise) {
-    await Promise.race([
+    const persistResult = await Promise.race([
       processEntry.cancelPersistedPromise,
-      new Promise((resolve) => setTimeout(resolve, timeoutMs))
+      new Promise((resolve) =>
+        setTimeout(() => resolve({ success: false, timeout: true }), timeoutMs)
+      )
     ])
+
+    if (!persistResult?.success) {
+      return {
+        success: false,
+        reason: persistResult?.timeout ? 'persistence_timeout' : 'persistence_failed',
+        error: persistResult?.data?.message || 'Cancellation persistence could not be verified'
+      }
+    }
   }
 
   clearJobRetryState(jobId)
@@ -874,7 +923,11 @@ export async function pauseRunningDownload(jobId, timeoutMs = 4000) {
     }
   }
 
-  // Prevent duplicate pause requests
+  // Prevent duplicate pause requests / deduplicate in-flight operations
+  if (processEntry.pausePromise) {
+    return await processEntry.pausePromise
+  }
+
   if (processEntry.pauseRequested) {
     return {
       success: true,
@@ -882,55 +935,81 @@ export async function pauseRunningDownload(jobId, timeoutMs = 4000) {
     }
   }
 
-  processEntry.pauseRequested = true
+  const pauseOp = (async () => {
+    processEntry.pauseRequested = true
 
-  try {
-    const interruptResult = await gracefullyInterruptDownloadProcess(processEntry, timeoutMs)
-    if (!interruptResult.success) {
+    // On Windows, if processEntry.actualPid is not yet known (helper handshake still pending),
+    // await processEntry.readyPromise with a 3000ms timeout before attempting signaling.
+    if (process.platform === 'win32' && !processEntry.actualPid && processEntry.readyPromise) {
+      await Promise.race([
+        processEntry.readyPromise,
+        new Promise((resolve) => setTimeout(resolve, 3000))
+      ])
+    }
+
+    try {
+      const interruptResult = await gracefullyInterruptDownloadProcess(processEntry, timeoutMs)
+      if (!interruptResult.success) {
+        processEntry.pauseRequested = false
+        return {
+          success: false,
+          reason: 'interruption_failed',
+          error: interruptResult.error || 'Graceful pause did not complete within timeout'
+        }
+      }
+    } catch (error) {
       processEntry.pauseRequested = false
+      console.error(`[download] Error interrupting process for pausing job ${jobId}:`, error)
       return {
         success: false,
         reason: 'interruption_failed',
-        error: interruptResult.error || 'Graceful pause did not complete within timeout'
+        error: error.message
       }
     }
-  } catch (error) {
-    processEntry.pauseRequested = false
-    console.error(`[download] Error interrupting process for pausing job ${jobId}:`, error)
+
+    // Await SQLite persistence & checkpoint verification from executeDownloadJob catch block
+    if (processEntry.managedByJobExecutor && processEntry.pausePersistedPromise) {
+      const persistResult = await Promise.race([
+        processEntry.pausePersistedPromise,
+        new Promise((resolve) =>
+          setTimeout(() => resolve({ success: false, timeout: true }), timeoutMs)
+        )
+      ])
+
+      if (!persistResult.success) {
+        return {
+          success: false,
+          reason: persistResult.timeout ? 'persistence_timeout' : 'validation_failed',
+          error: persistResult.data?.message || 'Failed to verify or persist paused checkpoint'
+        }
+      }
+    }
+
+    clearJobRetryState(jobId)
+
     return {
-      success: false,
-      reason: 'interruption_failed',
-      error: error.message
+      success: true
     }
-  }
+  })()
 
-  // Await SQLite persistence & checkpoint verification from executeDownloadJob catch block
-  if (processEntry.managedByJobExecutor && processEntry.pausePersistedPromise) {
-    const persistResult = await Promise.race([
-      processEntry.pausePersistedPromise,
-      new Promise((resolve) =>
-        setTimeout(() => resolve({ success: false, timeout: true }), timeoutMs)
-      )
-    ])
-
-    if (!persistResult.success) {
-      return {
-        success: false,
-        reason: persistResult.timeout ? 'persistence_timeout' : 'validation_failed',
-        error: persistResult.data?.message || 'Failed to verify or persist paused checkpoint'
-      }
-    }
-  }
-
-  clearJobRetryState(jobId)
-
-  return {
-    success: true
+  processEntry.pausePromise = pauseOp
+  try {
+    return await pauseOp
+  } finally {
+    processEntry.pausePromise = null
   }
 }
 
 export function getActiveDownloadProcess(jobId) {
   return activeDownloadProcesses.get(jobId) || null
+}
+
+export function setActiveDownloadProcessForTesting(jobId, entry) {
+  if (!entry) {
+    activeDownloadProcesses.delete(jobId)
+  } else {
+    activeDownloadProcesses.set(jobId, entry)
+  }
 }
 
 /**
@@ -2254,13 +2333,19 @@ export async function executeDownloadJob(jobId, options = {}) {
     }
 
     if (error instanceof DownloadCancelledError) {
+      let persistSuccess = false
+      let persistError = null
       try {
         const cancelledJob = await markDownloadJobCancelled(jobId)
 
-        if (!cancelledJob) {
+        if (cancelledJob) {
+          persistSuccess = true
+        } else {
+          persistError = new Error('Could not mark Download Job as cancelled')
           console.error('Could not mark Download Job as cancelled:', jobId)
         }
       } catch (statusError) {
+        persistError = statusError
         console.error('Could not save cancelled job status:', statusError)
       }
 
@@ -2282,7 +2367,7 @@ export async function executeDownloadJob(jobId, options = {}) {
 
       const currentEntry = activeDownloadProcesses.get(jobId)
       if (currentEntry && typeof currentEntry.markCancelPersisted === 'function') {
-        currentEntry.markCancelPersisted(true)
+        currentEntry.markCancelPersisted(persistSuccess, persistError)
       }
 
       throw error

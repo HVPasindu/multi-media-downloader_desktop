@@ -23,11 +23,8 @@ import PlatformBadge from '../components/ui/PlatformBadge'
 import StatusBadge from '../components/ui/StatusBadge'
 import Pagination from '../components/common/Pagination'
 import { useDownloadsManager } from '../hooks/useDownloadsManager'
+import { useDownloadJobActions } from '../hooks/useDownloadJobActions'
 import {
-  retryDownload,
-  cancelDownload,
-  pauseDownload,
-  resumeDownload,
   deleteDownloadHistory,
   clearDownloadHistory,
   getDownloadSummary
@@ -65,10 +62,6 @@ export default function DownloadsPage() {
   const [searchQuery, setSearchQuery] = useState('')
   const [pageSize, setPageSize] = useState(20)
   const [currentPage, setCurrentPage] = useState(1)
-  const [retryingJobId, setRetryingJobId] = useState(null)
-  const [cancellingJobId, setCancellingJobId] = useState(null)
-  const [pausingJobId, setPausingJobId] = useState(null)
-  const [resumingJobId, setResumingJobId] = useState(null)
   const [deletingJobId, setDeletingJobId] = useState(null)
   const retryGuardRef = useRef(null)
   if (retryGuardRef.current === null) {
@@ -177,148 +170,27 @@ export default function DownloadsPage() {
     setCurrentPage(1)
   }
 
+  // Centralized action handlers and loading state via custom hook (Phase 7)
+  const {
+    pausingJobId,
+    resumingJobId,
+    cancellingJobId,
+    retryingJobId,
+    handlePauseJob,
+    handleResumeJob,
+    handleCancelJob,
+    handleRetryJob: actionRetryJob
+  } = useDownloadJobActions({
+    onRefresh: retry,
+    fetchGlobalCounts
+  })
+
   const handleRetryJob = async (jobId) => {
     if (!retryGuardRef.current.tryStart()) return
     try {
-      setRetryingJobId(jobId)
-      const res = await retryDownload(jobId)
-      if (res.ok && res.status === 201) {
-        showToast('Download queued for retry', 'success')
-        if (typeof retry === 'function') retry()
-        fetchGlobalCounts()
-      } else {
-        const errorInfo = getSafeFriendlyErrorInfo(res.data, 'Failed to retry download.')
-        showError(errorInfo.title || 'Retry Failed', errorInfo.message)
-      }
-    } catch (err) {
-      const errorInfo = getSafeFriendlyErrorInfo(
-        err,
-        'An unexpected error occurred while retrying.'
-      )
-      showError(errorInfo.title || 'Retry Error', errorInfo.message)
+      await actionRetryJob(jobId)
     } finally {
       retryGuardRef.current.finish()
-      setRetryingJobId(null)
-    }
-  }
-
-  // Cancel an active or queued download job (Step 05.11 & 05.13)
-  const handleCancelJob = async (jobId) => {
-    if (cancellingJobId !== null) return
-
-    const confirmed = await showConfirm(
-      'Cancel Download?',
-      'Are you sure you want to cancel this download? This will stop the active download process.',
-      {
-        confirmButtonText: 'Cancel Download',
-        isDanger: true
-      }
-    )
-
-    if (!confirmed) return
-
-    try {
-      setCancellingJobId(jobId)
-      const res = await cancelDownload(jobId)
-      if (res.ok) {
-        if (res.status === 202 || res.data?.data?.status === 'cancellation_requested') {
-          showToast('Cancelling download...', 'info')
-          for (let i = 0; i < 5; i++) {
-            await new Promise((r) => setTimeout(r, 400))
-            if (typeof retry === 'function') retry()
-            fetchGlobalCounts()
-          }
-        } else {
-          showToast('Download cancelled', 'success')
-          if (typeof retry === 'function') retry()
-          fetchGlobalCounts()
-        }
-      } else if (res.status === 409) {
-        const errorInfo = getSafeFriendlyErrorInfo(
-          res.data,
-          'Download is already completed or terminated.'
-        )
-        showError('Cannot Cancel', errorInfo.message)
-        if (typeof retry === 'function') retry()
-        fetchGlobalCounts()
-      } else if (res.status === 404) {
-        showError('Not Found', 'Download job not found.')
-        if (typeof retry === 'function') retry()
-        fetchGlobalCounts()
-      } else {
-        const errorInfo = getSafeFriendlyErrorInfo(res.data, 'Failed to cancel download.')
-        showError(errorInfo.title || 'Cancellation Failed', errorInfo.message)
-      }
-    } catch (err) {
-      const errorInfo = getSafeFriendlyErrorInfo(
-        err,
-        'An unexpected error occurred while cancelling.'
-      )
-      showError(errorInfo.title || 'Cancellation Error', errorInfo.message)
-    } finally {
-      setCancellingJobId(null)
-    }
-  }
-
-  const handlePauseJob = async (jobId) => {
-    if (pausingJobId !== null || cancellingJobId !== null) return
-    try {
-      setPausingJobId(jobId)
-      const res = await pauseDownload(jobId)
-      if (res.ok) {
-        if (res.data?.data?.status === 'already_finishing') {
-          showToast('Download is finishing and will complete momentarily', 'info')
-          if (typeof retry === 'function') retry()
-          fetchGlobalCounts()
-        } else if (res.status === 202 || res.data?.data?.status === 'pause_pending') {
-          showToast('Pausing download...', 'info')
-          for (let i = 0; i < 5; i++) {
-            await new Promise((r) => setTimeout(r, 400))
-            if (typeof retry === 'function') retry()
-            fetchGlobalCounts()
-          }
-        } else {
-          showToast('Download paused', 'info')
-          if (typeof retry === 'function') retry()
-          fetchGlobalCounts()
-        }
-      } else {
-        const errorInfo = getSafeFriendlyErrorInfo(res.data, 'Failed to pause download.')
-        showError(errorInfo.title || 'Pause Failed', errorInfo.message)
-      }
-    } catch (err) {
-      const errorInfo = getSafeFriendlyErrorInfo(err, 'An unexpected error occurred while pausing.')
-      showError(errorInfo.title || 'Pause Error', errorInfo.message)
-    } finally {
-      setPausingJobId(null)
-    }
-  }
-
-  const handleResumeJob = async (jobId) => {
-    if (resumingJobId !== null) return
-    try {
-      setResumingJobId(jobId)
-      const res = await resumeDownload(jobId)
-      if (res.ok) {
-        if (res.data?.data?.status === 'interrupted') {
-          showToast('Internet offline. Job will resume once connection is restored.', 'info')
-        } else {
-          showToast('Download resumed', 'success')
-        }
-        if (typeof retry === 'function') retry()
-        fetchGlobalCounts()
-      } else {
-        const errorInfo = getSafeFriendlyErrorInfo(res.data, 'Failed to resume download.')
-        showError(errorInfo.title || 'Resume Failed', errorInfo.message)
-      }
-    } catch (err) {
-      const errorInfo = getSafeFriendlyErrorInfo(
-        err,
-        'An unexpected error occurred while resuming.'
-      )
-      showError(errorInfo.title || 'Resume Error', errorInfo.message)
-    } finally {
-      setResumingJobId(null)
     }
   }
 

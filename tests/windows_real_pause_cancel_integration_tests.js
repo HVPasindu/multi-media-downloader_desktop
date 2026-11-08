@@ -16,10 +16,14 @@ import {
 } from '../src/main/backend/services/downloadQueueService.js'
 import {
   getActiveDownloadProcess,
+  setActiveDownloadProcessForTesting,
+  pauseRunningDownload,
   verifyFinalMediaContent
 } from '../src/main/backend/services/downloadService.js'
 import { retryDownloadJob } from '../src/main/backend/services/downloadRetryService.js'
 import { recoverInterruptedDownloadJobs } from '../src/main/backend/services/downloadRecoveryService.js'
+import { resumeInterruptedNetworkJobs } from '../src/main/backend/services/networkRecoveryService.js'
+import { resolveCtrlBreakHelperPath } from '../src/main/backend/services/processInterruptionService.js'
 import {
   setAllowLocalhostForTesting,
   resetAllowLocalhostForTesting
@@ -152,7 +156,7 @@ async function runWindowsRealIntegrationTests() {
   console.log(`[test-server] Throttled Range HTTP server listening on port ${port}`)
 
   // Register analyzer mock for local HTTP fixture URL
-  setAnalyzerForTesting(async () => ({
+  const mockAnalyzer = async () => ({
     platform: 'youtube',
     title: 'Real Windows Test Video',
     duration: 6,
@@ -161,7 +165,8 @@ async function runWindowsRealIntegrationTests() {
       audioFormats: [],
       mp4Qualities: ['720p']
     }
-  }))
+  })
+  setAnalyzerForTesting(mockAnalyzer)
 
   try {
     const { DownloadJob, MediaItem, AppSetting } = testDb.sequelize.models
@@ -728,9 +733,231 @@ async function runWindowsRealIntegrationTests() {
       '✓ Test H Passed: yt-dlp, FFmpeg, Node runtime verified; YouTube analysis accurately handled.\n'
     )
 
+    // ==========================================================================
+    // TEST I — PAUSE DURING FINALIZING PHASE PROTECTION
+    // ==========================================================================
+    console.log('--- TEST I: Finalizing Phase Pause Protection ---')
+
+    const jobI = await DownloadJob.create({
+      media_id: media.id,
+      source_type: 'link',
+      output_format: 'mp4',
+      quality: '720p',
+      status: 'downloading',
+      progress: 98,
+      downloaded_bytes: FILE_SIZE
+    })
+
+    const mockProcessI = {
+      jobId: jobI.id,
+      managedByJobExecutor: true,
+      childProcess: { pid: process.pid },
+      actualPid: process.pid,
+      pgid: process.pid,
+      cancelRequested: false,
+      pauseRequested: false,
+      phase: 'finalizing',
+      closed: false
+    }
+    setActiveDownloadProcessForTesting(jobI.id, mockProcessI)
+
+    const pauseResultI = await pauseDownloadJob(jobI.id)
+    assert.equal(
+      pauseResultI.outcome,
+      'already_finishing',
+      'Test I.1: Outcome is already_finishing'
+    )
+    assert.equal(pauseResultI.status, 'downloading', 'Test I.2: Status remains downloading')
+    assert.ok(
+      pauseResultI.message.includes('finishing'),
+      'Test I.3: User-friendly finalizing message returned'
+    )
+
+    setActiveDownloadProcessForTesting(jobI.id, null)
+    console.log(
+      '✓ Test I Passed: Pause in finalizing phase rejected cleanly with already_finishing.\n'
+    )
+
+    // ==========================================================================
+    // TEST J — WINDOWS CONSOLE HELPER BINARY VALIDATION
+    // ==========================================================================
+    console.log('--- TEST J: Windows Console Helper PE Binary Validation ---')
+
+    const helperPath = resolveCtrlBreakHelperPath()
+    assert.ok(helperPath, 'Test J.1: Helper binary path resolved')
+    assert.ok(fs.existsSync(helperPath), 'Test J.2: Helper binary exists on disk')
+
+    const helperBuf = fs.readFileSync(helperPath)
+    assert.ok(helperBuf.length > 2048, 'Test J.3: Binary size is realistic (>2KB)')
+    assert.equal(helperBuf[0], 0x4d, 'Test J.4: MZ signature byte 0')
+    assert.equal(helperBuf[1], 0x5a, 'Test J.5: MZ signature byte 1')
+
+    const peOffset = helperBuf.readInt32LE(0x3c)
+    assert.equal(
+      helperBuf.toString('utf8', peOffset, peOffset + 4),
+      'PE\0\0',
+      'Test J.6: PE signature verified'
+    )
+    const machine = helperBuf.readUInt16LE(peOffset + 4)
+    assert.equal(machine, 0x8664, 'Test J.7: Machine type is AMD64 / x64')
+
+    // Test execution with invalid PID argument (should exit code 1 cleanly)
+    let helperExitCode = null
+    try {
+      execFileSync(helperPath, ['not_a_pid'], { stdio: 'pipe' })
+      helperExitCode = 0
+    } catch (err) {
+      helperExitCode = err.status
+    }
+    assert.equal(helperExitCode, 1, 'Test J.8: Helper exits 1 on invalid argument without crash')
+    console.log(
+      '✓ Test J Passed: send-ctrl-break.exe verified as genuine x64 PE binary with safe error exits.\n'
+    )
+
+    // ==========================================================================
+    // TEST K — NETWORK RECONNECT & MANUAL PAUSE PROTECTION
+    // ==========================================================================
+    console.log('--- TEST K: Network Reconnect & Manual Pause Race Protection ---')
+
+    const jobK = await DownloadJob.create({
+      media_id: media.id,
+      source_type: 'link',
+      output_format: 'mp4',
+      quality: '720p',
+      status: 'paused',
+      progress: 50,
+      downloaded_bytes: Math.floor(FILE_SIZE / 2),
+      error_message: 'Paused by user'
+    })
+
+    // Simulate network reconnection triggering recovery
+    const recoveryResultK = await resumeInterruptedNetworkJobs(DownloadJob)
+    assert.equal(recoveryResultK.resumedCount, 0, 'Test K.1: Paused job was not counted as resumed')
+
+    const jobKAfterRecovery = await DownloadJob.findByPk(jobK.id)
+    assert.equal(jobKAfterRecovery.status, 'paused', 'Test K.2: Job status strictly remains paused')
+    assert.equal(jobKAfterRecovery.progress, 50, 'Test K.3: Progress preserved at 50%')
+
+    // Duplicate pause in-flight deduplication test
+    let pauseResolve
+    const pausePromiseMock = new Promise((resolve) => {
+      pauseResolve = resolve
+    })
+    const mockProcessK = {
+      jobId: jobK.id,
+      managedByJobExecutor: true,
+      childProcess: { pid: process.pid },
+      actualPid: process.pid,
+      pgid: process.pid,
+      cancelRequested: false,
+      pauseRequested: true,
+      pausePromise: pausePromiseMock,
+      phase: 'downloading',
+      closed: false
+    }
+    setActiveDownloadProcessForTesting(jobK.id, mockProcessK)
+
+    // Call pauseRunningDownload concurrently while pausePromise is pending
+    const dupPausePromise = pauseRunningDownload(jobK.id)
+    pauseResolve({ success: true, deduplicated: true })
+    const dupPauseResult = await dupPausePromise
+    assert.equal(
+      dupPauseResult.success,
+      true,
+      'Test K.4: Duplicate in-flight pause returns matching promise'
+    )
+    assert.equal(
+      dupPauseResult.deduplicated,
+      true,
+      'Test K.5: Deduplicated result received without re-invoking pause'
+    )
+
+    setActiveDownloadProcessForTesting(jobK.id, null)
+    console.log(
+      '✓ Test K Passed: Manual pause protected from network recovery; in-flight pause deduplicated.\n'
+    )
+
+    // ==========================================================================
+    // TEST L — FULL LIFECYCLE: QUEUED -> DOWNLOADING -> PAUSE -> RESUME -> CANCEL -> RETRY
+    // ==========================================================================
+    console.log(
+      '--- TEST L: Full Lifecycle: Queued -> Downloading -> Pause -> Resume -> Cancel -> Retry ---'
+    )
+
+    resetQueueForTesting()
+    setAnalyzerForTesting(mockAnalyzer)
+
+    const mediaL = await MediaItem.create({
+      source_url: `${serverUrl}?lifecycle=L`,
+      title: 'Real Windows Test Video Lifecycle'
+    })
+
+    const jobL = await DownloadJob.create({
+      media_id: mediaL.id,
+      source_type: 'link',
+      output_format: 'mp4',
+      quality: '720p',
+      status: 'queued',
+      progress: 0,
+      downloaded_bytes: 0
+    })
+
+    console.log(`[Test L] 1. Enqueueing Job ${jobL.id}...`)
+    enqueueDownloadJob(jobL.id)
+
+    // Wait until downloading >= 15%
+    for (let i = 0; i < 40; i++) {
+      await new Promise((r) => setTimeout(r, 150))
+      const cur = await DownloadJob.findByPk(jobL.id)
+      if ((cur.progress || 0) >= 15) break
+    }
+
+    console.log(`[Test L] 2. Pausing Job ${jobL.id}...`)
+    const pauseL = await pauseDownloadJob(jobL.id)
+    assert.equal(pauseL.outcome, 'paused', 'Test L.1: Job paused')
+    const jobLPaused = await DownloadJob.findByPk(jobL.id)
+    assert.equal(jobLPaused.status, 'paused', 'Test L.2: SQLite status is paused')
+
+    console.log(`[Test L] 3. Resuming Job ${jobL.id}...`)
+    const resumeL = await resumeDownloadJob(jobL.id)
+    assert.equal(resumeL.outcome, 'resumed', 'Test L.3: Job resumed into queue')
+
+    // Wait briefly for download to resume
+    for (let i = 0; i < 20; i++) {
+      await new Promise((r) => setTimeout(r, 100))
+      const cur = await DownloadJob.findByPk(jobL.id)
+      if (cur.status === 'downloading') break
+    }
+
+    console.log(`[Test L] 4. Cancelling Job ${jobL.id}...`)
+    const cancelL = await cancelDownloadJob(jobL.id)
+    assert.equal(cancelL.outcome, 'cancelled', 'Test L.4: Job cancelled')
+    const jobLCancelled = await DownloadJob.findByPk(jobL.id)
+    assert.equal(jobLCancelled.status, 'cancelled', 'Test L.5: SQLite status is cancelled')
+    assert.equal(jobLCancelled.progress, 0, 'Test L.6: Progress reset to 0%')
+
+    console.log(`[Test L] 5. Retrying Job ${jobL.id}...`)
+    const retryL = await retryDownloadJob(jobL.id, {
+      enqueue: (id) => enqueueDownloadJob(id)
+    })
+    assert.equal(retryL.outcome, 'created', 'Test L.7: Retry enqueued')
+    assert.equal(retryL.originalJobId, jobL.id, 'Test L.8: Same Job ID preserved')
+
+    // Wait for retried job to finish
+    for (let i = 0; i < 60; i++) {
+      await new Promise((r) => setTimeout(r, 200))
+      const cur = await DownloadJob.findByPk(jobL.id)
+      if (cur.status === 'completed' || cur.status === 'failed') {
+        assert.equal(cur.status, 'completed', 'Test L.9: Lifecycle job completed to 100%')
+        break
+      }
+    }
+
+    console.log('✓ Test L Passed: Complete lifecycle executed flawlessly under production queue.\n')
+
     console.log('================================================================')
-    console.log(' ALL 8 REAL WINDOWS INTEGRATION TESTS PASSED (100% PASS)')
-    console.log(' Tests A-H: Genuine Production Paths, Win32 Ctrl-Break & Range   ')
+    console.log(' ALL 12 REAL WINDOWS INTEGRATION TESTS PASSED (100% PASS)')
+    console.log(' Tests A-L: Genuine Production Paths, Win32 Ctrl-Break & Range   ')
     console.log('================================================================\n')
   } finally {
     resetAnalyzerForTesting()

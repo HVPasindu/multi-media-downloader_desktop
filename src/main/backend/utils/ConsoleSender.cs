@@ -156,7 +156,14 @@ public class ConsoleSender {
 
             // 2. Detach from current console (if any) and allocate a new dedicated console
             FreeConsole();
-            AllocConsole();
+            if (!AllocConsole()) {
+                // If console allocation failed, record last error but continue attempting hidden window
+                int allocErr = Marshal.GetLastWin32Error();
+                // If error is 5 (ACCESS_DENIED) it may already be attached
+                if (allocErr != 5) {
+                    Console.Error.WriteLine("AllocConsole warning: " + allocErr);
+                }
+            }
 
             // 3. Immediately hide the newly allocated console window
             IntPtr hWnd = GetConsoleWindow();
@@ -202,21 +209,23 @@ public class ConsoleSender {
                 return 1;
             }
 
-            // Emit process PID and PGID markers for Node.js parent tracking
-            Console.WriteLine("APPLAN2_PID:" + pi.dwProcessId);
-            Console.WriteLine("APPLAN2_PGID:" + pi.dwProcessId);
+            try {
+                // Emit process PID and PGID markers for Node.js parent tracking
+                Console.WriteLine("APPLAN2_PID:" + pi.dwProcessId);
+                Console.WriteLine("APPLAN2_PGID:" + pi.dwProcessId);
 
-            // Install CtrlHandler in the launcher so signals directed to this console do not terminate the launcher prematurely
-            SetConsoleCtrlHandler(handler, true);
+                // Install CtrlHandler in the launcher so signals directed to this console do not terminate the launcher prematurely
+                SetConsoleCtrlHandler(handler, true);
 
-            WaitForSingleObject(pi.hProcess, INFINITE);
+                WaitForSingleObject(pi.hProcess, INFINITE);
 
-            uint exitCode = 0;
-            GetExitCodeProcess(pi.hProcess, out exitCode);
-            CloseHandle(pi.hProcess);
-            CloseHandle(pi.hThread);
-
-            return (int)exitCode;
+                uint exitCode = 0;
+                GetExitCodeProcess(pi.hProcess, out exitCode);
+                return (int)exitCode;
+            } finally {
+                if (pi.hProcess != IntPtr.Zero) CloseHandle(pi.hProcess);
+                if (pi.hThread != IntPtr.Zero) CloseHandle(pi.hThread);
+            }
         }
 
         // Mode 2: Send CTRL_BREAK_EVENT to target process group
@@ -236,10 +245,13 @@ public class ConsoleSender {
             return 2;
         }
 
-        // Generate Ctrl+Break for target process group only (never broadcast to group 0)
-        bool success = GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, pid);
-
-        FreeConsole();
+        bool success = false;
+        try {
+            // Generate Ctrl+Break for target process group only (never broadcast to group 0)
+            success = GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, pid);
+        } finally {
+            FreeConsole();
+        }
 
         if (success) {
             Console.WriteLine("CTRL_BREAK_SENT");

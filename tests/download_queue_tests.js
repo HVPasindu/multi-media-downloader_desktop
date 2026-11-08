@@ -20,6 +20,10 @@ import {
   findActiveDuplicateDownload,
   getCanonicalMediaKey
 } from '../src/main/backend/services/downloadDuplicateService.js'
+import {
+  setCleanupHandlerForTesting,
+  resetCleanupHandlerForTesting
+} from '../src/main/backend/services/downloadCleanupService.js'
 import { createTestDatabase } from './helpers/testDatabase.js'
 
 /**
@@ -261,6 +265,48 @@ async function runDownloadQueueTests() {
       'unsafe_url',
       '4.5: Stored unsafe URL rejected on retry'
     )
+
+    // 4.6: Cleanup failure on retry halts retry and returns cleanup_failed
+    setCleanupHandlerForTesting(async () => ({
+      success: false,
+      cleaned: false,
+      error: 'Simulated disk permission error during retry cleanup'
+    }))
+
+    const failMedia = await MediaItem.create({
+      source_url: 'https://www.youtube.com/watch?v=unique_cleanup_fail',
+      platform: 'youtube'
+    })
+    const cleanupFailJob = await createDownloadJob({
+      mediaItemId: failMedia.id,
+      outputFormat: 'mp4',
+      quality: '720p'
+    })
+    await DownloadJob.update({ status: 'failed' }, { where: { id: cleanupFailJob.id } })
+
+    const enqueuedFailIds = []
+    const retryCleanupFailResult = await retryDownloadJob(cleanupFailJob.id, {
+      enqueue: (id) => enqueuedFailIds.push(id)
+    })
+
+    assert.equal(
+      retryCleanupFailResult.outcome,
+      'cleanup_failed',
+      '4.6: Cleanup failure returns outcome cleanup_failed'
+    )
+    assert.ok(
+      !enqueuedFailIds.includes(cleanupFailJob.id),
+      '4.6: Job was not enqueued after cleanup failure'
+    )
+
+    const recheckFailJob = await DownloadJob.findByPk(cleanupFailJob.id)
+    assert.equal(
+      recheckFailJob.status,
+      'failed',
+      '4.6: Database status remains failed after cleanup failure'
+    )
+
+    resetCleanupHandlerForTesting()
 
     console.log(
       '✓ Section 4: Retry creates distinct jobs, preserves originals, and enforces security.\n'
