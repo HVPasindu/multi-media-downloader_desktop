@@ -472,6 +472,14 @@ export async function pauseDownloadJobController(req, res, next) {
       })
     }
 
+    if (result.outcome === 'interruption_failed') {
+      return res.status(500).json({
+        success: false,
+        message: result.message || 'Failed to pause download process',
+        status: result.status || 'downloading'
+      })
+    }
+
     if (result.outcome === 'pause_pending') {
       return res.status(202).json({
         success: true,

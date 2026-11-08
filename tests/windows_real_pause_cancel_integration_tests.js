@@ -531,6 +531,16 @@ async function runWindowsRealIntegrationTests() {
 
     const jobEAfterCancel = await DownloadJob.findByPk(jobE.id)
     assert.equal(jobEAfterCancel.status, 'cancelled', 'Test E.5: SQLite status is cancelled')
+    assert.equal(
+      jobEAfterCancel.progress,
+      0,
+      'Test E.5b: Progress reset to 0% in SQLite upon cancel'
+    )
+    assert.equal(
+      jobEAfterCancel.downloaded_bytes,
+      0,
+      'Test E.5c: Downloaded bytes reset to 0 in SQLite upon cancel'
+    )
     assert.equal(getQueueStatus().activeCount, 0, 'Test E.6: Queue slot released')
 
     console.log(

@@ -146,6 +146,12 @@ async function runDownloadQueueTests() {
 
     const reloadedQueued = await DownloadJob.findByPk(activeMp4Job.id)
     assert.equal(reloadedQueued.status, 'cancelled', '3.1: Database status updated to cancelled')
+    assert.equal(reloadedQueued.progress, 0, '3.1: Cancelled job progress reset to 0 in SQLite')
+    assert.equal(
+      reloadedQueued.downloaded_bytes,
+      0,
+      '3.1: Cancelled job downloaded_bytes reset to 0 in SQLite'
+    )
 
     // 3.2: Cancel already cancelled job
     const cancelAlreadyResult = await cancelDownloadJob(activeMp4Job.id)

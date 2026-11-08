@@ -195,6 +195,8 @@ export async function cancelDownloadJob(jobId) {
     const [updatedCount] = await DownloadJob.update(
       {
         status: 'cancelled',
+        progress: 0,
+        downloaded_bytes: 0,
         error_message: null
       },
       {
@@ -235,6 +237,8 @@ export async function cancelDownloadJob(jobId) {
     const [updatedCount] = await DownloadJob.update(
       {
         status: 'cancelled',
+        progress: 0,
+        downloaded_bytes: 0,
         error_message: null
       },
       {
@@ -267,6 +271,8 @@ export async function cancelDownloadJob(jobId) {
       const [updatedCount] = await DownloadJob.update(
         {
           status: 'cancelled',
+          progress: 0,
+          downloaded_bytes: 0,
           error_message: null
         },
         {
@@ -301,6 +307,8 @@ export async function cancelDownloadJob(jobId) {
       const [updatedCount] = await DownloadJob.update(
         {
           status: 'cancelled',
+          progress: 0,
+          downloaded_bytes: 0,
           error_message: null
         },
         {
@@ -594,9 +602,9 @@ export async function pauseDownloadJob(jobId) {
     }
 
     return {
-      outcome: 'pause_pending',
+      outcome: 'interruption_failed',
       status: 'downloading',
-      message: pauseResult.error || 'Download pause is in progress'
+      message: pauseResult.error || 'Failed to pause download process'
     }
   }
 

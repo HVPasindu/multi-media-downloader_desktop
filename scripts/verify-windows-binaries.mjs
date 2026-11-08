@@ -38,6 +38,11 @@ const EXPECTED_BINARIES = [
     versionFlag: ['--version'],
     expectedVersionPrefix: 'v24.',
     licenseFile: 'LICENSE.node.txt'
+  },
+  {
+    name: 'send-ctrl-break.exe',
+    versionFlag: ['--version'],
+    expectedVersionPrefix: 'send-ctrl-break version 1.0.0'
   }
 ]
 

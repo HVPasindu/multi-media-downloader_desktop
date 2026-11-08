@@ -415,6 +415,7 @@ export function runYtDlp(args, onProgress = null, onOutputLine = null, options =
           managedByJobExecutor: Boolean(options?.managedByJobExecutor),
           childProcess: child,
           actualPid: null,
+          pgid: null,
           cancelRequested: false,
           pauseRequested: false,
           shutdownRequested: false,
@@ -469,6 +470,7 @@ export function runYtDlp(args, onProgress = null, onOutputLine = null, options =
         const fileMarker = 'APPLAN2_FINAL_FILE:'
 
         const pidMarker = 'APPLAN2_PID:'
+        const pgidMarker = 'APPLAN2_PGID:'
 
         // Process one complete output line
         const handleOutputLine = (line) => {
@@ -482,6 +484,17 @@ export function runYtDlp(args, onProgress = null, onOutputLine = null, options =
             const parsedPid = parseInt(cleanLine.slice(pidMarker.length).trim(), 10)
             if (Number.isSafeInteger(parsedPid) && parsedPid > 0) {
               processEntry.actualPid = parsedPid
+              if (!processEntry.pgid) {
+                processEntry.pgid = parsedPid
+              }
+            }
+            return
+          }
+
+          if (cleanLine.startsWith(pgidMarker)) {
+            const parsedPgid = parseInt(cleanLine.slice(pgidMarker.length).trim(), 10)
+            if (Number.isSafeInteger(parsedPgid) && parsedPgid > 0) {
+              processEntry.pgid = parsedPgid
             }
             return
           }
@@ -759,6 +772,8 @@ export async function markDownloadJobCancelled(jobId) {
       const [updatedCount] = await DownloadJob.update(
         {
           status: 'cancelled',
+          progress: 0,
+          downloaded_bytes: 0,
           error_message: null
         },
         {

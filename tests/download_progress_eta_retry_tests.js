@@ -1055,6 +1055,34 @@ async function runProgressEtaRetryTests() {
     '4.8: Clean ETA computed'
   )
 
+  // 4.9: Cancelled job normalization (Phase 2 fix: stale progress & bytes strictly reset to 0 / 0 B)
+  const staleCancelledRaw = {
+    id: 999,
+    media_id: 1,
+    status: 'cancelled',
+    progress: 65,
+    downloaded_bytes: 18 * 1024 * 1024,
+    total_bytes: 30 * 1024 * 1024,
+    output_format: 'mp4',
+    quality: '720p',
+    error_message: null
+  }
+  const cancelledNorm = normalizeDownloadJob(staleCancelledRaw, speedTracker)
+  assert.equal(cancelledNorm.status, 'cancelled', '4.9: Status is cancelled')
+  assert.equal(cancelledNorm.displayStatus, 'cancelled', '4.9: displayStatus is cancelled')
+  assert.equal(cancelledNorm.statusText, 'Cancelled', '4.9: statusText is Cancelled')
+  assert.equal(cancelledNorm.progress, 0, '4.9: Progress strictly reset to 0% for cancelled job')
+  assert.equal(cancelledNorm.progressText, '0 B', '4.9: Progress text strictly reset to 0 B')
+  assert.equal(cancelledNorm.downloadedBytes, 0, '4.9: Downloaded bytes strictly reset to 0')
+  assert.equal(
+    cancelledNorm.downloadedBytesFormatted,
+    '0 B',
+    '4.9: Downloaded bytes formatted strictly reset to 0 B'
+  )
+  assert.equal(cancelledNorm.speedText, null, '4.9: Speed text is null for cancelled job')
+  assert.equal(cancelledNorm.etaText, null, '4.9: ETA text is null for cancelled job')
+  assert.equal(cancelledNorm.etaDisplay, null, '4.9: ETA display is null for cancelled job')
+
   console.log('✓ Section 4 Passed: Live speed, ETA and presentation normalization verified.\n')
 
   // --------------------------------------------------------------------------

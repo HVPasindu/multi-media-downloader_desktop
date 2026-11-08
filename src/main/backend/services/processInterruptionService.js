@@ -3,16 +3,19 @@ import fs from 'node:fs'
 import { execFile, execSync } from 'node:child_process'
 import { promisify } from 'node:util'
 import { fileURLToPath } from 'node:url'
+import { getPackagedBinaryDirectory } from './executablePathService.js'
 
 const execFileAsync = promisify(execFile)
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 
+let hasLoggedHelperPath = false
+
 /**
  * Resolves the absolute path to the Windows send-ctrl-break helper binary.
- * If the binary is missing and running on Windows, attempts to compile it
- * from ConsoleSender.cs using csc.exe.
+ * Dev location: <projectRoot>/resources/bin/win32-x64/send-ctrl-break.exe
+ * Packaged location: <process.resourcesPath>/bin/win32-x64/send-ctrl-break.exe
  *
  * @returns {string|null}
  */
@@ -21,13 +24,22 @@ export function resolveCtrlBreakHelperPath() {
     return null
   }
 
-  // 1. Check src/main/backend/bin/send-ctrl-break.exe
-  const localBinPath = path.resolve(__dirname, '..', 'bin', 'send-ctrl-break.exe')
-  if (fs.existsSync(localBinPath)) {
-    return localBinPath
+  // 1. Packaged or staged resources bin directory
+  try {
+    const packagedBinDir = getPackagedBinaryDirectory()
+    const stagedHelper = path.join(packagedBinDir, 'send-ctrl-break.exe')
+    if (fs.existsSync(stagedHelper)) {
+      if (!hasLoggedHelperPath) {
+        hasLoggedHelperPath = true
+        console.info('[APPLAN2] Windows Pause Helper:', stagedHelper)
+      }
+      return stagedHelper
+    }
+  } catch {
+    // Fall back to relative path resolution
   }
 
-  // 2. Check resources/bin/win32-x64/send-ctrl-break.exe
+  // 2. Direct check in resources/bin/win32-x64/send-ctrl-break.exe
   const projectRoot = path.resolve(__dirname, '..', '..', '..', '..')
   const resourcesBinPath = path.resolve(
     projectRoot,
@@ -37,32 +49,65 @@ export function resolveCtrlBreakHelperPath() {
     'send-ctrl-break.exe'
   )
   if (fs.existsSync(resourcesBinPath)) {
+    if (!hasLoggedHelperPath) {
+      hasLoggedHelperPath = true
+      console.info('[APPLAN2] Windows Pause Helper:', resourcesBinPath)
+    }
     return resourcesBinPath
   }
 
-  // 3. Auto-compile from ConsoleSender.cs if csc.exe is available
-  const csSourcePath = path.resolve(__dirname, '..', 'utils', 'ConsoleSender.cs')
-  const cscPath = 'C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe'
+  // 3. Check src/main/backend/bin/send-ctrl-break.exe
+  const localBinPath = path.resolve(__dirname, '..', 'bin', 'send-ctrl-break.exe')
+  if (fs.existsSync(localBinPath)) {
+    if (!hasLoggedHelperPath) {
+      hasLoggedHelperPath = true
+      console.info('[APPLAN2] Windows Pause Helper:', localBinPath)
+    }
+    return localBinPath
+  }
 
-  if (fs.existsSync(csSourcePath) && fs.existsSync(cscPath)) {
+  // 4. Auto-compile from ConsoleSender.cs using csc.exe if missing
+  const csSourcePath = path.resolve(__dirname, '..', 'utils', 'ConsoleSender.cs')
+  const candidateCscPaths = [
+    'C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe',
+    'C:\\Windows\\Microsoft.NET\\Framework\\v4.0.30319\\csc.exe'
+  ]
+  const cscPath = candidateCscPaths.find((p) => fs.existsSync(p))
+
+  if (fs.existsSync(csSourcePath) && cscPath) {
     try {
-      const targetDir = path.dirname(localBinPath)
+      const targetDir = path.dirname(resourcesBinPath)
       if (!fs.existsSync(targetDir)) {
         fs.mkdirSync(targetDir, { recursive: true })
       }
-      execSync(`"${cscPath}" /nologo /optimize /out:"${localBinPath}" "${csSourcePath}"`, {
-        windowsHide: true,
-        timeout: 10000
-      })
-      if (fs.existsSync(localBinPath)) {
-        return localBinPath
+      execSync(
+        `"${cscPath}" /nologo /optimize /platform:x64 /out:"${resourcesBinPath}" "${csSourcePath}"`,
+        {
+          windowsHide: true,
+          timeout: 10000
+        }
+      )
+      if (fs.existsSync(resourcesBinPath)) {
+        try {
+          fs.mkdirSync(path.dirname(localBinPath), { recursive: true })
+          fs.copyFileSync(resourcesBinPath, localBinPath)
+        } catch {
+          // ignore copy
+        }
+        if (!hasLoggedHelperPath) {
+          hasLoggedHelperPath = true
+          console.info('[APPLAN2] Windows Pause Helper:', resourcesBinPath)
+        }
+        return resourcesBinPath
       }
     } catch (compileErr) {
-      console.warn(
-        '[processInterruption] Failed to auto-compile send-ctrl-break.exe:',
-        compileErr.message
-      )
+      console.warn('[APPLAN2] Failed to auto-compile send-ctrl-break.exe:', compileErr.message)
     }
+  }
+
+  if (!hasLoggedHelperPath) {
+    hasLoggedHelperPath = true
+    console.info('[APPLAN2] Windows Pause Helper: NOT FOUND')
   }
 
   return null
@@ -89,20 +134,25 @@ export function isProcessAlive(pid) {
 
 /**
  * Sends a genuine Windows Console Break event (CTRL_BREAK_EVENT) to the target process group.
+ * Strictly bars PID / PGID 0 to prevent broadcasting to the caller console.
  *
- * @param {number} pid
+ * @param {number} pgid
  * @returns {Promise<{ success: boolean, method: string, error?: string }>}
  */
-export async function sendWindowsCtrlBreak(pid) {
-  if (!Number.isSafeInteger(pid) || pid <= 0) {
-    return { success: false, method: 'invalid_pid', error: 'Invalid process PID' }
+export async function sendWindowsCtrlBreak(pgid) {
+  if (!Number.isSafeInteger(pgid) || pgid <= 0) {
+    return {
+      success: false,
+      method: 'invalid_pid',
+      error: 'Invalid or prohibited process group ID (PID/PGID 0 is forbidden)'
+    }
   }
 
   const helperPath = resolveCtrlBreakHelperPath()
 
   if (helperPath) {
     try {
-      await execFileAsync(helperPath, [String(pid)], {
+      await execFileAsync(helperPath, [String(pgid)], {
         windowsHide: true,
         timeout: 5000
       })
@@ -121,14 +171,14 @@ export async function sendWindowsCtrlBreak(pid) {
 
   // Fallback: PowerShell inline GenerateConsoleCtrlEvent
   try {
-    const psCommand = `powershell -NoProfile -Command "& { Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class CtrlBreak { [DllImport(\\"kernel32.dll\\", SetLastError=true)] public static extern bool GenerateConsoleCtrlEvent(uint e, uint g); [DllImport(\\"kernel32.dll\\", SetLastError=true)] public static extern bool AttachConsole(uint p); [DllImport(\\"kernel32.dll\\", SetLastError=true)] public static extern bool FreeConsole(); [DllImport(\\"kernel32.dll\\", SetLastError=true)] public static extern bool SetConsoleCtrlHandler(IntPtr h, bool a); public static bool Send(uint p) { if (p == 0) return false; FreeConsole(); if(!AttachConsole(p)) return false; SetConsoleCtrlHandler(IntPtr.Zero, true); bool ok = GenerateConsoleCtrlEvent(1, p); FreeConsole(); return ok; } }'; if (![CtrlBreak]::Send(${pid})) { exit 1 } }"`
+    const psCommand = `powershell -NoProfile -Command "& { Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class CtrlBreak { [DllImport(\\"kernel32.dll\\", SetLastError=true)] public static extern bool GenerateConsoleCtrlEvent(uint e, uint g); [DllImport(\\"kernel32.dll\\", SetLastError=true)] public static extern bool AttachConsole(uint p); [DllImport(\\"kernel32.dll\\", SetLastError=true)] public static extern bool FreeConsole(); [DllImport(\\"kernel32.dll\\", SetLastError=true)] public static extern bool SetConsoleCtrlHandler(IntPtr h, bool a); public static bool Send(uint p) { if (p == 0) return false; FreeConsole(); if(!AttachConsole(p)) return false; SetConsoleCtrlHandler(IntPtr.Zero, true); bool ok = GenerateConsoleCtrlEvent(1, p); FreeConsole(); return ok; } }'; if (![CtrlBreak]::Send(${pgid})) { exit 1 } }"`
     execSync(psCommand, { windowsHide: true, timeout: 5000 })
     return { success: true, method: 'powershell_ctrl_break' }
   } catch (psErr) {
     return {
       success: false,
       method: 'failed',
-      error: `Failed to send console control event to PID ${pid}: ${psErr.message}`
+      error: `Failed to send console control event to PGID ${pgid}: ${psErr.message}`
     }
   }
 }
@@ -158,16 +208,25 @@ export async function gracefullyInterruptProcess(processEntry, timeoutMs = 4000)
     return { success: false, graceful: false, error: 'Process has no valid PID' }
   }
 
-  const targetPid = processEntry.actualPid || child.pid
+  const targetPgid = processEntry.pgid || processEntry.actualPid || child.pid
+  if (!targetPgid || targetPgid <= 0) {
+    return { success: false, graceful: false, error: 'Process has no valid target PID/PGID' }
+  }
 
   // 1. Send graceful interruption event
   if (process.platform === 'win32') {
-    const ctrlResult = await sendWindowsCtrlBreak(targetPid)
+    const ctrlResult = await sendWindowsCtrlBreak(targetPgid)
     if (!ctrlResult.success) {
       console.warn(
-        `[processInterruption] Windows Ctrl-Break generation failed for PID ${targetPid}:`,
+        `[processInterruption] Windows Ctrl-Break generation failed for PGID ${targetPgid}:`,
         ctrlResult.error
       )
+      return {
+        success: false,
+        graceful: false,
+        error:
+          ctrlResult.error || `Failed to deliver Ctrl+Break signal to process group ${targetPgid}`
+      }
     }
   } else {
     try {
@@ -202,7 +261,7 @@ export async function gracefullyInterruptProcess(processEntry, timeoutMs = 4000)
   }
 
   // Check if process has actually exited in OS even if event lagged
-  if (!isProcessAlive(targetPid)) {
+  if (!isProcessAlive(targetPgid)) {
     if (typeof processEntry.markClosed === 'function') {
       processEntry.markClosed(0, null)
     }
@@ -214,7 +273,7 @@ export async function gracefullyInterruptProcess(processEntry, timeoutMs = 4000)
   return {
     success: false,
     graceful: false,
-    error: `Process ${targetPid} did not exit gracefully within ${timeoutMs}ms`
+    error: `Process ${targetPgid} did not exit gracefully within ${timeoutMs}ms`
   }
 }
 

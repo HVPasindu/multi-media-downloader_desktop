@@ -1,11 +1,12 @@
 using System;
 using System.Diagnostics;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
+using Microsoft.Win32.SafeHandles;
 
 public class ConsoleSender {
     private const uint CREATE_NEW_PROCESS_GROUP = 0x00000200;
-    private const uint CREATE_NEW_CONSOLE = 0x00000010;
     private const uint CTRL_C_EVENT = 0;
     private const uint CTRL_BREAK_EVENT = 1;
     private const int STD_INPUT_HANDLE = -10;
@@ -15,6 +16,7 @@ public class ConsoleSender {
     private const int STARTF_USESHOWWINDOW = 0x00000001;
     private const short SW_HIDE = 0;
     private const uint INFINITE = 0xFFFFFFFF;
+    private const uint HANDLE_FLAG_INHERIT = 0x00000001;
 
     [StructLayout(LayoutKind.Sequential)]
     public struct STARTUPINFO {
@@ -66,7 +68,19 @@ public class ConsoleSender {
     private static extern bool AttachConsole(uint dwProcessId);
 
     [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool AllocConsole();
+
+    [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool FreeConsole();
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr GetConsoleWindow();
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetHandleInformation(IntPtr hObject, uint dwMask, uint dwFlags);
 
     [UnmanagedFunctionPointer(CallingConvention.Winapi)]
     private delegate bool ConsoleCtrlDelegate(int ctrlType);
@@ -101,11 +115,17 @@ public class ConsoleSender {
 
     public static int Main(string[] args) {
         if (args.Length < 1) {
-            Console.WriteLine("Usage: send-ctrl-break <PID> OR send-ctrl-break spawn <cmd> [args...]");
+            Console.WriteLine("Usage: send-ctrl-break <PID> OR send-ctrl-break spawn <cmd> [args...] OR send-ctrl-break --version");
             return 1;
         }
 
-        // Mode 1: Spawn child process in dedicated console with CREATE_NEW_PROCESS_GROUP
+        // Mode 0: Version inquiry
+        if (args[0] == "--version" || args[0] == "-v") {
+            Console.WriteLine("send-ctrl-break version 1.0.0");
+            return 0;
+        }
+
+        // Mode 1: Spawn child process in dedicated hidden console with CREATE_NEW_PROCESS_GROUP
         if (args[0] == "spawn") {
             if (args.Length < 2) {
                 Console.WriteLine("Usage: send-ctrl-break spawn <executable> [args...]");
@@ -118,16 +138,62 @@ public class ConsoleSender {
                 cmdLine.Append(EscapeArgument(args[i]));
             }
 
+            // 1. Capture original standard handles from parent process (Node.js pipes)
+            IntPtr hOrigIn = GetStdHandle(STD_INPUT_HANDLE);
+            IntPtr hOrigOut = GetStdHandle(STD_OUTPUT_HANDLE);
+            IntPtr hOrigErr = GetStdHandle(STD_ERROR_HANDLE);
+
+            // Ensure handles are marked inheritable
+            if (hOrigIn != IntPtr.Zero && hOrigIn != new IntPtr(-1)) {
+                SetHandleInformation(hOrigIn, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+            }
+            if (hOrigOut != IntPtr.Zero && hOrigOut != new IntPtr(-1)) {
+                SetHandleInformation(hOrigOut, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+            }
+            if (hOrigErr != IntPtr.Zero && hOrigErr != new IntPtr(-1)) {
+                SetHandleInformation(hOrigErr, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+            }
+
+            // 2. Detach from current console (if any) and allocate a new dedicated console
+            FreeConsole();
+            AllocConsole();
+
+            // 3. Immediately hide the newly allocated console window
+            IntPtr hWnd = GetConsoleWindow();
+            if (hWnd != IntPtr.Zero) {
+                ShowWindow(hWnd, SW_HIDE);
+            }
+
+            // 4. Redirect C# Console.Out and Console.Error back to the original Node.js pipes
+            if (hOrigOut != IntPtr.Zero && hOrigOut != new IntPtr(-1)) {
+                SafeFileHandle sfhOut = new SafeFileHandle(hOrigOut, false);
+                FileStream fsOut = new FileStream(sfhOut, FileAccess.Write);
+                StreamWriter swOut = new StreamWriter(fsOut, Encoding.UTF8) { AutoFlush = true };
+                Console.SetOut(swOut);
+            }
+            if (hOrigErr != IntPtr.Zero && hOrigErr != new IntPtr(-1)) {
+                SafeFileHandle sfhErr = new SafeFileHandle(hOrigErr, false);
+                FileStream fsErr = new FileStream(sfhErr, FileAccess.Write);
+                StreamWriter swErr = new StreamWriter(fsErr, Encoding.UTF8) { AutoFlush = true };
+                Console.SetError(swErr);
+            }
+
+            // 5. Configure STARTUPINFO with the original pipe handles
             STARTUPINFO si = new STARTUPINFO();
             si.cb = Marshal.SizeOf(si);
-            si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
-            si.wShowWindow = SW_HIDE;
-            si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
-            si.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
-            si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+            si.dwFlags = STARTF_USESTDHANDLES;
+            si.hStdInput = hOrigIn;
+            si.hStdOutput = hOrigOut;
+            si.hStdError = hOrigErr;
 
             PROCESS_INFORMATION pi = new PROCESS_INFORMATION();
-            uint flags = CREATE_NEW_CONSOLE | CREATE_NEW_PROCESS_GROUP;
+
+            // Note: CREATE_NEW_PROCESS_GROUP is specified WITHOUT CREATE_NEW_CONSOLE.
+            // Because AllocConsole() was called above, the child process inherits this dedicated
+            // hidden console, and Windows does NOT ignore CREATE_NEW_PROCESS_GROUP.
+            // As a result, the child process becomes the root of a genuine process group
+            // (dwProcessGroupId == dwProcessId) within this console session.
+            uint flags = CREATE_NEW_PROCESS_GROUP;
 
             bool created = CreateProcess(null, cmdLine.ToString(), IntPtr.Zero, IntPtr.Zero, true, flags, IntPtr.Zero, null, ref si, out pi);
             if (!created) {
@@ -136,10 +202,11 @@ public class ConsoleSender {
                 return 1;
             }
 
-            // Emit process PID marker for Node.js parent tracking
+            // Emit process PID and PGID markers for Node.js parent tracking
             Console.WriteLine("APPLAN2_PID:" + pi.dwProcessId);
+            Console.WriteLine("APPLAN2_PGID:" + pi.dwProcessId);
 
-            // Install CtrlHandler in the launcher so signals directed to this console don't terminate the launcher prematurely
+            // Install CtrlHandler in the launcher so signals directed to this console do not terminate the launcher prematurely
             SetConsoleCtrlHandler(handler, true);
 
             WaitForSingleObject(pi.hProcess, INFINITE);
