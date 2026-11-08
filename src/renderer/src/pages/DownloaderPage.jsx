@@ -848,7 +848,10 @@ export default function DownloaderPage() {
       setPausingJobId(jobId)
       const res = await pauseDownload(jobId)
       if (res.ok) {
-        if (res.data?.data?.status === 'pause_pending') {
+        if (res.data?.data?.status === 'already_finishing') {
+          showToast('Download is finishing and will complete momentarily', 'info')
+          await fetchRecentDownloads()
+        } else if (res.data?.data?.status === 'pause_pending') {
           showToast('Pausing download...', 'info')
           for (let i = 0; i < 5; i++) {
             await new Promise((r) => setTimeout(r, 400))

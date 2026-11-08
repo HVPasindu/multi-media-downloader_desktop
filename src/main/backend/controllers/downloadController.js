@@ -494,6 +494,18 @@ export async function pauseDownloadJobController(req, res, next) {
       })
     }
 
+    if (result.outcome === 'already_finishing') {
+      return res.status(200).json({
+        success: true,
+        data: {
+          id: jobId,
+          status: 'already_finishing',
+          message:
+            result.message || 'Download is finishing — it will complete momentarily and cannot be paused now'
+        }
+      })
+    }
+
     return res.status(200).json({
       success: true,
       data: {

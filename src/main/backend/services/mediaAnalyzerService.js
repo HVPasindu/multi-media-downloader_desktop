@@ -76,6 +76,13 @@ export function getRateLimitCooldown(platform) {
  * @param {string} [platform] - The target platform ('youtube', etc.)
  * @returns {{ code: string, userMessage: string, retryAfterSeconds: number|null }}
  */
+export function redactSensitiveText(str) {
+  if (!str) return ''
+  return String(str)
+    .replace(/(?:api[-_]?key|token|auth|password|cookie|secret|visitor[-_]?data)=([^\s&"'<>]+)/gi, '$1=[REDACTED]')
+    .replace(/(?:Bearer\s+)[a-zA-Z0-9_.\-]+/gi, 'Bearer [REDACTED]')
+}
+
 export function classifyAnalysisError(error, platform) {
   const message = String(error?.message || '')
   const stderr = String(error?.stderr || '')
@@ -139,7 +146,52 @@ export function classifyAnalysisError(error, platform) {
     }
   }
 
-  // 4. Network / Connectivity Error (Priority 4)
+  // 4. JavaScript Challenge / EJS Failure
+  if (
+    /missing ejs|ejs component|javascript challenge|no javascript runtime|js challenge provider/i.test(
+      combined
+    )
+  ) {
+    return {
+      code: 'JS_CHALLENGE_FAILED',
+      userMessage:
+        'A JavaScript challenge solver is required but unavailable. Please check the runtime configuration.',
+      retryAfterSeconds: null
+    }
+  }
+
+  // 5. HTTP 403 Forbidden
+  if (/http\s*error\s*403|403\s*forbidden/i.test(combined)) {
+    return {
+      code: 'HTTP_FORBIDDEN',
+      userMessage: 'Access to this media resource was forbidden by the server (HTTP 403).',
+      retryAfterSeconds: null
+    }
+  }
+
+  // 6. Removed / unavailable video specifics (distinct from generic "Video unavailable")
+  if (
+    /this video has been removed|account.*terminated|not available in your country|geo[- ]?blocked/i.test(
+      combined
+    )
+  ) {
+    return {
+      code: 'VIDEO_REMOVED',
+      userMessage: 'This video has been removed, terminated, or is geo-blocked in your region.',
+      retryAfterSeconds: null
+    }
+  }
+
+  // 7. Unsupported / Missing formats
+  if (/no video formats found|no formats available/i.test(combined)) {
+    return {
+      code: 'NO_FORMATS_FOUND',
+      userMessage: 'No downloadable media formats were found for this URL.',
+      retryAfterSeconds: null
+    }
+  }
+
+  // 8. Network / Connectivity Error (Priority 8)
   if (
     /\b(?:ENOTFOUND|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH)\b|network is unreachable|timed out|Temporary failure in name resolution|getaddrinfo\s+(?:ENOTFOUND|failed)|unable to connect/i.test(
       combined
@@ -152,7 +204,7 @@ export function classifyAnalysisError(error, platform) {
     }
   }
 
-  // 5. Default analysis failure
+  // 9. Default analysis failure
   return {
     code: 'ANALYSIS_FAILED',
     userMessage:
@@ -260,6 +312,10 @@ export async function analyzeMedia(sourceUrl) {
 
       if (!stdout) {
         const classified = classifyAnalysisError(lastExecError, platform)
+        console.warn(
+          `[analyzer] Extraction failed for platform ${platform} (${classified.code}):`,
+          redactSensitiveText(lastExecError?.stderr || lastExecError?.message || '')
+        )
         if (classified.code === 'YOUTUBE_RATE_LIMITED' || classified.code === 'RATE_LIMITED') {
           rateLimitCooldowns.set(platform, Date.now() + 60_000)
         }

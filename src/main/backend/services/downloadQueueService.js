@@ -557,6 +557,16 @@ export async function pauseDownloadJob(jobId) {
       }
     }
 
+    if (pauseResult.reason === 'already_finishing') {
+      // The download is in FFmpeg merge/post-processing — cannot pause safely.
+      // The job will complete shortly; inform the caller without marking as failed.
+      return {
+        outcome: 'already_finishing',
+        status: 'downloading',
+        message: 'Download is finishing — it will complete momentarily and cannot be paused now'
+      }
+    }
+
     if (pauseResult.reason === 'not_running') {
       const refreshedJob = await DownloadJob.findByPk(jobId)
 

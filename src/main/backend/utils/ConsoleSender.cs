@@ -49,11 +49,8 @@ public class ConsoleSender {
             return 2;
         }
 
-        // Generate Ctrl+Break for target process group
+        // Generate Ctrl+Break for target process group only (never broadcast to group 0)
         bool success = GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, pid);
-        if (!success) {
-            success = GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, 0);
-        }
 
         FreeConsole();
 

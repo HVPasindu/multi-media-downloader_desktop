@@ -367,13 +367,22 @@ export function runYtDlp(args, onProgress = null, onOutputLine = null, options =
     // Step 04.43 - Dynamically resolve packaged or dev yt-dlp executable path
     Promise.resolve(options?.executablePath || resolveYtDlpPath())
       .then((ytDlpExecutable) => {
-        const child = spawn(ytDlpExecutable, args, {
+        const spawnOptions = {
           windowsHide: true,
           env: {
             ...process.env,
             PYTHONIOENCODING: 'utf-8'
           }
-        })
+        }
+
+        // On Windows, detached: true passes CREATE_NEW_PROCESS_GROUP to CreateProcessW
+        // allowing GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, pid) to target this process group specifically.
+        // We do NOT call child.unref() so stdout/stderr pipes remain fully active and monitored.
+        if (process.platform === 'win32') {
+          spawnOptions.detached = true
+        }
+
+        const child = spawn(ytDlpExecutable, args, spawnOptions)
 
         let closeResolver
         const closePromise = new Promise((resolve) => {
@@ -397,6 +406,9 @@ export function runYtDlp(args, onProgress = null, onOutputLine = null, options =
           cancelRequested: false,
           pauseRequested: false,
           shutdownRequested: false,
+          // 'downloading' | 'finalizing' — set to 'finalizing' when all streams finish
+          // so the Pause endpoint can return 'already_finishing' instead of interrupting
+          phase: 'downloading',
           closed: false,
           exitCode: null,
           signal: null,
@@ -535,6 +547,11 @@ export function runYtDlp(args, onProgress = null, onOutputLine = null, options =
         child.once('close', (exitCode, signal) => {
           processEntry.markClosed(exitCode, signal)
 
+          // Process any remaining output FIRST (before checking exit status)
+          if (stdoutBuffer.trim()) {
+            handleOutputLine(stdoutBuffer)
+          }
+
           if (processEntry.shutdownRequested) {
             settleReject(
               new DownloadInterruptedError('Download was interrupted by application shutdown')
@@ -542,6 +559,19 @@ export function runYtDlp(args, onProgress = null, onOutputLine = null, options =
             return
           }
 
+          // SUCCESSFUL COMPLETION takes absolute precedence over late pause/cancel requests.
+          // If yt-dlp exits 0, the download completed — a Pause or Cancel that arrived
+          // milliseconds before the process closed must not convert a completed job to 'failed'.
+          if (exitCode === 0) {
+            settleResolve({
+              success: true,
+              exitCode,
+              finalFilePath
+            })
+            return
+          }
+
+          // Only after ruling out successful completion, honor pause/cancel signals
           if (processEntry.pauseRequested) {
             settleReject(new DownloadPausedError('Download was paused by user'))
             return
@@ -549,21 +579,6 @@ export function runYtDlp(args, onProgress = null, onOutputLine = null, options =
 
           if (processEntry.cancelRequested) {
             settleReject(new DownloadCancelledError('Download was cancelled'))
-            return
-          }
-
-          // Process any remaining output
-          if (stdoutBuffer.trim()) {
-            handleOutputLine(stdoutBuffer)
-          }
-
-          if (exitCode === 0) {
-            settleResolve({
-              success: true,
-              exitCode,
-              finalFilePath
-            })
-
             return
           }
 
@@ -810,6 +825,15 @@ export async function pauseRunningDownload(jobId, timeoutMs = 4000) {
     return {
       success: false,
       reason: 'not_running'
+    }
+  }
+
+  // If the download has already entered the finalization phase (FFmpeg merge / post-processing),
+  // it cannot be safely paused. Return a specific outcome so callers can inform the user.
+  if (processEntry.phase === 'finalizing') {
+    return {
+      success: false,
+      reason: 'already_finishing'
     }
   }
 
@@ -1719,6 +1743,16 @@ export async function executeDownloadJob(jobId, options = {}) {
         const allStreamsFinished =
           snapshot.streams.length > 0 &&
           snapshot.streams.every((stream) => stream.status === 'finished')
+
+        // Transition to 'finalizing' phase when all streams complete so that
+        // a concurrent Pause request can detect this and return 'already_finishing'
+        // rather than interrupting yt-dlp's FFmpeg merge/post-process step.
+        if (allStreamsFinished) {
+          const activeEntry = activeDownloadProcesses.get(jobId)
+          if (activeEntry && activeEntry.phase === 'downloading') {
+            activeEntry.phase = 'finalizing'
+          }
+        }
 
         const totals = aggregateStreamTotals(snapshot.streams)
 
