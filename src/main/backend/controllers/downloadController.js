@@ -472,6 +472,17 @@ export async function pauseDownloadJobController(req, res, next) {
       })
     }
 
+    if (result.outcome === 'pause_pending') {
+      return res.status(202).json({
+        success: true,
+        data: {
+          id: jobId,
+          status: 'pause_pending',
+          message: result.message || 'Download pause is in progress'
+        }
+      })
+    }
+
     if (result.outcome === 'already_paused') {
       return res.status(200).json({
         success: true,
@@ -530,6 +541,16 @@ export async function resumeDownloadJobController(req, res, next) {
         success: false,
         message: result.message || 'This download job cannot be resumed',
         status: result.status
+      })
+    }
+
+    if (result.outcome === 'checkpoint_invalid') {
+      return res.status(409).json({
+        success: false,
+        message:
+          result.message ||
+          'Cannot resume: saved partial download checkpoint is missing or invalid',
+        status: 'paused'
       })
     }
 

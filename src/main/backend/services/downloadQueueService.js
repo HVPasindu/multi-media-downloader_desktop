@@ -332,11 +332,20 @@ export async function cancelDownloadJob(jobId) {
     const cancelResult = await cancelRunningDownload(jobId)
 
     if (cancelResult.success) {
+      const currentJob = await DownloadJob.findByPk(jobId)
+      if (currentJob?.status === 'cancelled') {
+        return {
+          outcome: 'cancelled',
+          status: 'cancelled',
+          message: 'Download cancelled successfully'
+        }
+      }
+
       // Brief check to see if SQLite status updated to 'cancelled'
       for (let i = 0; i < 10; i++) {
         await new Promise((resolve) => setTimeout(resolve, 50))
-        const currentJob = await DownloadJob.findByPk(jobId)
-        if (currentJob?.status === 'cancelled') {
+        const recheckJob = await DownloadJob.findByPk(jobId)
+        if (recheckJob?.status === 'cancelled') {
           return {
             outcome: 'cancelled',
             status: 'cancelled',
@@ -518,10 +527,19 @@ export async function pauseDownloadJob(jobId) {
     const pauseResult = await pauseRunningDownload(jobId)
 
     if (pauseResult.success) {
-      for (let i = 0; i < 20; i++) {
+      const currentJob = await DownloadJob.findByPk(jobId)
+      if (currentJob?.status === 'paused') {
+        return {
+          outcome: 'paused',
+          status: 'paused',
+          message: 'Download paused successfully'
+        }
+      }
+
+      for (let i = 0; i < 10; i++) {
         await new Promise((resolve) => setTimeout(resolve, 50))
-        const currentJob = await DownloadJob.findByPk(jobId)
-        if (currentJob?.status === 'paused') {
+        const recheckJob = await DownloadJob.findByPk(jobId)
+        if (recheckJob?.status === 'paused') {
           return {
             outcome: 'paused',
             status: 'paused',
@@ -530,10 +548,12 @@ export async function pauseDownloadJob(jobId) {
         }
       }
 
+      // If still not paused in DB, report pause_pending rather than claiming false success
+      const currentStatus = (await DownloadJob.findByPk(jobId))?.status || 'downloading'
       return {
-        outcome: 'paused',
-        status: 'paused',
-        message: 'Download pause initiated successfully'
+        outcome: 'pause_pending',
+        status: currentStatus,
+        message: 'Download pause is in progress'
       }
     }
 
@@ -555,7 +575,19 @@ export async function pauseDownloadJob(jobId) {
       }
     }
 
-    throw new Error(pauseResult.error || 'Failed to pause running download process')
+    if (pauseResult.reason === 'validation_failed') {
+      return {
+        outcome: 'conflict',
+        status: 'failed',
+        message: pauseResult.error || 'Partial file verification failed during pause'
+      }
+    }
+
+    return {
+      outcome: 'pause_pending',
+      status: 'downloading',
+      message: pauseResult.error || 'Download pause is in progress'
+    }
   }
 
   return {
@@ -631,7 +663,7 @@ export async function resumeDownloadJob(jobId, options = {}) {
     }
   }
 
-  // Validate saved partial checkpoint if job has progress
+  // Validate saved partial checkpoint if job has progress (Fix 04)
   let reconciledBytes = job.downloaded_bytes || 0
   let downloadPath = null
   try {
@@ -640,18 +672,38 @@ export async function resumeDownloadJob(jobId, options = {}) {
     downloadPath = null
   }
 
-  if (downloadPath && (job.downloaded_bytes > 0 || job.progress > 0)) {
+  if (job.downloaded_bytes > 0 || job.progress > 0) {
+    if (!downloadPath) {
+      return {
+        outcome: 'checkpoint_invalid',
+        status: 'paused',
+        message: 'Cannot resume: download folder path cannot be resolved'
+      }
+    }
+
+    let isResumable = false
     try {
       const partialResult = await verifyJobPartialDownload(job.id, downloadPath, {
         savedDownloadedBytes: job.downloaded_bytes,
         savedProgress: job.progress
       })
-      const isResumable = isPartialDownloadResumable(partialResult)
+      isResumable = isPartialDownloadResumable(partialResult)
       if (isResumable && partialResult.reconciledBytes > 0) {
         reconciledBytes = partialResult.reconciledBytes
       }
     } catch {
-      // keep reconciledBytes
+      isResumable = false
+    }
+
+    if (!isResumable) {
+      console.warn(
+        `[queue] Resume rejected for job ${jobId}: partial checkpoint is missing or invalid`
+      )
+      return {
+        outcome: 'checkpoint_invalid',
+        status: 'paused',
+        message: 'Cannot resume: saved partial download checkpoint is missing or invalid'
+      }
     }
   }
 

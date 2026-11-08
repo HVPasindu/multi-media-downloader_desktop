@@ -221,13 +221,18 @@ export default function DownloadsPage() {
       setCancellingJobId(jobId)
       const res = await cancelDownload(jobId)
       if (res.ok) {
-        if (res.status === 202) {
-          showToast('Cancellation requested', 'info')
+        if (res.status === 202 || res.data?.data?.status === 'cancellation_requested') {
+          showToast('Cancelling download...', 'info')
+          for (let i = 0; i < 5; i++) {
+            await new Promise((r) => setTimeout(r, 400))
+            if (typeof retry === 'function') retry()
+            fetchGlobalCounts()
+          }
         } else {
           showToast('Download cancelled', 'success')
+          if (typeof retry === 'function') retry()
+          fetchGlobalCounts()
         }
-        if (typeof retry === 'function') retry()
-        fetchGlobalCounts()
       } else if (res.status === 409) {
         const errorInfo = getSafeFriendlyErrorInfo(
           res.data,
@@ -261,9 +266,18 @@ export default function DownloadsPage() {
       setPausingJobId(jobId)
       const res = await pauseDownload(jobId)
       if (res.ok) {
-        showToast('Download paused', 'info')
-        if (typeof retry === 'function') retry()
-        fetchGlobalCounts()
+        if (res.status === 202 || res.data?.data?.status === 'pause_pending') {
+          showToast('Pausing download...', 'info')
+          for (let i = 0; i < 5; i++) {
+            await new Promise((r) => setTimeout(r, 400))
+            if (typeof retry === 'function') retry()
+            fetchGlobalCounts()
+          }
+        } else {
+          showToast('Download paused', 'info')
+          if (typeof retry === 'function') retry()
+          fetchGlobalCounts()
+        }
       } else {
         const errorInfo = getSafeFriendlyErrorInfo(res.data, 'Failed to pause download.')
         showError(errorInfo.title || 'Pause Failed', errorInfo.message)

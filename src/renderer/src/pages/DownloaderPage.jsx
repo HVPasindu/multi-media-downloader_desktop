@@ -848,8 +848,16 @@ export default function DownloaderPage() {
       setPausingJobId(jobId)
       const res = await pauseDownload(jobId)
       if (res.ok) {
-        showToast('Download paused', 'info')
-        await fetchRecentDownloads()
+        if (res.data?.data?.status === 'pause_pending') {
+          showToast('Pausing download...', 'info')
+          for (let i = 0; i < 5; i++) {
+            await new Promise((r) => setTimeout(r, 400))
+            await fetchRecentDownloads()
+          }
+        } else {
+          showToast('Download paused', 'info')
+          await fetchRecentDownloads()
+        }
       } else {
         const errorInfo = getSafeFriendlyErrorInfo(res.data, 'Failed to pause download.')
         showError(errorInfo.title || 'Pause Failed', errorInfo.message)
@@ -905,8 +913,16 @@ export default function DownloaderPage() {
       setCancellingJobId(jobId)
       const res = await cancelDownload(jobId)
       if (res.ok) {
-        showToast('Download cancelled', 'success')
-        await fetchRecentDownloads()
+        if (res.data?.data?.status === 'cancellation_requested') {
+          showToast('Cancelling download...', 'info')
+          for (let i = 0; i < 5; i++) {
+            await new Promise((r) => setTimeout(r, 400))
+            await fetchRecentDownloads()
+          }
+        } else {
+          showToast('Download cancelled', 'success')
+          await fetchRecentDownloads()
+        }
       } else {
         const errorInfo = getSafeFriendlyErrorInfo(res.data, 'Failed to cancel download.')
         showError(errorInfo.title || 'Cancel Failed', errorInfo.message)

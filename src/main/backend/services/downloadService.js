@@ -38,6 +38,7 @@ import {
   resolveJavaScriptRuntimeOption
 } from './executablePathService.js'
 import { scheduleJobRetry, clearJobRetryState } from './networkRecoveryService.js'
+import { gracefullyInterruptProcess, terminateProcessTree } from './processInterruptionService.js'
 
 export {
   DownloadError,
@@ -137,40 +138,12 @@ export function isResumeIncompatibilityError(error) {
 }
 
 // Step 09.G - Gracefully interrupt a download process before forceful termination
-export async function gracefullyInterruptDownloadProcess(childProcess, timeoutMs = 3000) {
-  if (!childProcess || typeof childProcess.pid !== 'number' || childProcess.killed) {
-    return
-  }
+export async function gracefullyInterruptDownloadProcess(childProcessOrEntry, timeoutMs = 3000) {
+  const processEntry = childProcessOrEntry?.childProcess
+    ? childProcessOrEntry
+    : { childProcess: childProcessOrEntry, closed: false }
 
-  // 1. Send platform-appropriate graceful termination signal first
-  try {
-    childProcess.kill('SIGINT')
-  } catch {
-    try {
-      childProcess.kill('SIGTERM')
-    } catch {
-      // Process might already be dead
-    }
-  }
-
-  // 2. Wait up to timeoutMs for process to exit cleanly
-  const hasExited = await Promise.race([
-    new Promise((resolve) => {
-      childProcess.once('exit', () => resolve(true))
-      childProcess.once('close', () => resolve(true))
-    }),
-    new Promise((resolve) => setTimeout(() => resolve(false), timeoutMs))
-  ])
-
-  if (hasExited) {
-    return
-  }
-
-  // 3. Fallback to forceful termination tree if it did not exit within timeoutMs
-  console.warn(
-    `[download] Process ${childProcess.pid} did not exit within ${timeoutMs}ms, terminating forcefully...`
-  )
-  await terminateDownloadProcessTree(childProcess)
+  return await gracefullyInterruptProcess(processEntry, timeoutMs)
 }
 
 // Step 09.G - Graceful shutdown of all active download processes
@@ -189,7 +162,7 @@ export async function shutdownActiveDownloads({ timeoutMs = 5000 } = {}) {
   await Promise.allSettled(
     jobEntries.map(async ([jobId, processEntry]) => {
       try {
-        await gracefullyInterruptDownloadProcess(processEntry.childProcess, timeoutMs)
+        await gracefullyInterruptDownloadProcess(processEntry, timeoutMs)
       } catch (err) {
         console.error(`[download] Error interrupting job ${jobId} during shutdown:`, err)
       }
@@ -204,37 +177,12 @@ export async function shutdownActiveDownloads({ timeoutMs = 5000 } = {}) {
 }
 
 // Safely terminate process tree (including yt-dlp and ffmpeg subprocesses)
-async function terminateDownloadProcessTree(childProcess) {
-  if (!childProcess || typeof childProcess.pid !== 'number' || childProcess.killed) {
-    return
-  }
+export async function terminateDownloadProcessTree(childProcessOrEntry, timeoutMs = 3000) {
+  const processEntry = childProcessOrEntry?.childProcess
+    ? childProcessOrEntry
+    : { childProcess: childProcessOrEntry, closed: false }
 
-  const pid = childProcess.pid
-
-  if (process.platform === 'win32') {
-    try {
-      await execFileAsync('taskkill.exe', ['/PID', String(pid), '/T', '/F'], {
-        windowsHide: true
-      })
-    } catch (error) {
-      const message = String(error?.message || '')
-      if (message.includes('not found') || message.includes('No process') || error?.code === 128) {
-        return
-      }
-
-      try {
-        childProcess.kill('SIGKILL')
-      } catch {
-        // Process might already be dead
-      }
-    }
-  } else {
-    try {
-      childProcess.kill('SIGTERM')
-    } catch {
-      // Process might already be dead
-    }
-  }
+  return await terminateProcessTree(processEntry, timeoutMs)
 }
 
 export async function createDownloadJob({
@@ -427,11 +375,47 @@ export function runYtDlp(args, onProgress = null, onOutputLine = null, options =
           }
         })
 
+        let closeResolver
+        const closePromise = new Promise((resolve) => {
+          closeResolver = resolve
+        })
+
+        let pausePersistedResolver
+        const pausePersistedPromise = new Promise((resolve) => {
+          pausePersistedResolver = resolve
+        })
+
+        let cancelPersistedResolver
+        const cancelPersistedPromise = new Promise((resolve) => {
+          cancelPersistedResolver = resolve
+        })
+
         const processEntry = {
+          jobId: options?.jobId,
+          managedByJobExecutor: Boolean(options?.managedByJobExecutor),
           childProcess: child,
           cancelRequested: false,
           pauseRequested: false,
-          shutdownRequested: false
+          shutdownRequested: false,
+          closed: false,
+          exitCode: null,
+          signal: null,
+          closePromise,
+          pausePersistedPromise,
+          cancelPersistedPromise,
+          markClosed(code, sig) {
+            if (this.closed) return
+            this.closed = true
+            this.exitCode = code
+            this.signal = sig
+            closeResolver({ code, signal: sig })
+          },
+          markPausePersisted(success, data) {
+            pausePersistedResolver({ success, data })
+          },
+          markCancelPersisted(success, data) {
+            cancelPersistedResolver({ success, data })
+          }
         }
 
         if (options?.jobId) {
@@ -444,20 +428,12 @@ export function runYtDlp(args, onProgress = null, onOutputLine = null, options =
           if (isSettled) return
           isSettled = true
 
-          if (options?.jobId) {
-            activeDownloadProcesses.delete(options.jobId)
-          }
-
           reject(err)
         }
 
         const settleResolve = (val) => {
           if (isSettled) return
           isSettled = true
-
-          if (options?.jobId) {
-            activeDownloadProcesses.delete(options.jobId)
-          }
 
           resolve(val)
         }
@@ -532,6 +508,8 @@ export function runYtDlp(args, onProgress = null, onOutputLine = null, options =
 
         // Handle failure to start yt-dlp
         child.once('error', (error) => {
+          processEntry.markClosed(1, 'ERROR')
+
           if (processEntry.shutdownRequested) {
             settleReject(
               new DownloadInterruptedError('Download was interrupted by application shutdown')
@@ -555,6 +533,8 @@ export function runYtDlp(args, onProgress = null, onOutputLine = null, options =
 
         // Handle process completion
         child.once('close', (exitCode, signal) => {
+          processEntry.markClosed(exitCode, signal)
+
           if (processEntry.shutdownRequested) {
             settleReject(
               new DownloadInterruptedError('Download was interrupted by application shutdown')
@@ -769,14 +749,14 @@ export async function markDownloadJobCancelled(jobId) {
   }
 }
 
-export async function cancelRunningDownload(jobId) {
+export async function cancelRunningDownload(jobId, timeoutMs = 4000) {
   if (!Number.isSafeInteger(jobId) || jobId <= 0) {
     throw new Error('A valid Download Job ID is required')
   }
 
   const processEntry = activeDownloadProcesses.get(jobId)
 
-  if (!processEntry || !processEntry.childProcess) {
+  if (!processEntry || !processEntry.childProcess || processEntry.closed) {
     return {
       success: false,
       reason: 'not_running'
@@ -794,7 +774,7 @@ export async function cancelRunningDownload(jobId) {
   processEntry.cancelRequested = true
 
   try {
-    await terminateDownloadProcessTree(processEntry.childProcess)
+    await terminateDownloadProcessTree(processEntry, timeoutMs)
   } catch (error) {
     console.error(`[download] Error terminating process for job ${jobId}:`, error)
     return {
@@ -802,6 +782,14 @@ export async function cancelRunningDownload(jobId) {
       reason: 'termination_failed',
       error: error.message
     }
+  }
+
+  // Await SQLite persistence & cleanup completion from executeDownloadJob catch block
+  if (processEntry.managedByJobExecutor && processEntry.cancelPersistedPromise) {
+    await Promise.race([
+      processEntry.cancelPersistedPromise,
+      new Promise((resolve) => setTimeout(resolve, timeoutMs))
+    ])
   }
 
   clearJobRetryState(jobId)
@@ -818,7 +806,7 @@ export async function pauseRunningDownload(jobId, timeoutMs = 4000) {
 
   const processEntry = activeDownloadProcesses.get(jobId)
 
-  if (!processEntry || !processEntry.childProcess) {
+  if (!processEntry || !processEntry.childProcess || processEntry.closed) {
     return {
       success: false,
       reason: 'not_running'
@@ -836,13 +824,40 @@ export async function pauseRunningDownload(jobId, timeoutMs = 4000) {
   processEntry.pauseRequested = true
 
   try {
-    await gracefullyInterruptDownloadProcess(processEntry.childProcess, timeoutMs)
+    const interruptResult = await gracefullyInterruptDownloadProcess(processEntry, timeoutMs)
+    if (!interruptResult.success) {
+      processEntry.pauseRequested = false
+      return {
+        success: false,
+        reason: 'interruption_failed',
+        error: interruptResult.error || 'Graceful pause did not complete within timeout'
+      }
+    }
   } catch (error) {
+    processEntry.pauseRequested = false
     console.error(`[download] Error interrupting process for pausing job ${jobId}:`, error)
     return {
       success: false,
       reason: 'interruption_failed',
       error: error.message
+    }
+  }
+
+  // Await SQLite persistence & checkpoint verification from executeDownloadJob catch block
+  if (processEntry.managedByJobExecutor && processEntry.pausePersistedPromise) {
+    const persistResult = await Promise.race([
+      processEntry.pausePersistedPromise,
+      new Promise((resolve) =>
+        setTimeout(() => resolve({ success: false, timeout: true }), timeoutMs)
+      )
+    ])
+
+    if (!persistResult.success) {
+      return {
+        success: false,
+        reason: persistResult.timeout ? 'persistence_timeout' : 'validation_failed',
+        error: persistResult.data?.message || 'Failed to verify or persist paused checkpoint'
+      }
     }
   }
 
@@ -1724,7 +1739,7 @@ export async function executeDownloadJob(jobId, options = {}) {
       },
 
       // Options for process tracking & safe cancellation
-      { jobId }
+      { jobId, managedByJobExecutor: true }
     )
 
     // Flush any remaining downloaded bytes and total bytes
@@ -1896,8 +1911,10 @@ export async function executeDownloadJob(jobId, options = {}) {
 
         let hasValidPartial = false
         let reconciledBytes = currentBytes
-        try {
-          if (cleanPath) {
+        let partialInspectionError = null
+
+        if (cleanPath && (currentProgress > 0 || currentBytes > 0)) {
+          try {
             const partialResult = await verifyJobPartialDownload(jobId, cleanPath, {
               savedDownloadedBytes: currentBytes,
               savedProgress: currentProgress
@@ -1906,16 +1923,49 @@ export async function executeDownloadJob(jobId, options = {}) {
             if (hasValidPartial && partialResult.reconciledBytes > 0) {
               reconciledBytes = partialResult.reconciledBytes
             }
+          } catch (partErr) {
+            hasValidPartial = false
+            partialInspectionError = partErr
           }
-        } catch {
-          // fallback to currentBytes
+        } else if (currentProgress === 0 && currentBytes === 0) {
+          // Special case: If the download is at 0% and has no partial bytes, allow valid paused checkpoint at 0%
+          hasValidPartial = true
+          reconciledBytes = 0
+        }
+
+        const currentEntry = activeDownloadProcesses.get(jobId)
+
+        if (!hasValidPartial && (currentProgress > 0 || currentBytes > 0)) {
+          console.warn(
+            `[download] Pause validation failed for job ${jobId}: partial checkpoint is missing or invalid.`
+          )
+          await DownloadJob.update(
+            {
+              status: 'failed',
+              error_message:
+                'Download pause failed: partial download checkpoint is missing or invalid'
+            },
+            {
+              where: { id: jobId }
+            }
+          )
+          if (currentEntry && typeof currentEntry.markPausePersisted === 'function') {
+            currentEntry.markPausePersisted(
+              false,
+              partialInspectionError || new Error('Invalid partial file')
+            )
+          }
+          throw new DownloadError(
+            DOWNLOAD_ERROR_CODES.OUTPUT_VERIFICATION_FAILED,
+            'Partial download verification failed during pause'
+          )
         }
 
         const updatePayload = {
           status: 'paused',
           error_message: null
         }
-        if (reconciledBytes > 0) {
+        if (reconciledBytes > 0 || currentProgress === 0) {
           updatePayload.downloaded_bytes = reconciledBytes
         }
 
@@ -1926,10 +1976,18 @@ export async function executeDownloadJob(jobId, options = {}) {
         })
         clearJobRetryState(jobId)
         console.log(
-          `[download] Job ${jobId} safely transitioned to 'paused' (bytes: ${reconciledBytes})`
+          `[download] Job ${jobId} safely transitioned to 'paused' (verified bytes: ${reconciledBytes})`
         )
+
+        if (currentEntry && typeof currentEntry.markPausePersisted === 'function') {
+          currentEntry.markPausePersisted(true, { reconciledBytes })
+        }
       } catch (statusError) {
         console.error(`[download] Failed to persist paused state for job ${jobId}:`, statusError)
+        const currentEntry = activeDownloadProcesses.get(jobId)
+        if (currentEntry && typeof currentEntry.markPausePersisted === 'function') {
+          currentEntry.markPausePersisted(false, statusError)
+        }
       }
 
       // Preserve partial files and temporary workspace across pause
@@ -2147,6 +2205,11 @@ export async function executeDownloadJob(jobId, options = {}) {
         )
       }
 
+      const currentEntry = activeDownloadProcesses.get(jobId)
+      if (currentEntry && typeof currentEntry.markCancelPersisted === 'function') {
+        currentEntry.markCancelPersisted(true)
+      }
+
       throw error
     }
 
@@ -2177,6 +2240,8 @@ export async function executeDownloadJob(jobId, options = {}) {
     }
 
     throw error
+  } finally {
+    activeDownloadProcesses.delete(jobId)
   }
 }
 

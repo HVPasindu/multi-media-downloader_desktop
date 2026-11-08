@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import path from 'node:path'
 import { normalizeDownloadJob } from '../src/renderer/src/utils/downloadPresentation.js'
 import { DownloadPausedError } from '../src/main/backend/services/downloadService.js'
 import {
@@ -35,7 +37,12 @@ async function runDownloadPauseResumeTests() {
   const testDb = await createTestDatabase('pause-resume-test-')
 
   try {
-    const { DownloadJob, MediaItem } = testDb.sequelize.models
+    const { DownloadJob, MediaItem, AppSetting } = testDb.sequelize.models
+
+    await AppSetting.create({
+      key: 'download_path',
+      value: testDb.tempDir
+    })
 
     const media = await MediaItem.create({
       source_url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
@@ -253,27 +260,42 @@ async function runDownloadPauseResumeTests() {
     )
     clearJobRetryState(pausedJobToResume.id)
 
-    // 5.2 Transition back to paused, then resume online
+    // 5.2 Transition back to paused, then resume online with missing checkpoint
     await reloadedOffline.update({ status: 'paused', error_message: null })
+
+    const resumeMissingCheckpoint = await resumeDownloadJob(pausedJobToResume.id, {
+      isOnline: true
+    })
+    assert.equal(
+      resumeMissingCheckpoint.outcome,
+      'checkpoint_invalid',
+      '5.2: Missing partial checkpoint is rejected'
+    )
+    const checkPausedStill = await DownloadJob.findByPk(pausedJobToResume.id)
+    assert.equal(checkPausedStill.status, 'paused', '5.2: Database status remains paused')
+
+    // 5.3 Resuming with valid partial file on disk succeeds
+    const testPartFile = path.join(testDb.tempDir, `video [job-${pausedJobToResume.id}].part`)
+    fs.writeFileSync(testPartFile, Buffer.alloc(10000000))
 
     const enqueuedResumed = []
     const resumeOnlineResult = await resumeDownloadJob(pausedJobToResume.id, {
       isOnline: true,
       enqueue: (id) => enqueuedResumed.push(id)
     })
-    assert.equal(resumeOnlineResult.outcome, 'resumed', '5.2: Online resume transitions to queued')
-    assert.deepEqual(enqueuedResumed, [pausedJobToResume.id], '5.2: Enqueued ID matches job ID')
+    assert.equal(resumeOnlineResult.outcome, 'resumed', '5.3: Online resume transitions to queued')
+    assert.deepEqual(enqueuedResumed, [pausedJobToResume.id], '5.3: Enqueued ID matches job ID')
     const reloadedOnline = await DownloadJob.findByPk(pausedJobToResume.id)
-    assert.equal(reloadedOnline.status, 'queued', '5.2: Database status is queued')
-    assert.equal(reloadedOnline.progress, 40, '5.2: Checkpoint progress preserved')
-    assert.equal(reloadedOnline.downloaded_bytes, 10000000, '5.2: Checkpoint bytes preserved')
+    assert.equal(reloadedOnline.status, 'queued', '5.3: Database status is queued')
+    assert.equal(reloadedOnline.progress, 40, '5.3: Checkpoint progress preserved')
+    assert.equal(reloadedOnline.downloaded_bytes, 10000000, '5.3: Checkpoint bytes preserved')
 
-    // 5.3 Resuming already queued job returns already_queued
+    // 5.4 Resuming already queued job returns already_queued
     const resumeQueuedAgain = await resumeDownloadJob(pausedJobToResume.id, { isOnline: true })
     assert.equal(
       resumeQueuedAgain.outcome,
       'already_queued',
-      '5.3: Resuming queued job returns already_queued'
+      '5.4: Resuming queued job returns already_queued'
     )
 
     console.log('✓ Section 5 Passed: Resume flow & connectivity handling verified.\n')
