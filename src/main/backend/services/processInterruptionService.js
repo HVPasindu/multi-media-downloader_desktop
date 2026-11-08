@@ -121,7 +121,7 @@ export async function sendWindowsCtrlBreak(pid) {
 
   // Fallback: PowerShell inline GenerateConsoleCtrlEvent
   try {
-    const psCommand = `powershell -NoProfile -Command "& { Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class CtrlBreak { [DllImport(\\"kernel32.dll\\", SetLastError=true)] public static extern bool GenerateConsoleCtrlEvent(uint e, uint g); [DllImport(\\"kernel32.dll\\", SetLastError=true)] public static extern bool AttachConsole(uint p); [DllImport(\\"kernel32.dll\\", SetLastError=true)] public static extern bool FreeConsole(); [DllImport(\\"kernel32.dll\\", SetLastError=true)] public static extern bool SetConsoleCtrlHandler(IntPtr h, bool a); public static bool Send(uint p) { FreeConsole(); if(!AttachConsole(p)) return false; SetConsoleCtrlHandler(IntPtr.Zero, true); bool ok = GenerateConsoleCtrlEvent(1, p); FreeConsole(); return ok; } }'; [CtrlBreak]::Send(${pid}) }"`
+    const psCommand = `powershell -NoProfile -Command "& { Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class CtrlBreak { [DllImport(\\"kernel32.dll\\", SetLastError=true)] public static extern bool GenerateConsoleCtrlEvent(uint e, uint g); [DllImport(\\"kernel32.dll\\", SetLastError=true)] public static extern bool AttachConsole(uint p); [DllImport(\\"kernel32.dll\\", SetLastError=true)] public static extern bool FreeConsole(); [DllImport(\\"kernel32.dll\\", SetLastError=true)] public static extern bool SetConsoleCtrlHandler(IntPtr h, bool a); public static bool Send(uint p) { if (p == 0) return false; FreeConsole(); if(!AttachConsole(p)) return false; SetConsoleCtrlHandler(IntPtr.Zero, true); bool ok = GenerateConsoleCtrlEvent(1, p); FreeConsole(); return ok; } }'; if (![CtrlBreak]::Send(${pid})) { exit 1 } }"`
     execSync(psCommand, { windowsHide: true, timeout: 5000 })
     return { success: true, method: 'powershell_ctrl_break' }
   } catch (psErr) {
@@ -158,14 +158,14 @@ export async function gracefullyInterruptProcess(processEntry, timeoutMs = 4000)
     return { success: false, graceful: false, error: 'Process has no valid PID' }
   }
 
-  const pid = child.pid
+  const targetPid = processEntry.actualPid || child.pid
 
   // 1. Send graceful interruption event
   if (process.platform === 'win32') {
-    const ctrlResult = await sendWindowsCtrlBreak(pid)
+    const ctrlResult = await sendWindowsCtrlBreak(targetPid)
     if (!ctrlResult.success) {
       console.warn(
-        `[processInterruption] Windows Ctrl-Break generation failed for PID ${pid}:`,
+        `[processInterruption] Windows Ctrl-Break generation failed for PID ${targetPid}:`,
         ctrlResult.error
       )
     }
@@ -202,7 +202,7 @@ export async function gracefullyInterruptProcess(processEntry, timeoutMs = 4000)
   }
 
   // Check if process has actually exited in OS even if event lagged
-  if (!isProcessAlive(pid)) {
+  if (!isProcessAlive(targetPid)) {
     if (typeof processEntry.markClosed === 'function') {
       processEntry.markClosed(0, null)
     }
@@ -214,7 +214,7 @@ export async function gracefullyInterruptProcess(processEntry, timeoutMs = 4000)
   return {
     success: false,
     graceful: false,
-    error: `Process ${pid} did not exit gracefully within ${timeoutMs}ms`
+    error: `Process ${targetPid} did not exit gracefully within ${timeoutMs}ms`
   }
 }
 
@@ -238,16 +238,24 @@ export async function terminateProcessTree(processEntryOrChild, timeoutMs = 3000
   }
 
   const pid = child.pid
+  const actualPid = processEntry?.actualPid
 
   if (process.platform === 'win32') {
-    try {
-      await execFileAsync('taskkill.exe', ['/PID', String(pid), '/T', '/F'], {
-        windowsHide: true
-      })
-    } catch (error) {
-      const message = String(error?.message || '')
-      if (message.includes('not found') || message.includes('No process') || error?.code === 128) {
-        // Process already terminated
+    const pidsToKill = actualPid && actualPid !== pid ? [actualPid, pid] : [pid]
+    for (const p of pidsToKill) {
+      try {
+        await execFileAsync('taskkill.exe', ['/PID', String(p), '/T', '/F'], {
+          windowsHide: true
+        })
+      } catch (error) {
+        const message = String(error?.message || '')
+        if (
+          message.includes('not found') ||
+          message.includes('No process') ||
+          error?.code === 128
+        ) {
+          // Process already terminated
+        }
       }
     }
   } else {

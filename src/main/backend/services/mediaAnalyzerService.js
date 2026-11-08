@@ -79,8 +79,11 @@ export function getRateLimitCooldown(platform) {
 export function redactSensitiveText(str) {
   if (!str) return ''
   return String(str)
-    .replace(/(?:api[-_]?key|token|auth|password|cookie|secret|visitor[-_]?data)=([^\s&"'<>]+)/gi, '$1=[REDACTED]')
-    .replace(/(?:Bearer\s+)[a-zA-Z0-9_.\-]+/gi, 'Bearer [REDACTED]')
+    .replace(
+      /(?:api[-_]?key|token|auth|password|cookie|secret|visitor[-_]?data)=([^\s&"'<>]+)/gi,
+      '$1=[REDACTED]'
+    )
+    .replace(/(?:Bearer\s+)[a-zA-Z0-9_.-]+/gi, 'Bearer [REDACTED]')
 }
 
 export function classifyAnalysisError(error, platform) {

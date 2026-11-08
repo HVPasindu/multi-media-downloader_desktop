@@ -38,7 +38,11 @@ import {
   resolveJavaScriptRuntimeOption
 } from './executablePathService.js'
 import { scheduleJobRetry, clearJobRetryState } from './networkRecoveryService.js'
-import { gracefullyInterruptProcess, terminateProcessTree } from './processInterruptionService.js'
+import {
+  gracefullyInterruptProcess,
+  terminateProcessTree,
+  resolveCtrlBreakHelperPath
+} from './processInterruptionService.js'
 
 export {
   DownloadError,
@@ -375,14 +379,21 @@ export function runYtDlp(args, onProgress = null, onOutputLine = null, options =
           }
         }
 
-        // On Windows, detached: true passes CREATE_NEW_PROCESS_GROUP to CreateProcessW
-        // allowing GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, pid) to target this process group specifically.
-        // We do NOT call child.unref() so stdout/stderr pipes remain fully active and monitored.
-        if (process.platform === 'win32') {
-          spawnOptions.detached = true
+        let spawnExe = ytDlpExecutable
+        let spawnArgs = args
+
+        // On Windows, use the native send-ctrl-break launcher helper which creates the yt-dlp
+        // process with CREATE_NEW_CONSOLE | CREATE_NEW_PROCESS_GROUP and SW_HIDE. This grants
+        // yt-dlp its own isolated console session, prevents signal leakage to parent/terminal,
+        // and enables AttachConsole + GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT) to target
+        // this process group safely and reliably.
+        const helperPath = process.platform === 'win32' ? resolveCtrlBreakHelperPath() : null
+        if (helperPath) {
+          spawnExe = helperPath
+          spawnArgs = ['spawn', ytDlpExecutable, ...args]
         }
 
-        const child = spawn(ytDlpExecutable, args, spawnOptions)
+        const child = spawn(spawnExe, spawnArgs, spawnOptions)
 
         let closeResolver
         const closePromise = new Promise((resolve) => {
@@ -403,6 +414,7 @@ export function runYtDlp(args, onProgress = null, onOutputLine = null, options =
           jobId: options?.jobId,
           managedByJobExecutor: Boolean(options?.managedByJobExecutor),
           childProcess: child,
+          actualPid: null,
           cancelRequested: false,
           pauseRequested: false,
           shutdownRequested: false,
@@ -456,11 +468,21 @@ export function runYtDlp(args, onProgress = null, onOutputLine = null, options =
 
         const fileMarker = 'APPLAN2_FINAL_FILE:'
 
+        const pidMarker = 'APPLAN2_PID:'
+
         // Process one complete output line
         const handleOutputLine = (line) => {
           const cleanLine = line.trim()
 
           if (!cleanLine) {
+            return
+          }
+
+          if (cleanLine.startsWith(pidMarker)) {
+            const parsedPid = parseInt(cleanLine.slice(pidMarker.length).trim(), 10)
+            if (Number.isSafeInteger(parsedPid) && parsedPid > 0) {
+              processEntry.actualPid = parsedPid
+            }
             return
           }
 
@@ -890,6 +912,10 @@ export async function pauseRunningDownload(jobId, timeoutMs = 4000) {
   return {
     success: true
   }
+}
+
+export function getActiveDownloadProcess(jobId) {
+  return activeDownloadProcesses.get(jobId) || null
 }
 
 /**

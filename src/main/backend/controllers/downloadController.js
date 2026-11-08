@@ -501,7 +501,8 @@ export async function pauseDownloadJobController(req, res, next) {
           id: jobId,
           status: 'already_finishing',
           message:
-            result.message || 'Download is finishing — it will complete momentarily and cannot be paused now'
+            result.message ||
+            'Download is finishing — it will complete momentarily and cannot be paused now'
         }
       })
     }
