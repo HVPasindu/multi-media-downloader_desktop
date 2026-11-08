@@ -1,4 +1,5 @@
 # APPLAN2 — Complete Desktop React Frontend (Steps 05.11 to 05.14)
+
 # Post-Review Corrections & Verification Report
 
 ---
@@ -7,23 +8,24 @@
 
 This corrective update resolves the five issues identified during the independent source-code review of the APPLAN2 Desktop Application across Steps 05.11 to 05.14.
 
-| Metric | Verification Result |
-| :--- | :--- |
-| **Application** | APPLAN2 Multi-Platform Media Downloader (Desktop Electron + React) |
-| **Corrections Completed** | **5 of 5 Required Fixes (100% Implemented)** |
-| **Full Automated Test Suite** | **24 of 24 Passing (100% Pass Rate across all suites in 57.89s)** |
-| **Focused Step 14 Suite** | **7 of 7 Test Groups Passing** |
-| **ESLint Status** | **0 errors, 0 warnings (`eslint --cache .`)** |
-| **Production Build Status** | **Success (`out/main`, `out/preload`, `out/renderer` in 5.45s)** |
-| **Windows Packaged Binaries** | **100% PASS (`yt-dlp.exe`, `ffmpeg.exe`, `ffprobe.exe`, `node.exe`)** |
-| **UI Design Integrity** | **100% Preserved (Zero Layout, Styling, or Color Redesign)** |
-| **Git Status** | **Uncommitted working modifications retained (NO git commit / push executed)** |
+| Metric                        | Verification Result                                                            |
+| :---------------------------- | :----------------------------------------------------------------------------- |
+| **Application**               | APPLAN2 Multi-Platform Media Downloader (Desktop Electron + React)             |
+| **Corrections Completed**     | **5 of 5 Required Fixes (100% Implemented)**                                   |
+| **Full Automated Test Suite** | **24 of 24 Passing (100% Pass Rate across all suites in 57.89s)**              |
+| **Focused Step 14 Suite**     | **7 of 7 Test Groups Passing**                                                 |
+| **ESLint Status**             | **0 errors, 0 warnings (`eslint --cache .`)**                                  |
+| **Production Build Status**   | **Success (`out/main`, `out/preload`, `out/renderer` in 5.45s)**               |
+| **Windows Packaged Binaries** | **100% PASS (`yt-dlp.exe`, `ffmpeg.exe`, `ffprobe.exe`, `node.exe`)**          |
+| **UI Design Integrity**       | **100% Preserved (Zero Layout, Styling, or Color Redesign)**                   |
+| **Git Status**                | **Uncommitted working modifications retained (NO git commit / push executed)** |
 
 ---
 
 ## B. Individual Fix Results
 
 ### FIX 01 – Resuming Download Cancellation
+
 - **Original Issue**: Resumed/recovered downloads in `DownloadsPage.jsx` did not expose the Cancel/Stop button because the conditional check `(isDownloading || isQueued || item.status === 'interrupted')` omitted `isResuming`.
 - **Root Cause**: `src/renderer/src/utils/downloadPresentation.js` normalizes recovered jobs with progress > 0 as `item.status === 'queued'` and `item.displayStatus === 'resuming'`. In `DownloadsPage.jsx`, `isQueued` was defined as `item.status === 'queued' && !isResuming`, which caused `isQueued` to evaluate to `false` for resuming jobs, thus hiding the button.
 - **Exact Correction**:
@@ -39,6 +41,7 @@ This corrective update resolves the five issues identified during the independen
 ---
 
 ### FIX 02 – Secure File & Folder IPC Validation
+
 - **Original Issue**: The Renderer sent raw arbitrary filesystem paths (`filePath`) to `shell:open-file` and `shell:open-folder`, which only checked `typeof filePath === 'string'`. An untrusted or malformed renderer call could attempt to open unauthorized filesystem paths.
 - **Root Cause**: The IPC contract used client-provided strings instead of database-verified record identifiers.
 - **Exact Correction**:
@@ -62,6 +65,7 @@ This corrective update resolves the five issues identified during the independen
 ---
 
 ### FIX 03 – Consistent Safe Error Handling
+
 - **Original Issue**: Several user-facing error paths in `DownloadsPage.jsx`, `HistoryPage.jsx`, and `useDownloadsManager.js` displayed raw `err?.message` or `res.data?.message`, risking exposure of technical database exceptions, stack traces, and internal filesystem paths.
 - **Root Cause**: Lack of a centralized safe error sanitizer wrapping `getFriendlyErrorInfo`.
 - **Exact Correction**:
@@ -79,6 +83,7 @@ This corrective update resolves the five issues identified during the independen
 ---
 
 ### FIX 04 – Retry Button Loading-State Consistency
+
 - **Original Issue**: When a retry was active, other Retry buttons on the page remained visually enabled (`disabled={retryingJobId === item.id}`), even though the click handler rejected concurrent retries (`if (retryingJobId) return;`).
 - **Root Cause**: Button disabled condition was scoped only to the currently retrying item instead of the global loading state.
 - **Exact Correction**:
@@ -98,6 +103,7 @@ This corrective update resolves the five issues identified during the independen
 ---
 
 ### FIX 05 – Actual Frontend API Contract Test Coverage
+
 - **Original Issue**: `tests/step14_frontend_download_api_tests.js` tested query serialization by manually reconstructing a `URLSearchParams` object in the test, rather than directly invoking the production `listDownloads`, `cancelDownload`, and `retryDownload` functions.
 - **Root Cause**: Mocking the browser Electron IPC bridge in a Node test environment was previously bypassed with synthetic URL generation.
 - **Exact Correction**:
@@ -115,15 +121,15 @@ This corrective update resolves the five issues identified during the independen
 
 ## C. Modified Files Audit
 
-| File | Change | Reason |
-| :--- | :--- | :--- |
-| `src/renderer/src/pages/DownloadsPage.jsx` | Added `canCancel = isDownloading \|\| isQueued \|\| isInterrupted \|\| isResuming`; updated cancel button condition; updated Retry button `disabled={retryingJobId !== null}`; wired `getSafeFriendlyErrorInfo`. | FIX 01, FIX 03, FIX 04 |
-| `src/renderer/src/pages/HistoryPage.jsx` | Updated `handleOpenFile(jobId)` and `handleOpenFolder(jobId)` to pass `item.id`; updated Retry button `disabled={retryingJobId !== null}`; wired `getSafeFriendlyErrorInfo`. | FIX 02, FIX 03, FIX 04 |
-| `src/renderer/src/utils/errorPresentation.js` | Exported `getSafeFriendlyErrorInfo(errorOrCode, fallbackMessage)` with regex technical sanitizer for stack traces, internal paths, tokens, and database errors. | FIX 03 |
-| `src/renderer/src/hooks/useDownloadsManager.js` | Applied `getSafeFriendlyErrorInfo` to initial load and polling error handlers. | FIX 03 |
-| `src/preload/index.js` | Updated `openFile: (jobId)` and `openFolder: (jobId)` to accept `jobId`. | FIX 02 |
-| `src/main/index.js` | Registered `getVerifiedDownloadFilePath(jobId)` using `getDownloadHistoryDetails`; updated `shell:open-file` and `shell:open-folder` to validate sender and Job ID. | FIX 02 |
-| `tests/step14_frontend_download_api_tests.js` | Expanded suite into 7 test groups covering real production API functions, date range filtering, cancellation, resuming cancel, retry loading states, safe error presentation, and file access IPC. | FIX 01, FIX 02, FIX 03, FIX 04, FIX 05 |
+| File                                            | Change                                                                                                                                                                                                           | Reason                                 |
+| :---------------------------------------------- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------- |
+| `src/renderer/src/pages/DownloadsPage.jsx`      | Added `canCancel = isDownloading \|\| isQueued \|\| isInterrupted \|\| isResuming`; updated cancel button condition; updated Retry button `disabled={retryingJobId !== null}`; wired `getSafeFriendlyErrorInfo`. | FIX 01, FIX 03, FIX 04                 |
+| `src/renderer/src/pages/HistoryPage.jsx`        | Updated `handleOpenFile(jobId)` and `handleOpenFolder(jobId)` to pass `item.id`; updated Retry button `disabled={retryingJobId !== null}`; wired `getSafeFriendlyErrorInfo`.                                     | FIX 02, FIX 03, FIX 04                 |
+| `src/renderer/src/utils/errorPresentation.js`   | Exported `getSafeFriendlyErrorInfo(errorOrCode, fallbackMessage)` with regex technical sanitizer for stack traces, internal paths, tokens, and database errors.                                                  | FIX 03                                 |
+| `src/renderer/src/hooks/useDownloadsManager.js` | Applied `getSafeFriendlyErrorInfo` to initial load and polling error handlers.                                                                                                                                   | FIX 03                                 |
+| `src/preload/index.js`                          | Updated `openFile: (jobId)` and `openFolder: (jobId)` to accept `jobId`.                                                                                                                                         | FIX 02                                 |
+| `src/main/index.js`                             | Registered `getVerifiedDownloadFilePath(jobId)` using `getDownloadHistoryDetails`; updated `shell:open-file` and `shell:open-folder` to validate sender and Job ID.                                              | FIX 02                                 |
+| `tests/step14_frontend_download_api_tests.js`   | Expanded suite into 7 test groups covering real production API functions, date range filtering, cancellation, resuming cancel, retry loading states, safe error presentation, and file access IPC.               | FIX 01, FIX 02, FIX 03, FIX 04, FIX 05 |
 
 ---
 
@@ -131,18 +137,19 @@ This corrective update resolves the five issues identified during the independen
 
 - `STEP_05_11_TO_05_14_REVIEW_CORRECTIONS_REPORT.md` (This report)
 
-*(No other new files created; all code modifications were made strictly within existing project files).*
+_(No other new files created; all code modifications were made strictly within existing project files)._
 
 ---
 
 ## E. Backend Changes
 
 No Express routes, database schemas, Sequelize migrations, queue management, or download services were modified:
+
 - `src/main/backend/services/downloadQueueService.js` — **Untouched**
 - `src/main/backend/services/downloadService.js` — **Untouched**
 - `src/main/backend/services/downloadRecoveryService.js` — **Untouched**
 - `src/main/backend/services/mediaAnalyzerService.js` — **Untouched**
-- `src/main/backend/services/downloadHistoryService.js` — **Untouched** *(existing exported functions `getDownloadHistoryDetails` and `checkFileAvailability` reused)*
+- `src/main/backend/services/downloadHistoryService.js` — **Untouched** _(existing exported functions `getDownloadHistoryDetails` and `checkFileAvailability` reused)_
 - Database models and migrations — **Untouched**
 
 Main process changes in `src/main/index.js` were strictly limited to validating the `jobId` against SQLite and opening verified file paths via Electron shell.
@@ -160,7 +167,9 @@ Main process changes in `src/main/index.js` were strictly limited to validating 
 ## G. Full Test Results
 
 ### 1. Focused Step 14 Suite Execution
+
 Command: `node --loader ./tests/loaders/electron_loader.mjs tests/step14_frontend_download_api_tests.js`
+
 - Group 1: Production frontend API contracts (listDownloads, cancel, retry) — **PASS**
 - Group 2: History date range validation & filters — **PASS**
 - Group 3: SQLite date range filtering in download history — **PASS**
@@ -171,7 +180,9 @@ Command: `node --loader ./tests/loaders/electron_loader.mjs tests/step14_fronten
 - Result: **All Step 14 tests passed successfully**.
 
 ### 2. Full Regression Suite Execution
+
 Command: `npm test` (`scripts/run-backend-tests.mjs`)
+
 - Total Suites: **24**
 - Passed: **24**
 - Failed: **0**
@@ -179,18 +190,24 @@ Command: `npm test` (`scripts/run-backend-tests.mjs`)
 - Result: **100% PASS across all backend and frontend integration suites**.
 
 ### 3. ESLint Verification
+
 Command: `npm run lint` (`eslint --cache .`)
+
 - Result: **0 errors, 0 warnings**.
 
 ### 4. Production Bundle Build
+
 Command: `npm run build` (`electron-vite build`)
+
 - `out/main/index.js` — 252.97 kB (built in 433ms)
 - `out/preload/index.js` — 1.56 kB (built in 10ms)
 - `out/renderer` — 2525 modules transformed (built in 5.45s)
 - Exit code: **0 (Success)**.
 
 ### 5. Windows Packaged Binaries Verification
+
 Command: `npm run verify:binaries`
+
 - `yt-dlp.exe` (17.05 MB) — **PASS**
 - `ffmpeg.exe` (217.27 MB) — **PASS**
 - `ffprobe.exe` (217.08 MB) — **PASS**
@@ -202,6 +219,7 @@ Command: `npm run verify:binaries`
 ## H. Regression Protection
 
 The following existing features were verified unchanged and fully operational:
+
 - YouTube downloads & format selection
 - Facebook downloads & bitrate parsing
 - Instagram downloads & duration extraction
@@ -226,18 +244,18 @@ The following existing features were verified unchanged and fully operational:
 
 The following matrix is designated for manual verification by the user and independent reviewers:
 
-| # | Feature / User Flow | User Action | Expected Behavior |
-| :---: | :--- | :--- | :--- |
-| **1** | Resuming Download Cancellation | Click Stop/Cancel icon on a download displaying `Resuming` status | SweetAlert2 confirmation dialog appears. Clicking "Cancel Download" stops the job and transitions it to `Cancelled`. |
-| **2** | Active Download Cancellation | Click Stop/Cancel icon on a download displaying `Downloading` | Dialog appears. On confirm, button shows spinner (`Loader2`) and row transitions to `Cancelled`. |
-| **3** | Queued Download Cancellation | Click Stop/Cancel icon on a download displaying `Queued` | Dialog appears. On confirm, job is removed from queue and transitions to `Cancelled`. |
-| **4** | Global Retry Loading in Downloads | Click "Retry" on a failed item in Downloads Manager | Button icon spins (`RotateCcw`). All other Retry buttons on the page become disabled (`disabled:opacity-40`). Concurrent clicks are ignored. |
-| **5** | Global Retry Loading in History | Click "Retry" on a failed/cancelled item in History | Target button spins (`RotateCcw`). All other Retry buttons become disabled. Rapid clicking produces exactly one API request. |
-| **6** | Open Completed Media File | Click Play icon on a completed record with an existing file | Default OS media player launches and begins playback of the downloaded media file. |
-| **7** | Open Enclosing Folder | Click Folder icon on a completed record with an existing file | OS file manager (Explorer/Finder) opens with the downloaded media file highlighted. |
-| **8** | Invalid / Missing File Handling | Click Play or Folder icon when file was externally removed | Friendly alert displays: `"The downloaded file could not be opened."` No raw stack trace or directory path is shown. |
-| **9** | Friendly Error Presentation | Simulate network disconnection or server error | Dialog displays a clear title and non-technical guidance without raw SQL or internal file paths. |
-| **10** | Date Range Filter | Enter Start Date & End Date in History and click "Apply Filter" | History table reloads displaying only records within that date range. Active date badge displays. |
+|   #    | Feature / User Flow               | User Action                                                       | Expected Behavior                                                                                                                            |
+| :----: | :-------------------------------- | :---------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------- |
+| **1**  | Resuming Download Cancellation    | Click Stop/Cancel icon on a download displaying `Resuming` status | SweetAlert2 confirmation dialog appears. Clicking "Cancel Download" stops the job and transitions it to `Cancelled`.                         |
+| **2**  | Active Download Cancellation      | Click Stop/Cancel icon on a download displaying `Downloading`     | Dialog appears. On confirm, button shows spinner (`Loader2`) and row transitions to `Cancelled`.                                             |
+| **3**  | Queued Download Cancellation      | Click Stop/Cancel icon on a download displaying `Queued`          | Dialog appears. On confirm, job is removed from queue and transitions to `Cancelled`.                                                        |
+| **4**  | Global Retry Loading in Downloads | Click "Retry" on a failed item in Downloads Manager               | Button icon spins (`RotateCcw`). All other Retry buttons on the page become disabled (`disabled:opacity-40`). Concurrent clicks are ignored. |
+| **5**  | Global Retry Loading in History   | Click "Retry" on a failed/cancelled item in History               | Target button spins (`RotateCcw`). All other Retry buttons become disabled. Rapid clicking produces exactly one API request.                 |
+| **6**  | Open Completed Media File         | Click Play icon on a completed record with an existing file       | Default OS media player launches and begins playback of the downloaded media file.                                                           |
+| **7**  | Open Enclosing Folder             | Click Folder icon on a completed record with an existing file     | OS file manager (Explorer/Finder) opens with the downloaded media file highlighted.                                                          |
+| **8**  | Invalid / Missing File Handling   | Click Play or Folder icon when file was externally removed        | Friendly alert displays: `"The downloaded file could not be opened."` No raw stack trace or directory path is shown.                         |
+| **9**  | Friendly Error Presentation       | Simulate network disconnection or server error                    | Dialog displays a clear title and non-technical guidance without raw SQL or internal file paths.                                             |
+| **10** | Date Range Filter                 | Enter Start Date & End Date in History and click "Apply Filter"   | History table reloads displaying only records within that date range. Active date badge displays.                                            |
 
 ---
 

@@ -463,6 +463,7 @@ export function runYtDlp(args, onProgress = null, onOutputLine = null, options =
         if (options?.jobId) {
           const existingEntry = activeDownloadProcesses.get(options.jobId)
           if (existingEntry) {
+            processEntry.executionToken = existingEntry.executionToken
             processEntry.cancelRequested = Boolean(existingEntry.cancelRequested)
             processEntry.pauseRequested = Boolean(existingEntry.pauseRequested)
             if (existingEntry.cancelPersistedPromise) {
@@ -887,7 +888,9 @@ export async function cancelRunningDownload(jobId, timeoutMs = 4000) {
       if (!persistResult?.success) {
         return {
           success: false,
-          reason: persistResult?.timeout ? 'persistence_timeout' : 'persistence_failed',
+          reason:
+            persistResult?.data?.outcome ||
+            (persistResult?.timeout ? 'persistence_timeout' : 'persistence_failed'),
           error: persistResult?.data?.message || 'Cancellation persistence could not be verified'
         }
       }
@@ -939,7 +942,9 @@ export async function cancelRunningDownload(jobId, timeoutMs = 4000) {
     if (!persistResult?.success) {
       return {
         success: false,
-        reason: persistResult?.timeout ? 'persistence_timeout' : 'persistence_failed',
+        reason:
+          persistResult?.data?.outcome ||
+          (persistResult?.timeout ? 'persistence_timeout' : 'persistence_failed'),
         error: persistResult?.data?.message || 'Cancellation persistence could not be verified'
       }
     }
@@ -1623,14 +1628,29 @@ export async function saveDownloadedFile(
 }
 
 export async function executeDownloadJob(jobId, options = {}) {
-  // 1. Claim the queued job conditionally first
-  const claimedJob = await claimQueuedDownloadJob(jobId)
-  if (!claimedJob) {
-    console.log(`[download] Job ${jobId} is no longer queued; skipping execution.`)
+  // If an active process entry already exists for this job ID, check if it is shutting down / winding down
+  const existingEntry = activeDownloadProcesses.get(jobId)
+  if (existingEntry) {
+    if (existingEntry.pauseRequested || existingEntry.cancelRequested || existingEntry.closed) {
+      // The previous execution for this job is in the middle of shutting down / winding down.
+      // Wait briefly for the previous execution to clear its registration.
+      for (let i = 0; i < 20; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 50))
+        if (!activeDownloadProcesses.has(jobId)) break
+      }
+    }
+  }
+
+  if (activeDownloadProcesses.has(jobId)) {
+    console.warn(
+      `[download] Job ${jobId} already has an active execution process; skipping duplicate startup.`
+    )
     return null
   }
 
-  // 2. Register startup reservation in activeDownloadProcesses so cancellation during preparation is handled
+  // Generate unique execution ownership token
+  const executionToken = Symbol(`execution_${jobId}`)
+
   let cancelPersistedResolver
   const cancelPersistedPromise = new Promise((resolve) => {
     cancelPersistedResolver = resolve
@@ -1641,222 +1661,72 @@ export async function executeDownloadJob(jobId, options = {}) {
     pausePersistedResolver = resolve
   })
 
+  let cancelSettled = false
+  const settleCancel = (success, data) => {
+    if (!cancelSettled) {
+      cancelSettled = true
+      cancelPersistedResolver({ success, data })
+    }
+  }
+
+  let pauseSettled = false
+  const settlePause = (success, data) => {
+    if (!pauseSettled) {
+      pauseSettled = true
+      pausePersistedResolver({ success, data })
+    }
+  }
+
   const startupEntry = {
     jobId,
+    executionToken,
     phase: 'starting',
     cancelRequested: false,
     pauseRequested: false,
     childProcess: null,
     managedByJobExecutor: true,
     cancelPersistedPromise,
-    markCancelPersisted: (success, data) => {
-      cancelPersistedResolver({ success, data })
-    },
+    markCancelPersisted: settleCancel,
     pausePersistedPromise,
-    markPausePersisted: (success, data) => {
-      pausePersistedResolver({ success, data })
-    }
+    markPausePersisted: settlePause
   }
+
+  // Register startup reservation BEFORE claiming the queued job
   activeDownloadProcesses.set(jobId, startupEntry)
 
-  // 3. Prepare download information safely
-  let execution
-
+  let claimedJob = null
   try {
-    if (startupEntry.cancelRequested) {
-      throw new DownloadCancelledError('Download was cancelled before preparation')
+    claimedJob = await claimQueuedDownloadJob(jobId)
+  } catch (claimErr) {
+    if (activeDownloadProcesses.get(jobId)?.executionToken === executionToken) {
+      activeDownloadProcesses.delete(jobId)
     }
-
-    execution = await prepareDownloadJobExecution(jobId)
-
-    if (startupEntry.cancelRequested) {
-      throw new DownloadCancelledError('Download was cancelled during preparation')
-    }
-
-    if (startupEntry.pauseRequested) {
-      throw new DownloadPausedError('Download was paused during preparation')
-    }
-
-    const currentDbJob = await getDatabase().models.DownloadJob.findByPk(jobId)
-    if (currentDbJob?.status === 'cancelled') {
-      throw new DownloadCancelledError('Download was cancelled during preparation')
-    }
-    if (currentDbJob?.status === 'paused') {
-      throw new DownloadPausedError('Download was paused during preparation')
-    }
-  } catch (error) {
-    if (error instanceof DownloadCancelledError || error instanceof DownloadPausedError) {
-      throw error
-    }
-
-    const isTransient =
-      isTransientNetworkError(error) ||
-      error?.code === 'NETWORK_ERROR' ||
-      error?.code === 'DNS_LOOKUP_FAILED' ||
-      /\b(?:ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH)\b|network is unreachable|timed out|Temporary failure in name resolution|getaddrinfo\s+(?:ENOTFOUND|failed)|unable to connect/i.test(
-        String(error?.message || '') + ' ' + String(error?.stderr || '')
-      )
-
-    if (isTransient) {
-      console.warn(
-        `[download] Job ${jobId} encountered transient network/DNS error during preparation. Transitioning to 'interrupted' and scheduling retry.`
-      )
-      try {
-        const DownloadJob = getDatabase().models.DownloadJob
-        await DownloadJob.update(
-          {
-            status: 'interrupted',
-            error_message:
-              'Internet connection or DNS was lost during preparation. Retrying automatically...'
-          },
-          {
-            where: { id: jobId }
-          }
-        )
-        scheduleJobRetry(jobId)
-      } catch (statusError) {
-        console.error(
-          `[download] Failed to persist interrupted state for job ${jobId}:`,
-          statusError
-        )
-      }
-      throw error
-    }
-
-    // Clean up any partially created temporary workspace if non-transient preparation failed
-    try {
-      const fallbackPath =
-        execution?.downloadPath ||
-        (await resolveValidatedDownloadPath(getDatabase().models.AppSetting))
-
-      if (fallbackPath) {
-        await cleanupJobTemporaryFiles(jobId, fallbackPath)
-      }
-    } catch {
-      // Ignore fallback cleanup errors during preparation failure
-    }
-
-    // Mark only a still-queued or preparing job as failed
-    try {
-      const failedJob = await markDownloadJobFailed(jobId, error, 'downloading')
-
-      if (!failedJob) {
-        console.warn('[download] Job was not in preparing state when preparation failed:', jobId)
-      }
-    } catch (statusError) {
-      console.error('[download] Failed to save preparation error:', statusError)
-    }
-
-    throw error
+    throw claimErr
   }
 
-  // Step 04.38 - Adopt pre-existing valid output file if application previously stopped after yt-dlp moved file
-  if (execution.existingValidFile) {
-    let candidateVerified = null
-    try {
-      candidateVerified = await verifyDownloadedFile(execution.existingValidFile, {
-        downloadPath: execution.downloadPath,
-        jobId,
-        expectedFormat: claimedJob.output_format
-      })
-      await verifyFinalMediaContent(candidateVerified.filePath, claimedJob.output_format)
-    } catch (adoptionErr) {
-      if (adoptionErr?.code === DOWNLOAD_ERROR_CODES.OUTPUT_VERIFICATION_FAILED) {
-        console.warn(
-          `[download] Job ${jobId} candidate output file confirmed invalid: ${adoptionErr.message}. Removing invalid orphan.`
-        )
-        await removeJobOwnedOutputFile(execution.existingValidFile, execution.downloadPath, jobId)
-        candidateVerified = null
-      } else {
-        // Operational verification failure (e.g. FFprobe missing/failed) -> preserve output file and mark job failed
-        console.warn(
-          `[download] Job ${jobId} candidate output file inspection error: ${adoptionErr.message}. Output preserved.`
-        )
-        try {
-          await markDownloadJobFailed(jobId, adoptionErr)
-        } catch (statusErr) {
-          console.error(
-            `[download] Failed to persist failed state for job ${jobId} during adoption error:`,
-            statusErr
-          )
-        }
-        throw adoptionErr
-      }
+  if (!claimedJob) {
+    console.log(`[download] Job ${jobId} is no longer queued; skipping execution.`)
+    if (activeDownloadProcesses.get(jobId)?.executionToken === executionToken) {
+      activeDownloadProcesses.delete(jobId)
     }
-
-    if (candidateVerified) {
-      console.log(
-        `[download] Job ${jobId} adopted valid pre-existing final output file: ${candidateVerified.filePath}`
-      )
-      let completionResult
-      try {
-        completionResult = await withCompletionWriteLock(async () => {
-          return await getDatabase().transaction(
-            { type: Transaction.TYPES.IMMEDIATE },
-            async (transaction) => {
-              const saved = await saveDownloadedFile(
-                jobId,
-                candidateVerified.filePath,
-                transaction,
-                candidateVerified
-              )
-              const completed = await markDownloadJobCompleted(jobId, transaction)
-              return { savedFile: saved, completedJob: completed }
-            }
-          )
-        })
-      } catch (dbError) {
-        console.error(
-          `[download] Database failure recording adopted job ${jobId} completion:`,
-          dbError
-        )
-        const classifiedDbError = new DownloadError(
-          DOWNLOAD_ERROR_CODES.DATABASE_ERROR,
-          `Failed to record download completion in database: ${dbError.message}`,
-          { cause: dbError }
-        )
-        try {
-          await markDownloadJobFailed(jobId, classifiedDbError)
-        } catch (statusErr) {
-          console.error(
-            `[download] Failed to persist failed state for job ${jobId} after adoption DB error:`,
-            statusErr
-          )
-        }
-        throw classifiedDbError
-      }
-
-      try {
-        await cleanupJobTemporaryFiles(jobId, execution.downloadPath)
-      } catch {
-        // ignore
-      }
-
-      return {
-        job: completionResult.completedJob,
-        file: completionResult.savedFile
-      }
-    }
+    return null
   }
 
-  // Tracking final file path and verification failure for safe orphan cleanup
+  // Main download lifecycle variables
+  let execution = null
   let finalFilePath = null
   let verificationFailed = false
-
-  // 3. Prepare ordered progress database updates
   let progressWriteChain = Promise.resolve()
   let lastScheduledProgress = claimedJob.progress || 0
   let progressWriteError = null
-
-  // Both MP3 and MP4 use structured download information
-  const streamTracker = createMultiStreamProgressTracker()
-
-  // Last scheduled network byte count (initialize from restored bytes to prevent regression)
   let lastScheduledBytes = claimedJob.downloaded_bytes || 0
   let latestObservedBytes = claimedJob.downloaded_bytes || 0
   let lastBytesWriteAt = 0
+  let lastScheduledTotalBytes = null
+  let lastScheduledTotalIsEstimate = false
+  let latestObservedTotalBytes = null
+  let latestObservedTotalIsEstimate = false
 
-  // 5. Schedule progress updates safely
   const scheduleOverallProgress = (overallPercent) => {
     if (overallPercent === null) {
       return
@@ -1887,12 +1757,6 @@ export async function executeDownloadJob(jobId, options = {}) {
         progressWriteError ??= error
       })
   }
-
-  // Schedule downloaded byte updates
-  let lastScheduledTotalBytes = null
-  let lastScheduledTotalIsEstimate = false
-  let latestObservedTotalBytes = null
-  let latestObservedTotalIsEstimate = false
 
   const scheduleDownloadedBytes = (
     downloadedBytes,
@@ -1969,6 +1833,190 @@ export async function executeDownloadJob(jobId, options = {}) {
   }
 
   try {
+    // Check for early cancellation or pause requested before preparation
+    if (startupEntry.cancelRequested) {
+      throw new DownloadCancelledError('Download was cancelled before preparation')
+    }
+    if (startupEntry.pauseRequested) {
+      throw new DownloadPausedError('Download was paused before preparation')
+    }
+
+    try {
+      execution = await prepareDownloadJobExecution(jobId)
+
+      if (startupEntry.cancelRequested) {
+        throw new DownloadCancelledError('Download was cancelled during preparation')
+      }
+
+      if (startupEntry.pauseRequested) {
+        throw new DownloadPausedError('Download was paused during preparation')
+      }
+
+      const currentDbJob = await getDatabase().models.DownloadJob.findByPk(jobId)
+      if (currentDbJob?.status === 'cancelled') {
+        throw new DownloadCancelledError('Download was cancelled during preparation')
+      }
+      if (currentDbJob?.status === 'paused') {
+        throw new DownloadPausedError('Download was paused during preparation')
+      }
+    } catch (error) {
+      if (error instanceof DownloadCancelledError || error instanceof DownloadPausedError) {
+        throw error
+      }
+
+      const isTransient =
+        isTransientNetworkError(error) ||
+        error?.code === 'NETWORK_ERROR' ||
+        error?.code === 'DNS_LOOKUP_FAILED' ||
+        /\b(?:ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH)\b|network is unreachable|timed out|Temporary failure in name resolution|getaddrinfo\s+(?:ENOTFOUND|failed)|unable to connect/i.test(
+          String(error?.message || '') + ' ' + String(error?.stderr || '')
+        )
+
+      if (isTransient) {
+        console.warn(
+          `[download] Job ${jobId} encountered transient network/DNS error during preparation. Transitioning to 'interrupted' and scheduling retry.`
+        )
+        try {
+          const DownloadJob = getDatabase().models.DownloadJob
+          await DownloadJob.update(
+            {
+              status: 'interrupted',
+              error_message:
+                'Internet connection or DNS was lost during preparation. Retrying automatically...'
+            },
+            {
+              where: { id: jobId }
+            }
+          )
+          scheduleJobRetry(jobId)
+        } catch (statusError) {
+          console.error(
+            `[download] Failed to persist interrupted state for job ${jobId}:`,
+            statusError
+          )
+        }
+        throw error
+      }
+
+      // Clean up any partially created temporary workspace if non-transient preparation failed
+      try {
+        const fallbackPath =
+          execution?.downloadPath ||
+          (await resolveValidatedDownloadPath(getDatabase().models.AppSetting))
+
+        if (fallbackPath) {
+          await cleanupJobTemporaryFiles(jobId, fallbackPath)
+        }
+      } catch {
+        // Ignore fallback cleanup errors during preparation failure
+      }
+
+      // Mark only a still-queued or preparing job as failed
+      try {
+        const failedJob = await markDownloadJobFailed(jobId, error, 'downloading')
+
+        if (!failedJob) {
+          console.warn('[download] Job was not in preparing state when preparation failed:', jobId)
+        }
+      } catch (statusError) {
+        console.error('[download] Failed to save preparation error:', statusError)
+      }
+
+      throw error
+    }
+
+    // Step 04.38 - Adopt pre-existing valid output file if application previously stopped after yt-dlp moved file
+    if (execution.existingValidFile) {
+      let candidateVerified = null
+      try {
+        candidateVerified = await verifyDownloadedFile(execution.existingValidFile, {
+          downloadPath: execution.downloadPath,
+          jobId,
+          expectedFormat: claimedJob.output_format
+        })
+        await verifyFinalMediaContent(candidateVerified.filePath, claimedJob.output_format)
+      } catch (adoptionErr) {
+        if (adoptionErr?.code === DOWNLOAD_ERROR_CODES.OUTPUT_VERIFICATION_FAILED) {
+          console.warn(
+            `[download] Job ${jobId} candidate output file confirmed invalid: ${adoptionErr.message}. Removing invalid orphan.`
+          )
+          await removeJobOwnedOutputFile(execution.existingValidFile, execution.downloadPath, jobId)
+          candidateVerified = null
+        } else {
+          // Operational verification failure (e.g. FFprobe missing/failed) -> preserve output file and mark job failed
+          console.warn(
+            `[download] Job ${jobId} candidate output file inspection error: ${adoptionErr.message}. Output preserved.`
+          )
+          try {
+            await markDownloadJobFailed(jobId, adoptionErr)
+          } catch (statusErr) {
+            console.error(
+              `[download] Failed to persist failed state for job ${jobId} during adoption error:`,
+              statusErr
+            )
+          }
+          throw adoptionErr
+        }
+      }
+
+      if (candidateVerified) {
+        console.log(
+          `[download] Job ${jobId} adopted valid pre-existing final output file: ${candidateVerified.filePath}`
+        )
+        let completionResult
+        try {
+          completionResult = await withCompletionWriteLock(async () => {
+            return await getDatabase().transaction(
+              { type: Transaction.TYPES.IMMEDIATE },
+              async (transaction) => {
+                const saved = await saveDownloadedFile(
+                  jobId,
+                  candidateVerified.filePath,
+                  transaction,
+                  candidateVerified
+                )
+                const completed = await markDownloadJobCompleted(jobId, transaction)
+                return { savedFile: saved, completedJob: completed }
+              }
+            )
+          })
+        } catch (dbError) {
+          console.error(
+            `[download] Database failure recording adopted job ${jobId} completion:`,
+            dbError
+          )
+          const classifiedDbError = new DownloadError(
+            DOWNLOAD_ERROR_CODES.DATABASE_ERROR,
+            `Failed to record download completion in database: ${dbError.message}`,
+            { cause: dbError }
+          )
+          try {
+            await markDownloadJobFailed(jobId, classifiedDbError)
+          } catch (statusErr) {
+            console.error(
+              `[download] Failed to persist failed state for job ${jobId} after adoption DB error:`,
+              statusErr
+            )
+          }
+          throw classifiedDbError
+        }
+
+        try {
+          await cleanupJobTemporaryFiles(jobId, execution.downloadPath)
+        } catch {
+          // ignore
+        }
+
+        return {
+          job: completionResult.completedJob,
+          file: completionResult.savedFile
+        }
+      }
+    }
+
+    // Both MP3 and MP4 use structured download information
+    const streamTracker = createMultiStreamProgressTracker()
+
     // 6. Execute yt-dlp with MP3 and MP4 callbacks
     const result = await runYtDlp(
       execution.args,
@@ -2472,41 +2520,105 @@ export async function executeDownloadJob(jobId, options = {}) {
     }
 
     if (error instanceof DownloadCancelledError) {
-      let persistSuccess = false
-      let persistError = null
-      try {
-        const cancelledJob = await markDownloadJobCancelled(jobId)
-
-        if (cancelledJob) {
-          persistSuccess = true
-        } else {
-          persistError = new Error('Could not mark Download Job as cancelled')
-          console.error('Could not mark Download Job as cancelled:', jobId)
-        }
-      } catch (statusError) {
-        persistError = statusError
-        console.error('Could not save cancelled job status:', statusError)
-      }
-
-      // Safely clean up job-owned temporary workspace after cancellation
-      try {
-        const cleanPath =
-          execution?.downloadPath ||
-          (await resolveValidatedDownloadPath(getDatabase().models.AppSetting))
-
-        if (cleanPath) {
-          await cleanupJobTemporaryFiles(jobId, cleanPath)
-        }
-      } catch (cleanupError) {
-        console.warn(
-          `[download] Failed to clean temporary workspace for cancelled job ${jobId}:`,
-          cleanupError
-        )
-      }
-
+      // 1. Confirm child process termination if process was spawned
       const currentEntry = activeDownloadProcesses.get(jobId)
-      if (currentEntry && typeof currentEntry.markCancelPersisted === 'function') {
-        currentEntry.markCancelPersisted(persistSuccess, persistError)
+      if (currentEntry?.childProcess && !currentEntry.closed) {
+        try {
+          await terminateDownloadProcessTree(currentEntry, 3000)
+        } catch {
+          // Ignore termination error if already exited
+        }
+      }
+
+      // 2. Resolve validated download path
+      const cleanPath =
+        execution?.downloadPath ||
+        (await resolveValidatedDownloadPath(getDatabase().models.AppSetting))
+
+      // 3. Clean up job-owned temporary workspace and partial files
+      let cleanupSuccess = false
+      let cleanupErrorMsg = null
+      if (cleanPath) {
+        try {
+          const cleanResult = await cleanupJobTemporaryFiles(jobId, cleanPath)
+          if (cleanResult && cleanResult.success === true) {
+            cleanupSuccess = true
+          } else {
+            cleanupSuccess = false
+            cleanupErrorMsg = cleanResult?.error || 'Temporary file cleanup reported incomplete'
+          }
+        } catch (cleanErr) {
+          cleanupSuccess = false
+          cleanupErrorMsg = cleanErr.message
+        }
+      } else {
+        cleanupSuccess = false
+        cleanupErrorMsg = 'Unable to resolve valid download folder path'
+      }
+
+      const DownloadJob = getDatabase().models.DownloadJob
+
+      // 4. Require cleanupResult.success === true to mark as cancelled
+      if (cleanupSuccess) {
+        try {
+          await DownloadJob.update(
+            {
+              status: 'cancelled',
+              progress: 0,
+              downloaded_bytes: 0,
+              error_message: null
+            },
+            {
+              where: { id: jobId }
+            }
+          )
+          clearJobRetryState(jobId)
+          console.log(
+            `[download] Job ${jobId} safely transitioned to 'cancelled' with partial cleanup verified.`
+          )
+          if (currentEntry && typeof currentEntry.markCancelPersisted === 'function') {
+            currentEntry.markCancelPersisted(true, { outcome: 'cancelled' })
+          }
+        } catch (statusError) {
+          console.error(
+            `[download] Failed to persist cancelled status for job ${jobId}:`,
+            statusError
+          )
+          if (currentEntry && typeof currentEntry.markCancelPersisted === 'function') {
+            currentEntry.markCancelPersisted(false, {
+              outcome: 'persistence_failed',
+              message: statusError.message
+            })
+          }
+        }
+      } else {
+        // Cleanup failed: DO NOT mark as cancelled! Mark as failed with diagnostic error
+        console.warn(
+          `[download] Cleanup failed during cancellation for job ${jobId}: ${cleanupErrorMsg}. Marking as failed.`
+        )
+        try {
+          await DownloadJob.update(
+            {
+              status: 'failed',
+              error_message: `Cancellation cleanup failed: ${cleanupErrorMsg}`
+            },
+            {
+              where: { id: jobId }
+            }
+          )
+          clearJobRetryState(jobId)
+        } catch (statusError) {
+          console.error(
+            `[download] Failed to persist failed state for job ${jobId} after cleanup failure:`,
+            statusError
+          )
+        }
+        if (currentEntry && typeof currentEntry.markCancelPersisted === 'function') {
+          currentEntry.markCancelPersisted(false, {
+            outcome: 'cleanup_failed',
+            message: cleanupErrorMsg
+          })
+        }
       }
 
       throw error
@@ -2540,7 +2652,10 @@ export async function executeDownloadJob(jobId, options = {}) {
 
     throw error
   } finally {
-    activeDownloadProcesses.delete(jobId)
+    const curProc = activeDownloadProcesses.get(jobId)
+    if (!curProc || !curProc.executionToken || curProc.executionToken === executionToken) {
+      activeDownloadProcesses.delete(jobId)
+    }
   }
 }
 

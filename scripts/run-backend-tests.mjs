@@ -150,7 +150,9 @@ async function runSingleSuite(suite) {
       if (child.pid) {
         if (process.platform === 'win32') {
           try {
-            execFileSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' })
+            execFileSync('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], {
+              stdio: 'ignore'
+            })
           } catch (tkErr) {
             console.warn(`[runner] taskkill warning for PID ${child.pid}:`, tkErr.message)
             try {
@@ -158,6 +160,25 @@ async function runSingleSuite(suite) {
             } catch {
               // Ignore fallback error
             }
+          }
+
+          // Verify process exit with bounded polling loop
+          let stillRunning = true
+          for (let attempt = 0; attempt < 20; attempt++) {
+            try {
+              process.kill(child.pid, 0)
+              const waitBuffer = new Int32Array(new SharedArrayBuffer(4))
+              Atomics.wait(waitBuffer, 0, 0, 50)
+            } catch {
+              stillRunning = false
+              break
+            }
+          }
+
+          if (stillRunning) {
+            console.error(
+              `[runner] FATAL: Process tree for PID ${child.pid} could not be confirmed terminated.`
+            )
           }
         } else {
           try {

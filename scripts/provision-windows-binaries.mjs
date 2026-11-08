@@ -40,13 +40,17 @@ const PINNED_BINARIES = [
     name: 'ffmpeg.exe',
     version: '9.0.2',
     sha256: '589E50B766D251AFDF181DD664D40BD94407E200B019989FD7468C7D118A28D0',
-    licenseFile: 'LICENSE.ffmpeg.txt'
+    archiveUrl: 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip',
+    licenseFile: 'LICENSE.ffmpeg.txt',
+    licenseUrl: 'https://raw.githubusercontent.com/FFmpeg/FFmpeg/master/COPYING.GPLv3'
   },
   {
     name: 'ffprobe.exe',
     version: '9.0.2',
     sha256: '02264DFA4F56BAAA31E443ECE8AA16D397F6B008200E7FD184D22B9009E75FD3',
-    licenseFile: 'LICENSE.ffmpeg.txt'
+    archiveUrl: 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip',
+    licenseFile: 'LICENSE.ffmpeg.txt',
+    licenseUrl: 'https://raw.githubusercontent.com/FFmpeg/FFmpeg/master/COPYING.GPLv3'
   }
 ]
 
@@ -111,27 +115,69 @@ async function provisionBinaries() {
     }
 
     if (needsDownload) {
-      if (!bin.url) {
-        throw new Error(
-          `Cannot auto-download ${bin.name}: No pinned URL configured. Please place official ${bin.name} in ${targetDir}`
-        )
-      }
-      console.log(`[download] Downloading ${bin.name} from ${bin.url}...`)
-      const tmpPath = filePath + '.tmp'
-      try {
-        await downloadFile(bin.url, tmpPath)
-        const downloadedHash = computeSha256(tmpPath)
-        if (bin.sha256 && downloadedHash !== bin.sha256.toUpperCase()) {
-          fs.unlinkSync(tmpPath)
-          throw new Error(
-            `Downloaded ${bin.name} SHA-256 mismatch! Expected: ${bin.sha256}, Got: ${downloadedHash}`
-          )
+      if (bin.url) {
+        console.log(`[download] Downloading ${bin.name} from ${bin.url}...`)
+        const tmpPath = filePath + '.tmp'
+        try {
+          await downloadFile(bin.url, tmpPath)
+          const downloadedHash = computeSha256(tmpPath)
+          if (bin.sha256 && downloadedHash !== bin.sha256.toUpperCase()) {
+            fs.unlinkSync(tmpPath)
+            throw new Error(
+              `Downloaded ${bin.name} SHA-256 mismatch! Expected: ${bin.sha256}, Got: ${downloadedHash}`
+            )
+          }
+          fs.renameSync(tmpPath, filePath)
+          console.log(`[success] ${bin.name} downloaded and verified (SHA-256 match).`)
+        } catch (dlErr) {
+          if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath)
+          throw new Error(`Failed to provision ${bin.name}: ${dlErr.message}`)
         }
-        fs.renameSync(tmpPath, filePath)
-        console.log(`[success] ${bin.name} downloaded and verified (SHA-256 match).`)
-      } catch (dlErr) {
-        if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath)
-        throw new Error(`Failed to provision ${bin.name}: ${dlErr.message}`)
+      } else if (bin.archiveUrl) {
+        console.log(`[download] Downloading archive for ${bin.name} from ${bin.archiveUrl}...`)
+        const tmpZipPath = path.join(targetDir, 'temp_archive.zip')
+        const extractDir = path.join(targetDir, 'temp_extracted')
+        try {
+          await downloadFile(bin.archiveUrl, tmpZipPath)
+          fs.mkdirSync(extractDir, { recursive: true })
+          execFileSync('powershell.exe', [
+            '-NoProfile',
+            '-Command',
+            `Expand-Archive -Path "${tmpZipPath}" -DestinationPath "${extractDir}" -Force`
+          ])
+
+          // Search extracted tree for bin.name
+          const findFileRecursively = (dir, targetName) => {
+            const entries = fs.readdirSync(dir, { withFileTypes: true })
+            for (const entry of entries) {
+              const full = path.join(dir, entry.name)
+              if (entry.isDirectory()) {
+                const found = findFileRecursively(full, targetName)
+                if (found) return found
+              } else if (entry.name.toLowerCase() === targetName.toLowerCase()) {
+                return full
+              }
+            }
+            return null
+          }
+
+          const extractedBinPath = findFileRecursively(extractDir, bin.name)
+          if (!extractedBinPath) {
+            throw new Error(`Executable ${bin.name} not found inside extracted archive`)
+          }
+
+          fs.copyFileSync(extractedBinPath, filePath)
+          console.log(`[success] ${bin.name} extracted from archive into ${targetDir}.`)
+        } catch (archErr) {
+          throw new Error(`Failed to provision ${bin.name} from archive: ${archErr.message}`)
+        } finally {
+          if (fs.existsSync(tmpZipPath)) fs.unlinkSync(tmpZipPath)
+          if (fs.existsSync(extractDir)) fs.rmSync(extractDir, { recursive: true, force: true })
+        }
+      } else {
+        throw new Error(
+          `Cannot auto-download ${bin.name}: No pinned URL or archive configured. Please place official ${bin.name} in ${targetDir}`
+        )
       }
     }
 

@@ -97,8 +97,8 @@ function processDownloadQueue() {
         console.error(`Queued Download Job ${jobId} failed:`, error)
       })
       .finally(() => {
-        // Always release the execution slot
-        activeDownloadCount -= 1
+        // Always release the execution slot safely
+        activeDownloadCount = Math.max(0, activeDownloadCount - 1)
 
         // Allow this job ID to leave the scheduler
         scheduledJobIds.delete(jobId)
@@ -424,6 +424,14 @@ export async function cancelDownloadJob(jobId) {
           outcome: 'cancellation_requested',
           status: 'cancellation_requested',
           message: 'Download cancellation is in progress'
+        }
+      }
+
+      if (cancelResult.reason === 'cleanup_failed') {
+        return {
+          outcome: 'cleanup_failed',
+          status: 'failed',
+          message: cancelResult.error || 'Temporary file cleanup failed'
         }
       }
 

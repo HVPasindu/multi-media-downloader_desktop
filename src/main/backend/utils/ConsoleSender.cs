@@ -143,35 +143,40 @@ public class ConsoleSender {
             IntPtr hOrigOut = GetStdHandle(STD_OUTPUT_HANDLE);
             IntPtr hOrigErr = GetStdHandle(STD_ERROR_HANDLE);
 
-            // Ensure handles are marked inheritable
+            if (hOrigOut == IntPtr.Zero || hOrigOut == new IntPtr(-1)) {
+                Console.Error.WriteLine("GetStdHandle (stdout) returned invalid handle");
+                return 1;
+            }
+            if (hOrigErr == IntPtr.Zero || hOrigErr == new IntPtr(-1)) {
+                Console.Error.WriteLine("GetStdHandle (stderr) returned invalid handle");
+                return 1;
+            }
+
+            // Ensure handles are marked inheritable (fail-closed on critical handle configuration failure)
             if (hOrigIn != IntPtr.Zero && hOrigIn != new IntPtr(-1)) {
                 if (!SetHandleInformation(hOrigIn, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT)) {
                     int hErr = Marshal.GetLastWin32Error();
-                    if (hErr != 0) Console.Error.WriteLine("SetHandleInformation (stdin) warning: " + hErr);
+                    Console.Error.WriteLine("SetHandleInformation (stdin) failed: " + hErr);
+                    return 1;
                 }
             }
-            if (hOrigOut != IntPtr.Zero && hOrigOut != new IntPtr(-1)) {
-                if (!SetHandleInformation(hOrigOut, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT)) {
-                    int hErr = Marshal.GetLastWin32Error();
-                    if (hErr != 0) Console.Error.WriteLine("SetHandleInformation (stdout) warning: " + hErr);
-                }
+            if (!SetHandleInformation(hOrigOut, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT)) {
+                int hErr = Marshal.GetLastWin32Error();
+                Console.Error.WriteLine("SetHandleInformation (stdout) failed: " + hErr);
+                return 1;
             }
-            if (hOrigErr != IntPtr.Zero && hOrigErr != new IntPtr(-1)) {
-                if (!SetHandleInformation(hOrigErr, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT)) {
-                    int hErr = Marshal.GetLastWin32Error();
-                    if (hErr != 0) Console.Error.WriteLine("SetHandleInformation (stderr) warning: " + hErr);
-                }
+            if (!SetHandleInformation(hOrigErr, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT)) {
+                int hErr = Marshal.GetLastWin32Error();
+                Console.Error.WriteLine("SetHandleInformation (stderr) failed: " + hErr);
+                return 1;
             }
 
             // 2. Detach from current console (if any) and allocate a new dedicated console
             FreeConsole();
             if (!AllocConsole()) {
                 int allocErr = Marshal.GetLastWin32Error();
-                // If error is 5 (ACCESS_DENIED) it may already be attached to a console
-                if (allocErr != 5) {
-                    Console.Error.WriteLine("AllocConsole failed: " + allocErr);
-                    return 1;
-                }
+                Console.Error.WriteLine("AllocConsole failed: " + allocErr);
+                return 1;
             }
 
             // 3. Immediately hide the newly allocated console window
@@ -226,7 +231,8 @@ public class ConsoleSender {
                 // Install CtrlHandler in the launcher so signals directed to this console do not terminate the launcher prematurely
                 if (!SetConsoleCtrlHandler(handler, true)) {
                     int hErr = Marshal.GetLastWin32Error();
-                    if (hErr != 0) Console.Error.WriteLine("SetConsoleCtrlHandler warning: " + hErr);
+                    Console.Error.WriteLine("SetConsoleCtrlHandler failed: " + hErr);
+                    return 1;
                 }
 
                 uint waitResult = WaitForSingleObject(pi.hProcess, INFINITE);
@@ -259,7 +265,8 @@ public class ConsoleSender {
         // Install handler BEFORE attaching to prevent self-interruption
         if (!SetConsoleCtrlHandler(handler, true)) {
             int hErr = Marshal.GetLastWin32Error();
-            if (hErr != 0) Console.Error.WriteLine("SetConsoleCtrlHandler warning: " + hErr);
+            Console.Error.WriteLine("SetConsoleCtrlHandler failed: " + hErr);
+            return 1;
         }
 
         FreeConsole();

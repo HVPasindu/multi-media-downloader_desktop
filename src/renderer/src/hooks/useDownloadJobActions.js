@@ -46,7 +46,14 @@ export function useDownloadJobActions({ onRefresh, fetchGlobalCounts } = {}) {
     async (jobId) => {
       const key = String(jobId)
       if (!jobId || inFlightJobsRef.current.has(key)) return
-      if (cancellingJobId === jobId || pausingJobId === jobId) return
+      if (
+        cancellingJobId === jobId ||
+        pausingJobId === jobId ||
+        resumingJobId === jobId ||
+        retryingJobId === jobId
+      ) {
+        return
+      }
 
       inFlightJobsRef.current.add(key)
       setPausingJobId(jobId)
@@ -96,14 +103,21 @@ export function useDownloadJobActions({ onRefresh, fetchGlobalCounts } = {}) {
         setPausingJobId(null)
       }
     },
-    [cancellingJobId, pausingJobId, triggerRefresh]
+    [cancellingJobId, pausingJobId, resumingJobId, retryingJobId, triggerRefresh]
   )
 
   const handleResumeJob = useCallback(
     async (jobId) => {
       const key = String(jobId)
       if (!jobId || inFlightJobsRef.current.has(key)) return
-      if (resumingJobId === jobId || cancellingJobId === jobId) return
+      if (
+        cancellingJobId === jobId ||
+        pausingJobId === jobId ||
+        resumingJobId === jobId ||
+        retryingJobId === jobId
+      ) {
+        return
+      }
 
       inFlightJobsRef.current.add(key)
       setResumingJobId(jobId)
@@ -132,29 +146,37 @@ export function useDownloadJobActions({ onRefresh, fetchGlobalCounts } = {}) {
         setResumingJobId(null)
       }
     },
-    [cancellingJobId, resumingJobId, triggerRefresh]
+    [cancellingJobId, pausingJobId, resumingJobId, retryingJobId, triggerRefresh]
   )
 
   const handleCancelJob = useCallback(
     async (jobId) => {
       const key = String(jobId)
       if (!jobId || inFlightJobsRef.current.has(key)) return
-      if (cancellingJobId === jobId) return
+      if (
+        cancellingJobId === jobId ||
+        pausingJobId === jobId ||
+        resumingJobId === jobId ||
+        retryingJobId === jobId
+      ) {
+        return
+      }
 
-      const confirmed = await showConfirm(
-        'Cancel Download?',
-        'Are you sure you want to cancel this download? This will stop the active download process.',
-        {
-          confirmButtonText: 'Cancel Download',
-          isDanger: true
-        }
-      )
-      if (!confirmed) return
-
+      // Synchronously acquire lock before modal dialog to prevent race conditions & double-triggers
       inFlightJobsRef.current.add(key)
       setCancellingJobId(jobId)
 
       try {
+        const confirmed = await showConfirm(
+          'Cancel Download?',
+          'Are you sure you want to cancel this download? This will stop the active download process.',
+          {
+            confirmButtonText: 'Cancel Download',
+            isDanger: true
+          }
+        )
+        if (!confirmed) return
+
         const res = await cancelDownload(jobId)
         if (res.ok) {
           if (res.status === 202 || res.data?.data?.status === 'cancellation_requested') {
@@ -206,14 +228,21 @@ export function useDownloadJobActions({ onRefresh, fetchGlobalCounts } = {}) {
         setCancellingJobId(null)
       }
     },
-    [cancellingJobId, triggerRefresh]
+    [cancellingJobId, pausingJobId, resumingJobId, retryingJobId, triggerRefresh]
   )
 
   const handleRetryJob = useCallback(
     async (jobId) => {
       const key = String(jobId)
       if (!jobId || inFlightJobsRef.current.has(key)) return
-      if (retryingJobId === jobId) return
+      if (
+        cancellingJobId === jobId ||
+        pausingJobId === jobId ||
+        resumingJobId === jobId ||
+        retryingJobId === jobId
+      ) {
+        return
+      }
 
       inFlightJobsRef.current.add(key)
       setRetryingJobId(jobId)
@@ -238,7 +267,7 @@ export function useDownloadJobActions({ onRefresh, fetchGlobalCounts } = {}) {
         setRetryingJobId(null)
       }
     },
-    [retryingJobId, triggerRefresh]
+    [cancellingJobId, pausingJobId, resumingJobId, retryingJobId, triggerRefresh]
   )
 
   return {

@@ -708,6 +708,12 @@ async function runWindowsRealIntegrationTests() {
       }
     }
 
+    // Wait for queue slot to be fully released by executor finally block
+    for (let i = 0; i < 30; i++) {
+      if (getQueueStatus().activeCount === 0) break
+      await new Promise((r) => setTimeout(r, 100))
+    }
+
     console.log(
       '✓ Test F Passed: Retry restarts clean from 0% under the same Job ID and completes successfully.\n'
     )
@@ -783,6 +789,12 @@ async function runWindowsRealIntegrationTests() {
     await cancelDownloadJob(jobG2.id).catch(() => {})
     await cancelDownloadJob(jobG3.id).catch(() => {})
 
+    // Wait for cancelled jobs to fully release queue slots
+    for (let i = 0; i < 30; i++) {
+      if (getQueueStatus().activeCount === 0) break
+      await new Promise((r) => setTimeout(r, 100))
+    }
+
     console.log(
       '✓ Test G Passed: Concurrency strictly capped at 2, FIFO order maintained, slots released on pause.\n'
     )
@@ -840,6 +852,9 @@ async function runWindowsRealIntegrationTests() {
             Array.isArray(result.availableFormats.audioFormats)),
         'Test H.8b: Available formats metadata extracted'
       )
+      if (result.availableFormats?.mp4Formats?.length > 0) {
+        assert.ok(result.availableFormats.mp4Formats[0].formatId, 'Test H.8c: Format ID extracted')
+      }
       console.log(
         `[Test H] Positive YouTube extraction succeeded! Title: "${result.title}", Duration: ${dur}s, Formats: MP4 (${result.availableFormats?.mp4Formats?.length || 0}) / Audio (${result.availableFormats?.audioFormats?.length || 0})`
       )
@@ -956,6 +971,8 @@ async function runWindowsRealIntegrationTests() {
 
     // Scenario A: Network Recovery vs Concurrent Manual Pause
     console.log('[Test K] Scenario A: Network Recovery vs Concurrent Manual Pause...')
+    resetQueueForTesting()
+
     const jobKA = await DownloadJob.create({
       media_id: media.id,
       source_type: 'link',
@@ -974,9 +991,15 @@ async function runWindowsRealIntegrationTests() {
 
     // Execute concurrent network recovery and manual pause
     const [, pauseResultKA] = await Promise.all([
-      resumeInterruptedNetworkJobs(DownloadJob),
+      resumeInterruptedNetworkJobs({ isOnline: true }),
       pauseDownloadJob(jobKA.id)
     ])
+
+    // Wait for in-flight executor settlement
+    for (let i = 0; i < 20; i++) {
+      if (getQueueStatus().activeCount === 0) break
+      await new Promise((r) => setTimeout(r, 100))
+    }
 
     const jobKAAfter = await DownloadJob.findByPk(jobKA.id)
     assert.equal(
@@ -1002,6 +1025,8 @@ async function runWindowsRealIntegrationTests() {
 
     // Scenario B: Network Recovery vs Concurrent Manual Cancel
     console.log('[Test K] Scenario B: Network Recovery vs Concurrent Manual Cancel...')
+    resetQueueForTesting()
+
     const jobKB = await DownloadJob.create({
       media_id: media.id,
       source_type: 'link',
@@ -1020,9 +1045,15 @@ async function runWindowsRealIntegrationTests() {
 
     // Execute concurrent network recovery and manual cancel
     const [, cancelResultKB] = await Promise.all([
-      resumeInterruptedNetworkJobs(DownloadJob),
+      resumeInterruptedNetworkJobs({ isOnline: true }),
       cancelDownloadJob(jobKB.id)
     ])
+
+    // Wait for in-flight executor settlement
+    for (let i = 0; i < 20; i++) {
+      if (getQueueStatus().activeCount === 0) break
+      await new Promise((r) => setTimeout(r, 100))
+    }
 
     const jobKBAfter = await DownloadJob.findByPk(jobKB.id)
     assert.equal(jobKBAfter.status, 'cancelled', 'Test K.6: Cancelled status persists')
@@ -1060,7 +1091,7 @@ async function runWindowsRealIntegrationTests() {
     )
     fs.writeFileSync(partPathKC, fixtureBuf.subarray(0, Math.floor(FILE_SIZE * 0.4)))
 
-    const recoveryResultC = await resumeInterruptedNetworkJobs(DownloadJob)
+    const recoveryResultC = await resumeInterruptedNetworkJobs({ isOnline: true })
     assert.ok(recoveryResultC.resumedCount >= 1, 'Test K.12: Interrupted job resumed by recovery')
 
     let jobKCCompleted = null
