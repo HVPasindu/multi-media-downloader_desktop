@@ -6,6 +6,8 @@ import {
   getDownloadJobController,
   listDownloadJobsController,
   cancelDownloadJobController,
+  pauseDownloadJobController,
+  resumeDownloadJobController,
   retryDownloadJobController,
   deleteDownloadHistoryController,
   clearDownloadHistoryController,
@@ -29,7 +31,13 @@ router.get('/', listDownloadJobsController)
 // Clear explicitly selected terminal download history
 router.delete('/history', clearDownloadHistoryController)
 
-// Cancel a queued or running download job
+// Pause a running, queued, or interrupted download job
+router.post('/:id/pause', pauseDownloadJobController)
+
+// Resume a paused download job
+router.post('/:id/resume', resumeDownloadJobController)
+
+// Cancel a queued, running, paused, or interrupted download job
 router.post('/:id/cancel', cancelDownloadJobController)
 
 // Retry a failed or cancelled download job

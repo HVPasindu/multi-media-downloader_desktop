@@ -166,6 +166,7 @@ export function normalizeDownloadJob(job, speedTracker = null) {
   const isCompleted = job.status === 'completed'
   const isFailed = job.status === 'failed'
   const isCancelled = job.status === 'cancelled'
+  const isPaused = job.status === 'paused'
 
   // Clear speed tracker samples when not actively downloading to avoid stale speeds on resume
   if (!isDownloading && speedTracker && typeof speedTracker.delete === 'function') {
@@ -290,6 +291,10 @@ export function normalizeDownloadJob(job, speedTracker = null) {
       speedText = '0 KB/s'
       etaText = 'Waiting for connection'
       etaDisplay = 'Waiting for connection'
+    } else if (isPaused) {
+      speedText = '0 KB/s'
+      etaText = 'Paused'
+      etaDisplay = 'Paused'
     } else if (isResuming) {
       speedText = null
       etaText = 'Resuming...'
@@ -309,6 +314,9 @@ export function normalizeDownloadJob(job, speedTracker = null) {
     }
     statusText = details.length > 0 ? `Downloading (${details.join(' • ')})` : 'Downloading'
     displayStatus = 'downloading'
+  } else if (isPaused) {
+    statusText = `Paused (${progress}%)`
+    displayStatus = 'paused'
   } else if (isResuming) {
     statusText = `Resuming (${progress}% saved)`
     displayStatus = 'resuming'

@@ -116,6 +116,14 @@ export class DownloadInterruptedError extends Error {
   }
 }
 
+// Custom error to distinguish manual user pause from unexpected interruption or cancellation
+export class DownloadPausedError extends Error {
+  constructor(message = 'Download was paused by user') {
+    super(message)
+    this.name = 'DownloadPausedError'
+  }
+}
+
 // Step 09.F - Detect yt-dlp resume/range incompatibility (HTTP 416 / Requested Range Not Satisfiable)
 export function isResumeIncompatibilityError(error) {
   if (!error) return false
@@ -422,6 +430,7 @@ export function runYtDlp(args, onProgress = null, onOutputLine = null, options =
         const processEntry = {
           childProcess: child,
           cancelRequested: false,
+          pauseRequested: false,
           shutdownRequested: false
         }
 
@@ -530,6 +539,11 @@ export function runYtDlp(args, onProgress = null, onOutputLine = null, options =
             return
           }
 
+          if (processEntry.pauseRequested) {
+            settleReject(new DownloadPausedError('Download was paused by user'))
+            return
+          }
+
           if (processEntry.cancelRequested) {
             settleReject(new DownloadCancelledError('Download was cancelled'))
             return
@@ -545,6 +559,11 @@ export function runYtDlp(args, onProgress = null, onOutputLine = null, options =
             settleReject(
               new DownloadInterruptedError('Download was interrupted by application shutdown')
             )
+            return
+          }
+
+          if (processEntry.pauseRequested) {
+            settleReject(new DownloadPausedError('Download was paused by user'))
             return
           }
 
@@ -781,6 +800,48 @@ export async function cancelRunningDownload(jobId) {
     return {
       success: false,
       reason: 'termination_failed',
+      error: error.message
+    }
+  }
+
+  clearJobRetryState(jobId)
+
+  return {
+    success: true
+  }
+}
+
+export async function pauseRunningDownload(jobId, timeoutMs = 4000) {
+  if (!Number.isSafeInteger(jobId) || jobId <= 0) {
+    throw new Error('A valid Download Job ID is required')
+  }
+
+  const processEntry = activeDownloadProcesses.get(jobId)
+
+  if (!processEntry || !processEntry.childProcess) {
+    return {
+      success: false,
+      reason: 'not_running'
+    }
+  }
+
+  // Prevent duplicate pause requests
+  if (processEntry.pauseRequested) {
+    return {
+      success: true,
+      alreadyPausing: true
+    }
+  }
+
+  processEntry.pauseRequested = true
+
+  try {
+    await gracefullyInterruptDownloadProcess(processEntry.childProcess, timeoutMs)
+  } catch (error) {
+    console.error(`[download] Error interrupting process for pausing job ${jobId}:`, error)
+    return {
+      success: false,
+      reason: 'interruption_failed',
       error: error.message
     }
   }
@@ -1812,6 +1873,67 @@ export async function executeDownloadJob(jobId, options = {}) {
       } catch (cleanErr) {
         console.warn(`[download] Failed to remove invalid output file for job ${jobId}:`, cleanErr)
       }
+    }
+
+    // Handle manual pause request
+    if (error instanceof DownloadPausedError) {
+      try {
+        try {
+          scheduleDownloadedBytes(latestObservedBytes, true)
+          await progressWriteChain
+        } catch {
+          // ignore flush error
+        }
+
+        const DownloadJob = getDatabase().models.DownloadJob
+        const cleanPath =
+          execution?.downloadPath ||
+          (await resolveValidatedDownloadPath(getDatabase().models.AppSetting))
+
+        const latestJob = (await DownloadJob.findByPk(jobId)) || claimedJob
+        const currentBytes = Math.max(latestJob.downloaded_bytes || 0, latestObservedBytes || 0)
+        const currentProgress = latestJob.progress || 0
+
+        let hasValidPartial = false
+        let reconciledBytes = currentBytes
+        try {
+          if (cleanPath) {
+            const partialResult = await verifyJobPartialDownload(jobId, cleanPath, {
+              savedDownloadedBytes: currentBytes,
+              savedProgress: currentProgress
+            })
+            hasValidPartial = isPartialDownloadResumable(partialResult)
+            if (hasValidPartial && partialResult.reconciledBytes > 0) {
+              reconciledBytes = partialResult.reconciledBytes
+            }
+          }
+        } catch {
+          // fallback to currentBytes
+        }
+
+        const updatePayload = {
+          status: 'paused',
+          error_message: null
+        }
+        if (reconciledBytes > 0) {
+          updatePayload.downloaded_bytes = reconciledBytes
+        }
+
+        await DownloadJob.update(updatePayload, {
+          where: {
+            id: jobId
+          }
+        })
+        clearJobRetryState(jobId)
+        console.log(
+          `[download] Job ${jobId} safely transitioned to 'paused' (bytes: ${reconciledBytes})`
+        )
+      } catch (statusError) {
+        console.error(`[download] Failed to persist paused state for job ${jobId}:`, statusError)
+      }
+
+      // Preserve partial files and temporary workspace across pause
+      throw error
     }
 
     // Step 09.G - Handle application shutdown interruption

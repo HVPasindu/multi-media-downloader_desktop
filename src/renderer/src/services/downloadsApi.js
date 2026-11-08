@@ -113,6 +113,38 @@ export function getDownload(id) {
 }
 
 /**
+ * Pauses a currently running, queued, or interrupted download job.
+ *
+ * @param {number|string} id - Download job ID
+ * @returns {Promise<{ status: number, ok: boolean, data: { success: boolean, data?: object } }>}
+ */
+export function pauseDownload(id) {
+  return apiRequest({
+    path: `/api/downloads/${id}/pause`,
+    method: 'POST'
+  }).then((res) => {
+    if (res.ok) notifyDownloadStateChanged()
+    return res
+  })
+}
+
+/**
+ * Resumes a paused download job from its saved checkpoint.
+ *
+ * @param {number|string} id - Download job ID
+ * @returns {Promise<{ status: number, ok: boolean, data: { success: boolean, data?: object } }>}
+ */
+export function resumeDownload(id) {
+  return apiRequest({
+    path: `/api/downloads/${id}/resume`,
+    method: 'POST'
+  }).then((res) => {
+    if (res.ok) notifyDownloadStateChanged()
+    return res
+  })
+}
+
+/**
  * Cancels a queued or currently running download job.
  *
  * @param {number|string} id - Download job ID
