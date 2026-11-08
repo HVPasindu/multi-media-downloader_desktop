@@ -73,7 +73,9 @@ export function useDownloadsManager({
           for (const item of normalized) {
             const idStr = String(item.id)
             const prevStatus = prevStatuses.get(idStr)
-            const wasActive = ['queued', 'downloading', 'interrupted'].includes(prevStatus)
+            const wasActive = ['queued', 'downloading', 'interrupted', 'paused'].includes(
+              prevStatus
+            )
 
             if (item.status === 'failed' && wasActive) {
               notifyLiveJobFailure(

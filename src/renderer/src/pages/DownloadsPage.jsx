@@ -13,7 +13,8 @@ import {
   Download,
   AlertCircle,
   RefreshCw,
-  RotateCcw
+  RotateCcw,
+  FolderOpen
 } from 'lucide-react'
 import StatCard from '../components/ui/StatCard'
 import FilterTabs from '../components/ui/FilterTabs'
@@ -25,6 +26,9 @@ import { useDownloadsManager } from '../hooks/useDownloadsManager'
 import {
   retryDownload,
   cancelDownload,
+  pauseDownload,
+  resumeDownload,
+  deleteDownloadHistory,
   clearDownloadHistory,
   getDownloadSummary
 } from '../services/downloadsApi'
@@ -63,6 +67,9 @@ export default function DownloadsPage() {
   const [currentPage, setCurrentPage] = useState(1)
   const [retryingJobId, setRetryingJobId] = useState(null)
   const [cancellingJobId, setCancellingJobId] = useState(null)
+  const [pausingJobId, setPausingJobId] = useState(null)
+  const [resumingJobId, setResumingJobId] = useState(null)
+  const [deletingJobId, setDeletingJobId] = useState(null)
   const retryGuardRef = useRef(null)
   if (retryGuardRef.current === null) {
     retryGuardRef.current = createRetryGuard()
@@ -100,6 +107,7 @@ export default function DownloadsPage() {
   const [globalCounts, setGlobalCounts] = useState({
     downloading: 0,
     queued: 0,
+    paused: 0,
     interrupted: 0,
     completed: 0,
     failed: 0,
@@ -213,13 +221,18 @@ export default function DownloadsPage() {
       setCancellingJobId(jobId)
       const res = await cancelDownload(jobId)
       if (res.ok) {
-        if (res.status === 202) {
-          showToast('Cancellation requested', 'info')
+        if (res.status === 202 || res.data?.data?.status === 'cancellation_requested') {
+          showToast('Cancelling download...', 'info')
+          for (let i = 0; i < 5; i++) {
+            await new Promise((r) => setTimeout(r, 400))
+            if (typeof retry === 'function') retry()
+            fetchGlobalCounts()
+          }
         } else {
           showToast('Download cancelled', 'success')
+          if (typeof retry === 'function') retry()
+          fetchGlobalCounts()
         }
-        if (typeof retry === 'function') retry()
-        fetchGlobalCounts()
       } else if (res.status === 409) {
         const errorInfo = getSafeFriendlyErrorInfo(
           res.data,
@@ -244,6 +257,128 @@ export default function DownloadsPage() {
       showError(errorInfo.title || 'Cancellation Error', errorInfo.message)
     } finally {
       setCancellingJobId(null)
+    }
+  }
+
+  const handlePauseJob = async (jobId) => {
+    if (pausingJobId !== null || cancellingJobId !== null) return
+    try {
+      setPausingJobId(jobId)
+      const res = await pauseDownload(jobId)
+      if (res.ok) {
+        if (res.data?.data?.status === 'already_finishing') {
+          showToast('Download is finishing and will complete momentarily', 'info')
+          if (typeof retry === 'function') retry()
+          fetchGlobalCounts()
+        } else if (res.status === 202 || res.data?.data?.status === 'pause_pending') {
+          showToast('Pausing download...', 'info')
+          for (let i = 0; i < 5; i++) {
+            await new Promise((r) => setTimeout(r, 400))
+            if (typeof retry === 'function') retry()
+            fetchGlobalCounts()
+          }
+        } else {
+          showToast('Download paused', 'info')
+          if (typeof retry === 'function') retry()
+          fetchGlobalCounts()
+        }
+      } else {
+        const errorInfo = getSafeFriendlyErrorInfo(res.data, 'Failed to pause download.')
+        showError(errorInfo.title || 'Pause Failed', errorInfo.message)
+      }
+    } catch (err) {
+      const errorInfo = getSafeFriendlyErrorInfo(err, 'An unexpected error occurred while pausing.')
+      showError(errorInfo.title || 'Pause Error', errorInfo.message)
+    } finally {
+      setPausingJobId(null)
+    }
+  }
+
+  const handleResumeJob = async (jobId) => {
+    if (resumingJobId !== null) return
+    try {
+      setResumingJobId(jobId)
+      const res = await resumeDownload(jobId)
+      if (res.ok) {
+        if (res.data?.data?.status === 'interrupted') {
+          showToast('Internet offline. Job will resume once connection is restored.', 'info')
+        } else {
+          showToast('Download resumed', 'success')
+        }
+        if (typeof retry === 'function') retry()
+        fetchGlobalCounts()
+      } else {
+        const errorInfo = getSafeFriendlyErrorInfo(res.data, 'Failed to resume download.')
+        showError(errorInfo.title || 'Resume Failed', errorInfo.message)
+      }
+    } catch (err) {
+      const errorInfo = getSafeFriendlyErrorInfo(
+        err,
+        'An unexpected error occurred while resuming.'
+      )
+      showError(errorInfo.title || 'Resume Error', errorInfo.message)
+    } finally {
+      setResumingJobId(null)
+    }
+  }
+
+  const handleOpenFile = async (jobId) => {
+    try {
+      if (window?.api?.openFile) {
+        const res = await window.api.openFile(jobId)
+        if (res && res.success === false) {
+          showError('Cannot Open File', res.error || 'The downloaded file could not be opened.')
+        }
+      }
+    } catch (err) {
+      showError('Open File Error', err.message || 'The downloaded file could not be opened.')
+    }
+  }
+
+  const handleOpenFolder = async (jobId) => {
+    try {
+      if (window?.api?.openFolder) {
+        const res = await window.api.openFolder(jobId)
+        if (res && res.success === false) {
+          showError('Cannot Open Folder', res.error || 'The enclosing folder could not be opened.')
+        }
+      }
+    } catch (err) {
+      showError('Open Folder Error', err.message || 'The enclosing folder could not be opened.')
+    }
+  }
+
+  const handleDeleteRecord = async (jobId) => {
+    if (deletingJobId !== null) return
+    const confirmed = await showConfirm(
+      'Delete History Record?',
+      'Are you sure you want to delete this download from history? (The downloaded media file will remain on your computer).',
+      {
+        confirmButtonText: 'Delete Record',
+        isDanger: true
+      }
+    )
+    if (!confirmed) return
+
+    try {
+      setDeletingJobId(jobId)
+      const res = await deleteDownloadHistory(jobId)
+      if (res.ok && res.data?.success) {
+        showToast('Download record deleted from history', 'success')
+        if (typeof retry === 'function') retry()
+        fetchGlobalCounts()
+      } else {
+        const errorInfo = getSafeFriendlyErrorInfo(res.data, 'Failed to delete record.')
+        showError('Delete Failed', errorInfo.message)
+      }
+    } catch (err) {
+      const errorInfo = getSafeFriendlyErrorInfo(
+        err,
+        'An unexpected error occurred while deleting record.'
+      )
+      showError('Delete Error', errorInfo.message)
+    } finally {
+      setDeletingJobId(null)
     }
   }
 
@@ -317,6 +452,7 @@ export default function DownloadsPage() {
     { id: 'all', label: 'All', count: globalCounts.total },
     { id: 'downloading', label: 'Downloading', count: globalCounts.downloading },
     { id: 'queued', label: 'Queued', count: globalCounts.queued },
+    { id: 'paused', label: 'Paused', count: globalCounts.paused || 0 },
     ...(globalCounts.interrupted > 0
       ? [{ id: 'interrupted', label: 'Interrupted', count: globalCounts.interrupted }]
       : []),
@@ -455,11 +591,14 @@ export default function DownloadsPage() {
             <tbody className="divide-y divide-primary/10 text-xs">
               {downloadsList.map((item, idx) => {
                 const isDownloading = item.status === 'downloading'
+                const isPaused = item.status === 'paused'
                 const isInterrupted = item.status === 'interrupted'
                 const isResuming = item.displayStatus === 'resuming'
                 const isQueued = item.status === 'queued' && !isResuming
-                const showRecoveryInfo = isDownloading || isInterrupted || isResuming
-                const canCancel = isDownloading || isQueued || isInterrupted || isResuming
+                const isCompleted = item.status === 'completed'
+                const isFailed = item.status === 'failed'
+                const isCancelled = item.status === 'cancelled'
+                const showRecoveryInfo = isDownloading || isPaused || isInterrupted || isResuming
                 const itemIndex = offset + idx + 1
                 const retryButtonState = getRetryButtonState(retryingJobId, item.id)
 
@@ -526,20 +665,27 @@ export default function DownloadsPage() {
                         <div className="w-full h-2 rounded-full bg-[#040B1C] overflow-hidden border border-primary/10">
                           <div
                             className={`h-full rounded-full transition-all duration-300 ${
-                              isInterrupted
-                                ? 'bg-amber-400/80'
-                                : isDownloading || isResuming
-                                  ? 'bg-gradient-to-r from-[#19D8FF] to-[#3388FF]'
-                                  : 'bg-primary/20'
+                              isPaused
+                                ? 'bg-purple-500/80'
+                                : isInterrupted
+                                  ? 'bg-amber-400/80'
+                                  : isDownloading || isResuming
+                                    ? 'bg-gradient-to-r from-[#19D8FF] to-[#3388FF]'
+                                    : 'bg-primary/20'
                             }`}
                             style={{ width: `${item.progress}%` }}
                           />
                         </div>
 
-                        {/* Live Speed & ETA when downloading, interrupted, or resuming */}
+                        {/* Live Speed & ETA when downloading, paused, interrupted, or resuming */}
                         {showRecoveryInfo && (
                           <div className="flex items-center justify-between text-[10px] text-text-muted mt-0.5">
-                            {isInterrupted ? (
+                            {isPaused ? (
+                              <>
+                                <span className="text-purple-400 font-semibold">0 KB/s</span>
+                                <span className="text-purple-400 font-medium">Paused</span>
+                              </>
+                            ) : isInterrupted ? (
                               <>
                                 <span className="text-amber-400 font-semibold">0 KB/s</span>
                                 <span className="text-amber-400 font-medium">
@@ -579,9 +725,157 @@ export default function DownloadsPage() {
 
                     {/* Action Buttons */}
                     <td className="py-3.5 px-4">
-                      <div className="flex items-center justify-center gap-2">
-                        {/* Retry Button for Failed or Cancelled Jobs */}
-                        {(item.status === 'failed' || item.status === 'cancelled') && (
+                      <div className="flex items-center justify-center gap-1.5">
+                        {/* Downloading: Pause + Cancel */}
+                        {isDownloading && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => handlePauseJob(item.id)}
+                              disabled={pausingJobId === item.id || cancellingJobId === item.id}
+                              className="w-8 h-8 rounded-lg bg-[#040B1C]/80 hover:bg-[#102449] border border-primary/20 hover:border-primary/40 text-text-muted hover:text-white flex items-center justify-center transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
+                              title="Pause download"
+                            >
+                              {pausingJobId === item.id ? (
+                                <Loader2 className="w-3.5 h-3.5 animate-spin text-[#19D8FF]" />
+                              ) : (
+                                <Pause className="w-3.5 h-3.5" />
+                              )}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleCancelJob(item.id)}
+                              disabled={cancellingJobId === item.id || pausingJobId === item.id}
+                              className="w-8 h-8 rounded-lg bg-[#040B1C]/80 hover:bg-red-500/20 border border-primary/20 hover:border-red-500/40 text-text-muted hover:text-red-400 flex items-center justify-center transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
+                              title="Cancel download"
+                            >
+                              {cancellingJobId === item.id ? (
+                                <Loader2 className="w-3.5 h-3.5 animate-spin text-red-400" />
+                              ) : (
+                                <Square className="w-3 h-3 fill-current" />
+                              )}
+                            </button>
+                          </>
+                        )}
+
+                        {/* Paused: Resume + Cancel */}
+                        {isPaused && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => handleResumeJob(item.id)}
+                              disabled={resumingJobId === item.id || cancellingJobId === item.id}
+                              className="w-8 h-8 rounded-lg bg-[#040B1C]/80 hover:bg-[#102449] border border-primary/20 hover:border-primary/40 text-text-muted hover:text-white flex items-center justify-center transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
+                              title="Resume download"
+                            >
+                              {resumingJobId === item.id ? (
+                                <Loader2 className="w-3.5 h-3.5 animate-spin text-[#19D8FF]" />
+                              ) : (
+                                <Play className="w-3.5 h-3.5 ml-0.5 text-[#19D8FF]" />
+                              )}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleCancelJob(item.id)}
+                              disabled={cancellingJobId === item.id || resumingJobId === item.id}
+                              className="w-8 h-8 rounded-lg bg-[#040B1C]/80 hover:bg-red-500/20 border border-primary/20 hover:border-red-500/40 text-text-muted hover:text-red-400 flex items-center justify-center transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
+                              title="Cancel download"
+                            >
+                              {cancellingJobId === item.id ? (
+                                <Loader2 className="w-3.5 h-3.5 animate-spin text-red-400" />
+                              ) : (
+                                <Square className="w-3 h-3 fill-current" />
+                              )}
+                            </button>
+                          </>
+                        )}
+
+                        {/* Interrupted: Manual Pause + Cancel */}
+                        {isInterrupted && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => handlePauseJob(item.id)}
+                              disabled={pausingJobId === item.id || cancellingJobId === item.id}
+                              className="w-8 h-8 rounded-lg bg-[#040B1C]/80 hover:bg-[#102449] border border-primary/20 hover:border-primary/40 text-text-muted hover:text-white flex items-center justify-center transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
+                              title="Pause download (prevent auto-resume)"
+                            >
+                              {pausingJobId === item.id ? (
+                                <Loader2 className="w-3.5 h-3.5 animate-spin text-[#19D8FF]" />
+                              ) : (
+                                <Pause className="w-3.5 h-3.5" />
+                              )}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleCancelJob(item.id)}
+                              disabled={cancellingJobId === item.id || pausingJobId === item.id}
+                              className="w-8 h-8 rounded-lg bg-[#040B1C]/80 hover:bg-red-500/20 border border-primary/20 hover:border-red-500/40 text-text-muted hover:text-red-400 flex items-center justify-center transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
+                              title="Cancel download"
+                            >
+                              {cancellingJobId === item.id ? (
+                                <Loader2 className="w-3.5 h-3.5 animate-spin text-red-400" />
+                              ) : (
+                                <Square className="w-3 h-3 fill-current" />
+                              )}
+                            </button>
+                          </>
+                        )}
+
+                        {/* Queued: Cancel only */}
+                        {isQueued && (
+                          <button
+                            type="button"
+                            onClick={() => handleCancelJob(item.id)}
+                            disabled={cancellingJobId === item.id}
+                            className="w-8 h-8 rounded-lg bg-[#040B1C]/80 hover:bg-red-500/20 border border-primary/20 hover:border-red-500/40 text-text-muted hover:text-red-400 flex items-center justify-center transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
+                            title="Cancel queued download"
+                          >
+                            {cancellingJobId === item.id ? (
+                              <Loader2 className="w-3.5 h-3.5 animate-spin text-red-400" />
+                            ) : (
+                              <Square className="w-3 h-3 fill-current" />
+                            )}
+                          </button>
+                        )}
+
+                        {/* Completed: Play + Folder + Delete */}
+                        {isCompleted && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => handleOpenFile(item.id)}
+                              className="w-8 h-8 rounded-lg bg-[#040B1C]/80 hover:bg-[#102449] border border-primary/20 hover:border-primary/40 text-text-muted hover:text-[#00DEA5] flex items-center justify-center transition-all cursor-pointer shadow-sm"
+                              title="Play / Open file"
+                            >
+                              <Play className="w-3.5 h-3.5 ml-0.5 fill-current" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleOpenFolder(item.id)}
+                              className="w-8 h-8 rounded-lg bg-[#040B1C]/80 hover:bg-[#102449] border border-primary/20 hover:border-primary/40 text-text-muted hover:text-white flex items-center justify-center transition-all cursor-pointer shadow-sm"
+                              title="Open containing folder"
+                            >
+                              <FolderOpen className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteRecord(item.id)}
+                              disabled={deletingJobId === item.id}
+                              className="w-8 h-8 rounded-lg bg-[#040B1C]/80 hover:bg-red-500/20 border border-primary/20 hover:border-red-500/40 text-text-muted hover:text-red-400 flex items-center justify-center transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
+                              title="Delete from history (keeps file on disk)"
+                            >
+                              {deletingJobId === item.id ? (
+                                <Loader2 className="w-3.5 h-3.5 animate-spin text-red-400" />
+                              ) : (
+                                <Trash2 className="w-3.5 h-3.5" />
+                              )}
+                            </button>
+                          </>
+                        )}
+
+                        {/* Failed or Cancelled: Retry */}
+                        {(isFailed || isCancelled) && (
                           <button
                             type="button"
                             onClick={() => handleRetryJob(item.id)}
@@ -593,56 +887,6 @@ export default function DownloadsPage() {
                               className={`w-3.5 h-3.5 text-[#19D8FF] ${retryButtonState.isSpinning ? 'animate-spin' : ''}`}
                             />
                             <span className="text-[11px] font-bold">Retry</span>
-                          </button>
-                        )}
-
-                        {/* Play/Pause Button */}
-                        {isDownloading && (
-                          <button
-                            type="button"
-                            disabled
-                            className="w-8 h-8 rounded-lg bg-[#040B1C]/50 border border-primary/10 flex items-center justify-center text-text-muted/40 cursor-not-allowed"
-                            title="Pause is not supported by the download engine"
-                          >
-                            <Pause className="w-3.5 h-3.5" />
-                          </button>
-                        )}
-
-                        {isQueued && (
-                          <button
-                            type="button"
-                            disabled
-                            className="w-8 h-8 rounded-lg bg-[#040B1C]/50 border border-primary/10 flex items-center justify-center text-text-muted/40 cursor-not-allowed"
-                            title="Queue processing is automatic (max 2 concurrent)"
-                          >
-                            <Play className="w-3.5 h-3.5 ml-0.5" />
-                          </button>
-                        )}
-
-                        {/* Cancel / Stop Button (only for active jobs) */}
-                        {canCancel && (
-                          <button
-                            type="button"
-                            onClick={() => handleCancelJob(item.id)}
-                            disabled={Boolean(cancellingJobId)}
-                            className={`w-8 h-8 rounded-lg border flex items-center justify-center transition-all ${
-                              cancellingJobId === item.id
-                                ? 'bg-[#040B1C]/50 border-red-500/30 text-red-400 cursor-wait'
-                                : cancellingJobId
-                                  ? 'bg-[#040B1C]/30 border-primary/10 text-text-muted/30 cursor-not-allowed'
-                                  : 'bg-[#040B1C]/80 hover:bg-red-500/20 border-primary/20 hover:border-red-500/40 text-text-muted hover:text-red-400 cursor-pointer shadow-sm'
-                            }`}
-                            title={
-                              cancellingJobId === item.id
-                                ? 'Cancelling download...'
-                                : 'Cancel download'
-                            }
-                          >
-                            {cancellingJobId === item.id ? (
-                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                            ) : (
-                              <Square className="w-3 h-3 fill-current" />
-                            )}
                           </button>
                         )}
                       </div>

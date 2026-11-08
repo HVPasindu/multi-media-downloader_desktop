@@ -166,6 +166,7 @@ export function normalizeDownloadJob(job, speedTracker = null) {
   const isCompleted = job.status === 'completed'
   const isFailed = job.status === 'failed'
   const isCancelled = job.status === 'cancelled'
+  const isPaused = job.status === 'paused'
 
   // Clear speed tracker samples when not actively downloading to avoid stale speeds on resume
   if (!isDownloading && speedTracker && typeof speedTracker.delete === 'function') {
@@ -232,7 +233,9 @@ export function normalizeDownloadJob(job, speedTracker = null) {
 
   // Progress text (e.g. "25 MB / ~52 MB" or "25 MB downloaded" or "0 B" or "52 MB" on completion)
   let progressText = '0 B'
-  if (hasCompletedOutputFileSize) {
+  if (isCancelled) {
+    progressText = '0 B'
+  } else if (hasCompletedOutputFileSize) {
     progressText = formatBytes(validFileSizeFallback)
   } else if (totalBytes && downloadedBytes > 0) {
     progressText = `${downloadedBytesFormatted} / ${totalBytesFormatted}`
@@ -242,12 +245,14 @@ export function normalizeDownloadJob(job, speedTracker = null) {
     progressText = totalBytesFormatted
   }
 
-  // Progress percentage (0 - 100)
-  const progress = Math.min(100, Math.max(0, Math.round(Number(job.progress) || 0)))
+  // Progress percentage (0 - 100) — cancelled jobs are strictly normalized to 0%
+  const progress = isCancelled
+    ? 0
+    : Math.min(100, Math.max(0, Math.round(Number(job.progress) || 0)))
 
   // Distinguish resuming state for recovered downloads waiting in queue or reporting resuming status
-  const isResuming = job.status === 'resuming' || (isQueued && progress > 0)
-  const isInterrupted = job.status === 'interrupted'
+  const isResuming = !isCancelled && (job.status === 'resuming' || (isQueued && progress > 0))
+  const isInterrupted = !isCancelled && job.status === 'interrupted'
 
   // Download speed & ETA computation (only when downloading)
   let speedText = null
@@ -286,10 +291,18 @@ export function normalizeDownloadJob(job, speedTracker = null) {
     if (speedTracker && typeof speedTracker.delete === 'function') {
       speedTracker.delete(job.id)
     }
-    if (isInterrupted) {
+    if (isCancelled) {
+      speedText = null
+      etaText = null
+      etaDisplay = null
+    } else if (isInterrupted) {
       speedText = '0 KB/s'
       etaText = 'Waiting for connection'
       etaDisplay = 'Waiting for connection'
+    } else if (isPaused) {
+      speedText = '0 KB/s'
+      etaText = 'Paused'
+      etaDisplay = 'Paused'
     } else if (isResuming) {
       speedText = null
       etaText = 'Resuming...'
@@ -309,6 +322,9 @@ export function normalizeDownloadJob(job, speedTracker = null) {
     }
     statusText = details.length > 0 ? `Downloading (${details.join(' • ')})` : 'Downloading'
     displayStatus = 'downloading'
+  } else if (isPaused) {
+    statusText = `Paused (${progress}%)`
+    displayStatus = 'paused'
   } else if (isResuming) {
     statusText = `Resuming (${progress}% saved)`
     displayStatus = 'resuming'
@@ -350,13 +366,13 @@ export function normalizeDownloadJob(job, speedTracker = null) {
     totalBytes,
     totalBytesFormatted,
     totalBytesIsEstimate,
-    downloadedBytes,
-    downloadedBytesFormatted,
-    progress,
-    progressText,
-    speedText,
-    etaText,
-    etaDisplay,
+    downloadedBytes: isCancelled ? 0 : downloadedBytes,
+    downloadedBytesFormatted: isCancelled ? '0 B' : downloadedBytesFormatted,
+    progress: isCancelled ? 0 : progress,
+    progressText: isCancelled ? '0 B' : progressText,
+    speedText: isCancelled ? null : speedText,
+    etaText: isCancelled ? null : etaText,
+    etaDisplay: isCancelled ? null : etaDisplay,
     displayStatus,
     status: job.status,
     statusText,

@@ -11,6 +11,7 @@ export const TERMINAL_JOB_STATUSES = Object.freeze(['completed', 'failed', 'canc
 export const VALID_JOB_STATUSES = Object.freeze([
   'queued',
   'downloading',
+  'paused',
   'interrupted',
   'completed',
   'failed',
@@ -799,6 +800,7 @@ export async function getDownloadSummary() {
       total: totalJobs,
       downloading: statusMap['downloading'] || 0,
       queued: statusMap['queued'] || 0,
+      paused: statusMap['paused'] || 0,
       interrupted: statusMap['interrupted'] || 0,
       completed,
       failed: failed + cancelled,

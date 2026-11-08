@@ -3,6 +3,8 @@ import { markDownloadJobFailed } from './downloadService.js'
 import { enqueueDownloadJob } from './downloadQueueService.js'
 import { findActiveDuplicateDownload } from './downloadDuplicateService.js'
 import { validateMediaUrl } from './mediaUrlSecurityService.js'
+import { resolveValidatedDownloadPath } from './downloadPathService.js'
+import { cleanupJobTemporaryFiles } from './downloadCleanupService.js'
 
 // Track currently processing retry requests to prevent concurrent double-click requests
 const retryRequestsInProgress = new Set()
@@ -109,10 +111,22 @@ export async function retryDownloadJob(originalJobId, options = {}) {
       }
     }
 
-    // 6. Update the original job from 'failed' or 'cancelled' to 'queued'
+    // Clean old partial fragments so retry restarts from 0% with clean workspace
+    try {
+      const cleanPath = await resolveValidatedDownloadPath(getDatabase().models.AppSetting)
+      if (cleanPath) {
+        await cleanupJobTemporaryFiles(originalJob.id, cleanPath)
+      }
+    } catch (cleanupErr) {
+      console.warn(`[retry] Failed to clean partial files for job ${originalJob.id}:`, cleanupErr)
+    }
+
+    // 6. Update the original job from 'failed' or 'cancelled' to 'queued' and reset progress to 0
     const [updatedCount] = await DownloadJob.update(
       {
         status: 'queued',
+        progress: 0,
+        downloaded_bytes: 0,
         error_message: null
       },
       {

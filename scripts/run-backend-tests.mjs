@@ -101,6 +101,14 @@ const TEST_SUITES = [
   {
     name: 'Order 10: Progress, ETA, File Size, Same-Job Retry & Clear Failed Suite',
     file: 'tests/download_progress_eta_retry_tests.js'
+  },
+  {
+    name: 'Order 11: Real Pause/Resume, Cancel, Retry & Completed File Actions Suite',
+    file: 'tests/download_pause_resume_tests.js'
+  },
+  {
+    name: 'Order 12: Real Windows yt-dlp Process Integration Tests (Tests A–F)',
+    file: 'tests/windows_real_pause_cancel_integration_tests.js'
   }
 ]
 
