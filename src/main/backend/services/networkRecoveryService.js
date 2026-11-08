@@ -330,20 +330,18 @@ export async function resumeInterruptedNetworkJobs(options = {}) {
           console.log(`[network-recovery] Unverified job ${job.id} reset to zero for fresh restart`)
         }
 
-        resumedJobIds.push(job.id)
+        try {
+          const enqueued = enqueue(job.id)
+          if (enqueued !== false) {
+            resumedJobIds.push(job.id)
+          }
+        } catch (enqueueErr) {
+          console.warn(
+            `[network-recovery] Failed to enqueue resumed job ${job.id}:`,
+            enqueueErr.message
+          )
+        }
       })
-    }
-
-    // 2. Submit recovered jobs to queue in FIFO order
-    for (const jobId of resumedJobIds) {
-      try {
-        enqueue(jobId)
-      } catch (enqueueErr) {
-        console.warn(
-          `[network-recovery] Failed to enqueue resumed job ${jobId}:`,
-          enqueueErr.message
-        )
-      }
     }
 
     return {

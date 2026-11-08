@@ -1,4 +1,4 @@
-import { spawn, execSync } from 'node:child_process'
+import { spawn, execFileSync } from 'node:child_process'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -107,8 +107,12 @@ const TEST_SUITES = [
     file: 'tests/download_pause_resume_tests.js'
   },
   {
-    name: 'Order 12: Real Windows yt-dlp Process Integration Tests (Tests A–F)',
+    name: 'Order 12: Real Windows yt-dlp Process Integration Tests (Tests A–L)',
     file: 'tests/windows_real_pause_cancel_integration_tests.js'
+  },
+  {
+    name: 'Order 13: Electron UI Download Actions & E2E Integration Suite',
+    file: 'tests/electron_download_actions_e2e_tests.js'
   }
 ]
 
@@ -119,7 +123,16 @@ async function runSingleSuite(suite) {
 
   const startTime = Date.now()
   return new Promise((resolve) => {
+    let settled = false
     let timedOut = false
+
+    const settle = (result) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timeoutTimer)
+      resolve(result)
+    }
+
     const child = spawn(process.execPath, ['--loader', loaderPath, testFile], {
       cwd: projectRoot,
       stdio: 'inherit',
@@ -137,9 +150,14 @@ async function runSingleSuite(suite) {
       if (child.pid) {
         if (process.platform === 'win32') {
           try {
-            execSync(`taskkill /PID ${child.pid} /T /F`, { stdio: 'ignore' })
-          } catch {
-            // Ignore if already terminated
+            execFileSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' })
+          } catch (tkErr) {
+            console.warn(`[runner] taskkill warning for PID ${child.pid}:`, tkErr.message)
+            try {
+              child.kill('SIGKILL')
+            } catch {
+              // Ignore fallback error
+            }
           }
         } else {
           try {
@@ -149,12 +167,20 @@ async function runSingleSuite(suite) {
           }
         }
       }
+
+      settle({
+        suite: suite.name,
+        file: suite.file,
+        passed: false,
+        exitCode: 124,
+        durationMs: Date.now() - startTime,
+        error: `Suite timed out after ${timeoutMs}ms`
+      })
     }, timeoutMs)
 
     child.on('close', (exitCode) => {
-      clearTimeout(timeoutTimer)
       const durationMs = Date.now() - startTime
-      resolve({
+      settle({
         suite: suite.name,
         file: suite.file,
         passed: !timedOut && exitCode === 0,
@@ -165,9 +191,8 @@ async function runSingleSuite(suite) {
     })
 
     child.on('error', (err) => {
-      clearTimeout(timeoutTimer)
       const durationMs = Date.now() - startTime
-      resolve({
+      settle({
         suite: suite.name,
         file: suite.file,
         passed: false,

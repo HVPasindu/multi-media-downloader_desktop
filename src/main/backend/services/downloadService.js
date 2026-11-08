@@ -461,6 +461,19 @@ export function runYtDlp(args, onProgress = null, onOutputLine = null, options =
         }
 
         if (options?.jobId) {
+          const existingEntry = activeDownloadProcesses.get(options.jobId)
+          if (existingEntry) {
+            processEntry.cancelRequested = Boolean(existingEntry.cancelRequested)
+            processEntry.pauseRequested = Boolean(existingEntry.pauseRequested)
+            if (existingEntry.cancelPersistedPromise) {
+              processEntry.cancelPersistedPromise = existingEntry.cancelPersistedPromise
+              processEntry.markCancelPersisted = existingEntry.markCancelPersisted
+            }
+            if (existingEntry.pausePersistedPromise) {
+              processEntry.pausePersistedPromise = existingEntry.pausePersistedPromise
+              processEntry.markPausePersisted = existingEntry.markPausePersisted
+            }
+          }
           activeDownloadProcesses.set(options.jobId, processEntry)
         }
 
@@ -471,6 +484,12 @@ export function runYtDlp(args, onProgress = null, onOutputLine = null, options =
           isSettled = true
 
           reject(err)
+        }
+
+        if (processEntry.cancelRequested) {
+          terminateDownloadProcessTree(processEntry, 2000).catch(() => {})
+          settleReject(new DownloadCancelledError('Download was cancelled'))
+          return
         }
 
         const settleResolve = (val) => {
@@ -838,7 +857,7 @@ export async function cancelRunningDownload(jobId, timeoutMs = 4000) {
 
   const processEntry = activeDownloadProcesses.get(jobId)
 
-  if (!processEntry || !processEntry.childProcess || processEntry.closed) {
+  if (!processEntry || processEntry.closed) {
     return {
       success: false,
       reason: 'not_running'
@@ -854,6 +873,39 @@ export async function cancelRunningDownload(jobId, timeoutMs = 4000) {
   }
 
   processEntry.cancelRequested = true
+
+  // If in starting phase (process not spawned yet), await cancelPersistedPromise from executeDownloadJob
+  if (processEntry.phase === 'starting') {
+    if (processEntry.managedByJobExecutor && processEntry.cancelPersistedPromise) {
+      const persistResult = await Promise.race([
+        processEntry.cancelPersistedPromise,
+        new Promise((resolve) =>
+          setTimeout(() => resolve({ success: false, timeout: true }), timeoutMs)
+        )
+      ])
+
+      if (!persistResult?.success) {
+        return {
+          success: false,
+          reason: persistResult?.timeout ? 'persistence_timeout' : 'persistence_failed',
+          error: persistResult?.data?.message || 'Cancellation persistence could not be verified'
+        }
+      }
+    }
+
+    clearJobRetryState(jobId)
+
+    return {
+      success: true
+    }
+  }
+
+  if (!processEntry.childProcess) {
+    return {
+      success: false,
+      reason: 'not_running'
+    }
+  }
 
   try {
     const termResult = await terminateDownloadProcessTree(processEntry, timeoutMs)
@@ -907,7 +959,41 @@ export async function pauseRunningDownload(jobId, timeoutMs = 4000) {
 
   const processEntry = activeDownloadProcesses.get(jobId)
 
-  if (!processEntry || !processEntry.childProcess || processEntry.closed) {
+  if (!processEntry || processEntry.closed) {
+    return {
+      success: false,
+      reason: 'not_running'
+    }
+  }
+
+  // If in starting phase (process not spawned yet), await pausePersistedPromise from executeDownloadJob
+  if (processEntry.phase === 'starting') {
+    processEntry.pauseRequested = true
+    if (processEntry.managedByJobExecutor && processEntry.pausePersistedPromise) {
+      const persistResult = await Promise.race([
+        processEntry.pausePersistedPromise,
+        new Promise((resolve) =>
+          setTimeout(() => resolve({ success: false, timeout: true }), timeoutMs)
+        )
+      ])
+
+      if (!persistResult?.success) {
+        return {
+          success: false,
+          reason: persistResult?.timeout ? 'persistence_timeout' : 'validation_failed',
+          error: persistResult?.data?.message || 'Failed to verify or persist paused checkpoint'
+        }
+      }
+    }
+
+    clearJobRetryState(jobId)
+
+    return {
+      success: true
+    }
+  }
+
+  if (!processEntry.childProcess) {
     return {
       success: false,
       reason: 'not_running'
@@ -1121,8 +1207,8 @@ export async function prepareDownloadJobExecution(jobId) {
     throw new Error('Download Job not found')
   }
 
-  if (job.status !== 'queued') {
-    throw new Error('Only queued download jobs can start')
+  if (job.status !== 'queued' && job.status !== 'downloading') {
+    throw new Error('Only queued or preparing download jobs can start')
   }
 
   // Get the related media item
@@ -1537,12 +1623,72 @@ export async function saveDownloadedFile(
 }
 
 export async function executeDownloadJob(jobId, options = {}) {
-  // 1. Prepare download information safely
+  // 1. Claim the queued job conditionally first
+  const claimedJob = await claimQueuedDownloadJob(jobId)
+  if (!claimedJob) {
+    console.log(`[download] Job ${jobId} is no longer queued; skipping execution.`)
+    return null
+  }
+
+  // 2. Register startup reservation in activeDownloadProcesses so cancellation during preparation is handled
+  let cancelPersistedResolver
+  const cancelPersistedPromise = new Promise((resolve) => {
+    cancelPersistedResolver = resolve
+  })
+
+  let pausePersistedResolver
+  const pausePersistedPromise = new Promise((resolve) => {
+    pausePersistedResolver = resolve
+  })
+
+  const startupEntry = {
+    jobId,
+    phase: 'starting',
+    cancelRequested: false,
+    pauseRequested: false,
+    childProcess: null,
+    managedByJobExecutor: true,
+    cancelPersistedPromise,
+    markCancelPersisted: (success, data) => {
+      cancelPersistedResolver({ success, data })
+    },
+    pausePersistedPromise,
+    markPausePersisted: (success, data) => {
+      pausePersistedResolver({ success, data })
+    }
+  }
+  activeDownloadProcesses.set(jobId, startupEntry)
+
+  // 3. Prepare download information safely
   let execution
 
   try {
+    if (startupEntry.cancelRequested) {
+      throw new DownloadCancelledError('Download was cancelled before preparation')
+    }
+
     execution = await prepareDownloadJobExecution(jobId)
+
+    if (startupEntry.cancelRequested) {
+      throw new DownloadCancelledError('Download was cancelled during preparation')
+    }
+
+    if (startupEntry.pauseRequested) {
+      throw new DownloadPausedError('Download was paused during preparation')
+    }
+
+    const currentDbJob = await getDatabase().models.DownloadJob.findByPk(jobId)
+    if (currentDbJob?.status === 'cancelled') {
+      throw new DownloadCancelledError('Download was cancelled during preparation')
+    }
+    if (currentDbJob?.status === 'paused') {
+      throw new DownloadPausedError('Download was paused during preparation')
+    }
   } catch (error) {
+    if (error instanceof DownloadCancelledError || error instanceof DownloadPausedError) {
+      throw error
+    }
+
     const isTransient =
       isTransientNetworkError(error) ||
       error?.code === 'NETWORK_ERROR' ||
@@ -1590,25 +1736,18 @@ export async function executeDownloadJob(jobId, options = {}) {
       // Ignore fallback cleanup errors during preparation failure
     }
 
-    // Mark only a still-queued job as failed
+    // Mark only a still-queued or preparing job as failed
     try {
-      const failedJob = await markDownloadJobFailed(jobId, error, 'queued')
+      const failedJob = await markDownloadJobFailed(jobId, error, 'downloading')
 
       if (!failedJob) {
-        console.warn('[download] Job was not queued when preparation failed:', jobId)
+        console.warn('[download] Job was not in preparing state when preparation failed:', jobId)
       }
     } catch (statusError) {
       console.error('[download] Failed to save preparation error:', statusError)
     }
 
     throw error
-  }
-
-  // 2. Claim the queued job
-  const claimedJob = await claimQueuedDownloadJob(jobId)
-
-  if (!claimedJob) {
-    throw new Error('Download Job is no longer queued')
   }
 
   // Step 04.38 - Adopt pre-existing valid output file if application previously stopped after yt-dlp moved file

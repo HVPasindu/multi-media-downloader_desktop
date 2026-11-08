@@ -37,6 +37,7 @@ const EXPECTED_BINARIES = [
     name: 'node.exe',
     versionFlag: ['--version'],
     expectedVersionPrefix: 'v24.',
+    expectedSha256: '58E74BF02FC5BBACC41DCB8BEF089961CD5BDDD37830B87784E4FC624D145D1F',
     licenseFile: 'LICENSE.node.txt'
   },
   {

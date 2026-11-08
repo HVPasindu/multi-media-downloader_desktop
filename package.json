@@ -13,10 +13,11 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "build:helper": "node scripts/build-console-sender.mjs",
+    "setup:binaries": "node scripts/provision-windows-binaries.mjs",
     "verify:binaries": "node scripts/build-console-sender.mjs && node scripts/verify-windows-binaries.mjs",
     "postinstall": "electron-builder install-app-deps",
-    "build:unpack": "npm run build && npm run verify:binaries && electron-builder --dir",
-    "build:win": "npm run build && npm run verify:binaries && electron-builder --win",
+    "build:unpack": "npm run setup:binaries && npm run build && npm run verify:binaries && electron-builder --dir",
+    "build:win": "npm run setup:binaries && npm run build && npm run verify:binaries && electron-builder --win",
     "build:mac": "npm run build && electron-builder --mac",
     "build:linux": "npm run build && electron-builder --linux"
   },

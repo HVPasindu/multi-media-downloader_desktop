@@ -181,21 +181,26 @@ export async function cancelDownloadJob(jobId) {
     if (job.status === 'paused') {
       try {
         const cleanPath = await resolveValidatedDownloadPath(getDatabase().models.AppSetting)
-        if (cleanPath) {
-          const cleanupResult = await cleanupJobTemporaryFiles(jobId, cleanPath)
-          if (cleanupResult && cleanupResult.success === false) {
-            return {
-              outcome: 'cleanup_failed',
-              status: 'paused',
-              message: cleanupResult.error || 'Failed to clean partial files during cancellation'
-            }
+        if (!cleanPath) {
+          return {
+            outcome: 'cleanup_failed',
+            status: 'paused',
+            message: 'Unable to resolve a safe download folder'
+          }
+        }
+        const cleanupResult = await cleanupJobTemporaryFiles(jobId, cleanPath)
+        if (cleanupResult?.success !== true) {
+          return {
+            outcome: 'cleanup_failed',
+            status: 'paused',
+            message: cleanupResult?.error || 'Temporary file cleanup failed'
           }
         }
       } catch (cleanErr) {
         return {
           outcome: 'cleanup_failed',
           status: 'paused',
-          message: cleanErr.message || 'Failed to clean partial files during cancellation'
+          message: cleanErr.message || 'Temporary file cleanup failed'
         }
       }
 
@@ -234,21 +239,26 @@ export async function cancelDownloadJob(jobId) {
     if (job.status === 'interrupted') {
       try {
         const cleanPath = await resolveValidatedDownloadPath(getDatabase().models.AppSetting)
-        if (cleanPath) {
-          const cleanupResult = await cleanupJobTemporaryFiles(jobId, cleanPath)
-          if (cleanupResult && cleanupResult.success === false) {
-            return {
-              outcome: 'cleanup_failed',
-              status: 'interrupted',
-              message: cleanupResult.error || 'Failed to clean partial files during cancellation'
-            }
+        if (!cleanPath) {
+          return {
+            outcome: 'cleanup_failed',
+            status: 'interrupted',
+            message: 'Unable to resolve a safe download folder'
+          }
+        }
+        const cleanupResult = await cleanupJobTemporaryFiles(jobId, cleanPath)
+        if (cleanupResult?.success !== true) {
+          return {
+            outcome: 'cleanup_failed',
+            status: 'interrupted',
+            message: cleanupResult?.error || 'Temporary file cleanup failed'
           }
         }
       } catch (cleanErr) {
         return {
           outcome: 'cleanup_failed',
           status: 'interrupted',
-          message: cleanErr.message || 'Failed to clean partial files during cancellation'
+          message: cleanErr.message || 'Temporary file cleanup failed'
         }
       }
 
@@ -287,21 +297,26 @@ export async function cancelDownloadJob(jobId) {
     if (job.status === 'queued') {
       try {
         const cleanPath = await resolveValidatedDownloadPath(getDatabase().models.AppSetting)
-        if (cleanPath) {
-          const cleanupResult = await cleanupJobTemporaryFiles(jobId, cleanPath)
-          if (cleanupResult && cleanupResult.success === false) {
-            return {
-              outcome: 'cleanup_failed',
-              status: 'queued',
-              message: cleanupResult.error || 'Failed to clean partial files during cancellation'
-            }
+        if (!cleanPath) {
+          return {
+            outcome: 'cleanup_failed',
+            status: 'queued',
+            message: 'Unable to resolve a safe download folder'
+          }
+        }
+        const cleanupResult = await cleanupJobTemporaryFiles(jobId, cleanPath)
+        if (cleanupResult?.success !== true) {
+          return {
+            outcome: 'cleanup_failed',
+            status: 'queued',
+            message: cleanupResult?.error || 'Temporary file cleanup failed'
           }
         }
       } catch (cleanErr) {
         return {
           outcome: 'cleanup_failed',
           status: 'queued',
-          message: cleanErr.message || 'Failed to clean partial files during cancellation'
+          message: cleanErr.message || 'Temporary file cleanup failed'
         }
       }
       const queueIndex = waitingJobIds.indexOf(jobId)

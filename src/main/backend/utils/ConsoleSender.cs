@@ -166,11 +166,11 @@ public class ConsoleSender {
             // 2. Detach from current console (if any) and allocate a new dedicated console
             FreeConsole();
             if (!AllocConsole()) {
-                // If console allocation failed, record last error but continue attempting hidden window
                 int allocErr = Marshal.GetLastWin32Error();
-                // If error is 5 (ACCESS_DENIED) it may already be attached
+                // If error is 5 (ACCESS_DENIED) it may already be attached to a console
                 if (allocErr != 5) {
-                    Console.Error.WriteLine("AllocConsole warning: " + allocErr);
+                    Console.Error.WriteLine("AllocConsole failed: " + allocErr);
+                    return 1;
                 }
             }
 
@@ -229,11 +229,18 @@ public class ConsoleSender {
                     if (hErr != 0) Console.Error.WriteLine("SetConsoleCtrlHandler warning: " + hErr);
                 }
 
-                WaitForSingleObject(pi.hProcess, INFINITE);
+                uint waitResult = WaitForSingleObject(pi.hProcess, INFINITE);
+                if (waitResult == 0xFFFFFFFF) {
+                    int waitErr = Marshal.GetLastWin32Error();
+                    Console.Error.WriteLine("WaitForSingleObject failed: " + waitErr);
+                    return 1;
+                }
 
                 uint exitCode = 0;
                 if (!GetExitCodeProcess(pi.hProcess, out exitCode)) {
-                    exitCode = 1;
+                    int exitErr = Marshal.GetLastWin32Error();
+                    Console.Error.WriteLine("GetExitCodeProcess failed: " + exitErr);
+                    return 1;
                 }
                 return (int)exitCode;
             } finally {

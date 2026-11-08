@@ -124,16 +124,16 @@ export async function retryDownloadJob(originalJobId, options = {}) {
 
       try {
         const cleanupResult = await cleanupJobTemporaryFiles(originalJob.id, cleanPath)
-        if (cleanupResult && cleanupResult.success === false) {
+        if (cleanupResult?.success !== true) {
           return {
             outcome: 'cleanup_failed',
-            message: cleanupResult.error || 'Failed to clean previous partial files for retry'
+            message: cleanupResult?.error || 'Temporary file cleanup failed'
           }
         }
       } catch (cleanupErr) {
         return {
           outcome: 'cleanup_failed',
-          message: cleanupErr.message || 'Failed to clean previous partial files for retry'
+          message: cleanupErr.message || 'Temporary file cleanup failed'
         }
       }
 

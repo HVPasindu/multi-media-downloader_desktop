@@ -44,10 +44,11 @@ export function useDownloadJobActions({ onRefresh, fetchGlobalCounts } = {}) {
 
   const handlePauseJob = useCallback(
     async (jobId) => {
-      if (!jobId || inFlightJobsRef.current.has(`pause-${jobId}`)) return
+      const key = String(jobId)
+      if (!jobId || inFlightJobsRef.current.has(key)) return
       if (cancellingJobId === jobId || pausingJobId === jobId) return
 
-      inFlightJobsRef.current.add(`pause-${jobId}`)
+      inFlightJobsRef.current.add(key)
       setPausingJobId(jobId)
 
       try {
@@ -64,7 +65,15 @@ export function useDownloadJobActions({ onRefresh, fetchGlobalCounts } = {}) {
               5000,
               250
             )
-            if (pollResult.matched && pollResult.status === 'paused') {
+            if (!pollResult.ok || !pollResult.matched) {
+              showError(
+                'Action Not Confirmed',
+                'The server has not confirmed the requested pause state.'
+              )
+              triggerRefresh()
+              return
+            }
+            if (pollResult.status === 'paused') {
               showToast('Download paused', 'info')
             }
             triggerRefresh()
@@ -83,7 +92,7 @@ export function useDownloadJobActions({ onRefresh, fetchGlobalCounts } = {}) {
         )
         showError(errorInfo.title || 'Pause Error', errorInfo.message)
       } finally {
-        inFlightJobsRef.current.delete(`pause-${jobId}`)
+        inFlightJobsRef.current.delete(key)
         setPausingJobId(null)
       }
     },
@@ -92,10 +101,11 @@ export function useDownloadJobActions({ onRefresh, fetchGlobalCounts } = {}) {
 
   const handleResumeJob = useCallback(
     async (jobId) => {
-      if (!jobId || inFlightJobsRef.current.has(`resume-${jobId}`)) return
+      const key = String(jobId)
+      if (!jobId || inFlightJobsRef.current.has(key)) return
       if (resumingJobId === jobId || cancellingJobId === jobId) return
 
-      inFlightJobsRef.current.add(`resume-${jobId}`)
+      inFlightJobsRef.current.add(key)
       setResumingJobId(jobId)
 
       try {
@@ -118,7 +128,7 @@ export function useDownloadJobActions({ onRefresh, fetchGlobalCounts } = {}) {
         )
         showError(errorInfo.title || 'Resume Error', errorInfo.message)
       } finally {
-        inFlightJobsRef.current.delete(`resume-${jobId}`)
+        inFlightJobsRef.current.delete(key)
         setResumingJobId(null)
       }
     },
@@ -127,7 +137,8 @@ export function useDownloadJobActions({ onRefresh, fetchGlobalCounts } = {}) {
 
   const handleCancelJob = useCallback(
     async (jobId) => {
-      if (!jobId || inFlightJobsRef.current.has(`cancel-${jobId}`)) return
+      const key = String(jobId)
+      if (!jobId || inFlightJobsRef.current.has(key)) return
       if (cancellingJobId === jobId) return
 
       const confirmed = await showConfirm(
@@ -140,7 +151,7 @@ export function useDownloadJobActions({ onRefresh, fetchGlobalCounts } = {}) {
       )
       if (!confirmed) return
 
-      inFlightJobsRef.current.add(`cancel-${jobId}`)
+      inFlightJobsRef.current.add(key)
       setCancellingJobId(jobId)
 
       try {
@@ -154,7 +165,15 @@ export function useDownloadJobActions({ onRefresh, fetchGlobalCounts } = {}) {
               5000,
               250
             )
-            if (pollResult.matched && pollResult.status === 'cancelled') {
+            if (!pollResult.ok || !pollResult.matched) {
+              showError(
+                'Action Not Confirmed',
+                'The server has not confirmed the requested cancellation state.'
+              )
+              triggerRefresh()
+              return
+            }
+            if (pollResult.status === 'cancelled') {
               showToast('Download cancelled', 'success')
             }
             triggerRefresh()
@@ -183,7 +202,7 @@ export function useDownloadJobActions({ onRefresh, fetchGlobalCounts } = {}) {
         )
         showError(errorInfo.title || 'Cancellation Error', errorInfo.message)
       } finally {
-        inFlightJobsRef.current.delete(`cancel-${jobId}`)
+        inFlightJobsRef.current.delete(key)
         setCancellingJobId(null)
       }
     },
@@ -192,10 +211,11 @@ export function useDownloadJobActions({ onRefresh, fetchGlobalCounts } = {}) {
 
   const handleRetryJob = useCallback(
     async (jobId) => {
-      if (!jobId || inFlightJobsRef.current.has(`retry-${jobId}`)) return
+      const key = String(jobId)
+      if (!jobId || inFlightJobsRef.current.has(key)) return
       if (retryingJobId === jobId) return
 
-      inFlightJobsRef.current.add(`retry-${jobId}`)
+      inFlightJobsRef.current.add(key)
       setRetryingJobId(jobId)
 
       try {
@@ -214,7 +234,7 @@ export function useDownloadJobActions({ onRefresh, fetchGlobalCounts } = {}) {
         )
         showError(errorInfo.title || 'Retry Error', errorInfo.message)
       } finally {
-        inFlightJobsRef.current.delete(`retry-${jobId}`)
+        inFlightJobsRef.current.delete(key)
         setRetryingJobId(null)
       }
     },
