@@ -3,7 +3,8 @@ import {
   pauseDownload,
   resumeDownload,
   cancelDownload,
-  retryDownload
+  retryDownload,
+  waitForJobStatus
 } from '../services/downloadsApi'
 import { showError, showToast, showConfirm } from '../utils/notificationService'
 import { getSafeFriendlyErrorInfo } from '../utils/errorPresentation'
@@ -57,10 +58,16 @@ export function useDownloadJobActions({ onRefresh, fetchGlobalCounts } = {}) {
             triggerRefresh()
           } else if (res.status === 202 || res.data?.data?.status === 'pause_pending') {
             showToast('Pausing download...', 'info')
-            for (let i = 0; i < 5; i++) {
-              await new Promise((r) => setTimeout(r, 400))
-              triggerRefresh()
+            const pollResult = await waitForJobStatus(
+              jobId,
+              ['paused', 'completed', 'failed'],
+              5000,
+              250
+            )
+            if (pollResult.matched && pollResult.status === 'paused') {
+              showToast('Download paused', 'info')
             }
+            triggerRefresh()
           } else {
             showToast('Download paused', 'info')
             triggerRefresh()
@@ -141,10 +148,16 @@ export function useDownloadJobActions({ onRefresh, fetchGlobalCounts } = {}) {
         if (res.ok) {
           if (res.status === 202 || res.data?.data?.status === 'cancellation_requested') {
             showToast('Cancelling download...', 'info')
-            for (let i = 0; i < 5; i++) {
-              await new Promise((r) => setTimeout(r, 400))
-              triggerRefresh()
+            const pollResult = await waitForJobStatus(
+              jobId,
+              ['cancelled', 'completed', 'failed'],
+              5000,
+              250
+            )
+            if (pollResult.matched && pollResult.status === 'cancelled') {
+              showToast('Download cancelled', 'success')
             }
+            triggerRefresh()
           } else {
             showToast('Download cancelled', 'success')
             triggerRefresh()

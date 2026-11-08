@@ -7,6 +7,7 @@ import {
   isPartialDownloadResumable
 } from './downloadCleanupService.js'
 import { enqueueDownloadJob, getQueueStatus } from './downloadQueueService.js'
+import { withJobOperationLock } from './downloadJobOperationLock.js'
 
 let monitoringTimer = null
 let isMonitoring = false
@@ -199,25 +200,33 @@ export async function resumeInterruptedNetworkJobs(options = {}) {
         continue
       }
 
-      if (!downloadPath) {
-        await job.update({
-          status: 'failed',
-          error_message: 'Network recovery failed: Unable to resolve valid download folder path'
-        })
-        console.warn(
-          `[network-recovery] Job ${job.id} failed: Unable to resolve valid download folder path.`
-        )
-        continue
-      }
+      await withJobOperationLock(job.id, async () => {
+        const currentJob = await DownloadJob.findByPk(job.id)
+        if (!currentJob || currentJob.status !== 'interrupted') {
+          console.log(
+            `[network-recovery] Job ${job.id} state changed before recovery lock. Aborting recovery.`
+          )
+          return
+        }
 
-      let hasValidPartial = false
-      let reconciledBytes = 0
+        if (!downloadPath) {
+          await currentJob.update({
+            status: 'failed',
+            error_message: 'Network recovery failed: Unable to resolve valid download folder path'
+          })
+          console.warn(
+            `[network-recovery] Job ${job.id} failed: Unable to resolve valid download folder path.`
+          )
+          return
+        }
 
-      if (downloadPath) {
+        let hasValidPartial = false
+        let reconciledBytes = 0
+
         try {
           const partialResult = await verifyJobPartialDownload(job.id, downloadPath, {
-            savedDownloadedBytes: job.downloaded_bytes,
-            savedProgress: job.progress
+            savedDownloadedBytes: currentJob.downloaded_bytes,
+            savedProgress: currentJob.progress
           })
           hasValidPartial = isPartialDownloadResumable(partialResult)
           if (hasValidPartial) {
@@ -226,66 +235,23 @@ export async function resumeInterruptedNetworkJobs(options = {}) {
         } catch {
           hasValidPartial = false
         }
-      }
 
-      if (hasValidPartial) {
-        // Option A: Preserve valid partial data and original Job ID
-        // Enforce atomic conditional update so concurrent user Pause/Cancel is never overwritten
-        const [updatedCount] = await DownloadJob.update(
-          {
-            status: 'queued',
-            downloaded_bytes: reconciledBytes,
-            error_message: null
-          },
-          {
-            where: {
-              id: job.id,
-              status: 'interrupted'
-            }
-          }
-        )
-
-        if (updatedCount !== 1) {
+        const recheckAfterVerify = await DownloadJob.findByPk(job.id)
+        if (!recheckAfterVerify || recheckAfterVerify.status !== 'interrupted') {
           console.log(
-            `[network-recovery] Job ${job.id} state changed concurrently (paused/cancelled). Aborting recovery.`
+            `[network-recovery] Job ${job.id} status changed during verification. Aborting recovery.`
           )
-          continue
+          return
         }
 
-        console.log(
-          `[network-recovery] Job ${job.id} restored to 'queued' (progress: ${job.progress}%, bytes: ${reconciledBytes})`
-        )
-      } else {
-        // Re-check that job is still 'interrupted' before performing cleanup
-        const recheckJob = await DownloadJob.findByPk(job.id)
-        if (!recheckJob || recheckJob.status !== 'interrupted') {
-          console.log(
-            `[network-recovery] Job ${job.id} status changed concurrently before cleanup. Skipping.`
-          )
-          continue
-        }
-
-        // Unverified partial file: safely clean any corrupted artifacts and restart from 0 with SAME Job ID
-        let cleanupFailed = false
-        let cleanupErrorMsg = null
-        if (downloadPath) {
-          try {
-            const cleanResult = await cleanupJobTemporaryFiles(job.id, downloadPath)
-            if (cleanResult && cleanResult.success === false) {
-              cleanupFailed = true
-              cleanupErrorMsg = cleanResult.error || 'Failed to cleanup temporary files'
-            }
-          } catch (cleanErr) {
-            cleanupFailed = true
-            cleanupErrorMsg = cleanErr.message
-          }
-        }
-
-        if (cleanupFailed) {
-          await DownloadJob.update(
+        if (hasValidPartial) {
+          // Option A: Preserve valid partial data and original Job ID
+          // Enforce atomic conditional update so concurrent user Pause/Cancel is never overwritten
+          const [updatedCount] = await DownloadJob.update(
             {
-              status: 'failed',
-              error_message: `Network recovery cleanup failed: ${cleanupErrorMsg}`
+              status: 'queued',
+              downloaded_bytes: reconciledBytes,
+              error_message: null
             },
             {
               where: {
@@ -294,38 +260,78 @@ export async function resumeInterruptedNetworkJobs(options = {}) {
               }
             }
           )
-          console.warn(
-            `[network-recovery] Job ${job.id} cleanup failed: ${cleanupErrorMsg}. Marked as failed.`
-          )
-          continue
-        }
 
-        const [updatedCount] = await DownloadJob.update(
-          {
-            status: 'queued',
-            progress: 0,
-            downloaded_bytes: 0,
-            error_message: null
-          },
-          {
-            where: {
-              id: job.id,
-              status: 'interrupted'
-            }
+          if (updatedCount !== 1) {
+            console.log(
+              `[network-recovery] Job ${job.id} state changed concurrently (paused/cancelled). Aborting recovery.`
+            )
+            return
           }
-        )
 
-        if (updatedCount !== 1) {
           console.log(
-            `[network-recovery] Job ${job.id} status changed concurrently. Aborting recovery.`
+            `[network-recovery] Job ${job.id} restored to 'queued' (progress: ${currentJob.progress}%, bytes: ${reconciledBytes})`
           )
-          continue
+        } else {
+          // Unverified partial file: safely clean any corrupted artifacts and restart from 0 with SAME Job ID
+          let cleanupFailed = false
+          let cleanupErrorMsg = null
+          try {
+            const cleanResult = await cleanupJobTemporaryFiles(job.id, downloadPath)
+            if (!cleanResult || cleanResult.success !== true) {
+              cleanupFailed = true
+              cleanupErrorMsg = cleanResult?.error || 'Failed to cleanup temporary files'
+            }
+          } catch (cleanErr) {
+            cleanupFailed = true
+            cleanupErrorMsg = cleanErr.message
+          }
+
+          if (cleanupFailed) {
+            await DownloadJob.update(
+              {
+                status: 'failed',
+                error_message: `Network recovery cleanup failed: ${cleanupErrorMsg}`
+              },
+              {
+                where: {
+                  id: job.id,
+                  status: 'interrupted'
+                }
+              }
+            )
+            console.warn(
+              `[network-recovery] Job ${job.id} cleanup failed: ${cleanupErrorMsg}. Marked as failed.`
+            )
+            return
+          }
+
+          const [updatedCount] = await DownloadJob.update(
+            {
+              status: 'queued',
+              progress: 0,
+              downloaded_bytes: 0,
+              error_message: null
+            },
+            {
+              where: {
+                id: job.id,
+                status: 'interrupted'
+              }
+            }
+          )
+
+          if (updatedCount !== 1) {
+            console.log(
+              `[network-recovery] Job ${job.id} status changed concurrently. Aborting recovery.`
+            )
+            return
+          }
+
+          console.log(`[network-recovery] Unverified job ${job.id} reset to zero for fresh restart`)
         }
 
-        console.log(`[network-recovery] Unverified job ${job.id} reset to zero for fresh restart`)
-      }
-
-      resumedJobIds.push(job.id)
+        resumedJobIds.push(job.id)
+      })
     }
 
     // 2. Submit recovered jobs to queue in FIFO order
@@ -499,95 +505,117 @@ const jobRetryState = new Map()
  * @returns {Promise<boolean>} True if resumed, false otherwise
  */
 export async function resumeSingleInterruptedJob(jobId) {
-  const sequelize = getDatabase()
-  if (!sequelize?.models?.DownloadJob) return false
-  const { DownloadJob, AppSetting } = sequelize.models
-  const job = await DownloadJob.findByPk(jobId)
-  if (!job || job.status !== 'interrupted') return false
+  return await withJobOperationLock(jobId, async () => {
+    const sequelize = getDatabase()
+    if (!sequelize?.models?.DownloadJob) return false
+    const { DownloadJob, AppSetting } = sequelize.models
+    const job = await DownloadJob.findByPk(jobId)
+    if (!job || job.status !== 'interrupted') return false
 
-  let downloadPath = null
-  try {
-    downloadPath = await resolveValidatedDownloadPath(AppSetting)
-  } catch {
-    downloadPath = null
-  }
-
-  if (!downloadPath) {
-    await DownloadJob.update(
-      {
-        status: 'failed',
-        error_message: 'Network recovery failed: Unable to resolve valid download folder path'
-      },
-      {
-        where: { id: jobId, status: 'interrupted' }
-      }
-    )
-    return false
-  }
-
-  let hasValidPartial = false
-  let reconciledBytes = 0
-  try {
-    const partialResult = await verifyJobPartialDownload(job.id, downloadPath, {
-      savedDownloadedBytes: job.downloaded_bytes,
-      savedProgress: job.progress
-    })
-    hasValidPartial = isPartialDownloadResumable(partialResult)
-    if (hasValidPartial) {
-      reconciledBytes = partialResult.reconciledBytes
+    let downloadPath = null
+    try {
+      downloadPath = await resolveValidatedDownloadPath(AppSetting)
+    } catch {
+      downloadPath = null
     }
-  } catch {
-    hasValidPartial = false
-  }
 
-  let updatedCount = 0
-  if (hasValidPartial) {
-    // Atomic conditional update ensuring concurrent Pause is not overridden
-    ;[updatedCount] = await DownloadJob.update(
-      {
-        status: 'queued',
-        downloaded_bytes: reconciledBytes,
-        error_message: null
-      },
-      {
-        where: { id: jobId, status: 'interrupted' }
-      }
-    )
-  } else {
-    // Recheck status before clearing partials
-    const recheck = await DownloadJob.findByPk(jobId)
-    if (!recheck || recheck.status !== 'interrupted') {
+    if (!downloadPath) {
+      await DownloadJob.update(
+        {
+          status: 'failed',
+          error_message: 'Network recovery failed: Unable to resolve valid download folder path'
+        },
+        {
+          where: { id: jobId, status: 'interrupted' }
+        }
+      )
       return false
     }
 
+    let hasValidPartial = false
+    let reconciledBytes = 0
     try {
-      await cleanupJobTemporaryFiles(jobId, downloadPath)
+      const partialResult = await verifyJobPartialDownload(job.id, downloadPath, {
+        savedDownloadedBytes: job.downloaded_bytes,
+        savedProgress: job.progress
+      })
+      hasValidPartial = isPartialDownloadResumable(partialResult)
+      if (hasValidPartial) {
+        reconciledBytes = partialResult.reconciledBytes
+      }
     } catch {
-      // ignore
+      hasValidPartial = false
     }
 
-    ;[updatedCount] = await DownloadJob.update(
-      {
-        status: 'queued',
-        progress: 0,
-        downloaded_bytes: 0,
-        error_message: null
-      },
-      {
-        where: { id: jobId, status: 'interrupted' }
+    let updatedCount = 0
+    if (hasValidPartial) {
+      // Atomic conditional update ensuring concurrent Pause is not overridden
+      ;[updatedCount] = await DownloadJob.update(
+        {
+          status: 'queued',
+          downloaded_bytes: reconciledBytes,
+          error_message: null
+        },
+        {
+          where: { id: jobId, status: 'interrupted' }
+        }
+      )
+    } else {
+      // Recheck status before clearing partials
+      const recheck = await DownloadJob.findByPk(jobId)
+      if (!recheck || recheck.status !== 'interrupted') {
+        return false
       }
-    )
-  }
 
-  if (updatedCount !== 1) {
-    console.log(
-      `[network-recovery] Single job ${jobId} was no longer in 'interrupted' state. Not enqueuing.`
-    )
-    return false
-  }
+      let cleanupFailed = false
+      let cleanupErrorMsg = null
+      try {
+        const cleanResult = await cleanupJobTemporaryFiles(jobId, downloadPath)
+        if (!cleanResult || cleanResult.success !== true) {
+          cleanupFailed = true
+          cleanupErrorMsg = cleanResult?.error || 'Failed to cleanup temporary files'
+        }
+      } catch (cleanErr) {
+        cleanupFailed = true
+        cleanupErrorMsg = cleanErr.message
+      }
 
-  enqueueDownloadJob(job.id)
-  return true
+      if (cleanupFailed) {
+        await DownloadJob.update(
+          {
+            status: 'failed',
+            error_message: `Network recovery cleanup failed: ${cleanupErrorMsg}`
+          },
+          {
+            where: { id: jobId, status: 'interrupted' }
+          }
+        )
+        return false
+      }
+
+      ;[updatedCount] = await DownloadJob.update(
+        {
+          status: 'queued',
+          progress: 0,
+          downloaded_bytes: 0,
+          error_message: null
+        },
+        {
+          where: { id: jobId, status: 'interrupted' }
+        }
+      )
+    }
+
+    if (updatedCount !== 1) {
+      console.log(
+        `[network-recovery] Single job ${jobId} was no longer in 'interrupted' state. Not enqueuing.`
+      )
+      return false
+    }
+
+    enqueueDownloadJob(job.id)
+    return true
+  })
 }
 
 /**

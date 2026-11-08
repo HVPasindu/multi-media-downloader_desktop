@@ -268,3 +268,65 @@ export async function getActiveDownloadsCount() {
     }
   }
 }
+
+/**
+ * Polls the backend for a download job's status until it reaches one of the expected statuses
+ * or times out.
+ *
+ * @param {number|string} jobId - Download job ID
+ * @param {string|Array<string>} expectedStatuses - Status or list of statuses to wait for
+ * @param {number} [timeoutMs=5000] - Maximum duration in milliseconds to poll
+ * @param {number} [pollIntervalMs=250] - Interval between polling requests
+ * @returns {Promise<{ ok: boolean, matched: boolean, status: string|null, job?: object }>}
+ */
+export async function waitForJobStatus(
+  jobId,
+  expectedStatuses,
+  timeoutMs = 5000,
+  pollIntervalMs = 250
+) {
+  const targetStatuses = Array.isArray(expectedStatuses) ? expectedStatuses : [expectedStatuses]
+  const startTime = Date.now()
+
+  while (Date.now() - startTime < timeoutMs) {
+    try {
+      const res = await getDownload(jobId)
+      if (res.ok && res.data?.data?.job) {
+        const currentStatus = res.data.data.job.status
+        if (targetStatuses.includes(currentStatus)) {
+          return {
+            ok: true,
+            matched: true,
+            status: currentStatus,
+            job: res.data.data.job
+          }
+        }
+      }
+    } catch {
+      // Ignore transient polling failure
+    }
+    await new Promise((resolve) => setTimeout(resolve, pollIntervalMs))
+  }
+
+  // Final check at expiration
+  try {
+    const finalRes = await getDownload(jobId)
+    if (finalRes.ok && finalRes.data?.data?.job) {
+      const currentStatus = finalRes.data.data.job.status
+      return {
+        ok: true,
+        matched: targetStatuses.includes(currentStatus),
+        status: currentStatus,
+        job: finalRes.data.data.job
+      }
+    }
+  } catch {
+    // Ignore error
+  }
+
+  return {
+    ok: false,
+    matched: false,
+    status: null
+  }
+}

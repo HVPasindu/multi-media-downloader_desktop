@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process'
+import { spawn, execSync } from 'node:child_process'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -115,9 +115,11 @@ const TEST_SUITES = [
 async function runSingleSuite(suite) {
   const loaderPath = './tests/loaders/electron_loader.mjs'
   const testFile = suite.file
+  const timeoutMs = suite.timeoutMs || (suite.file.includes('integration') ? 240000 : 120000)
 
   const startTime = Date.now()
   return new Promise((resolve) => {
+    let timedOut = false
     const child = spawn(process.execPath, ['--loader', loaderPath, testFile], {
       cwd: projectRoot,
       stdio: 'inherit',
@@ -127,18 +129,43 @@ async function runSingleSuite(suite) {
       }
     })
 
+    const timeoutTimer = setTimeout(() => {
+      timedOut = true
+      console.error(
+        `\n[TIMEOUT] Test suite "${suite.name}" exceeded ${timeoutMs}ms. Terminating process tree...`
+      )
+      if (child.pid) {
+        if (process.platform === 'win32') {
+          try {
+            execSync(`taskkill /PID ${child.pid} /T /F`, { stdio: 'ignore' })
+          } catch {
+            // Ignore if already terminated
+          }
+        } else {
+          try {
+            process.kill(-child.pid, 'SIGKILL')
+          } catch {
+            child.kill('SIGKILL')
+          }
+        }
+      }
+    }, timeoutMs)
+
     child.on('close', (exitCode) => {
+      clearTimeout(timeoutTimer)
       const durationMs = Date.now() - startTime
       resolve({
         suite: suite.name,
         file: suite.file,
-        passed: exitCode === 0,
-        exitCode,
-        durationMs
+        passed: !timedOut && exitCode === 0,
+        exitCode: timedOut ? 124 : exitCode,
+        durationMs,
+        error: timedOut ? `Suite timed out after ${timeoutMs}ms` : undefined
       })
     })
 
     child.on('error', (err) => {
+      clearTimeout(timeoutTimer)
       const durationMs = Date.now() - startTime
       resolve({
         suite: suite.name,
