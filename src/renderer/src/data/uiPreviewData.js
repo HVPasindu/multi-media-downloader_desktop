@@ -507,19 +507,7 @@ export const HISTORY_LIST = [
 
 export const SETTINGS_SECTIONS = [
   { id: 'general', label: 'General', icon: 'Settings' },
-  { id: 'download', label: 'Download', icon: 'Download' },
-  { id: 'quality', label: 'Quality', icon: 'Tv' },
-  { id: 'audio', label: 'Audio', icon: 'Music' },
-  { id: 'advanced', label: 'Advanced', icon: 'Zap' },
+  { id: 'quality-audio', label: 'Quality & Audio', icon: 'Sliders' },
   { id: 'appearance', label: 'Appearance', icon: 'Palette' },
-  { id: 'shortcuts', label: 'Shortcuts', icon: 'Keyboard' },
-  { id: 'privacy', label: 'Privacy', icon: 'Shield' },
   { id: 'about', label: 'About', icon: 'Info' }
 ]
-
-export const SETTINGS_STORAGE_INFO = {
-  usedGB: 125,
-  totalGB: 500,
-  freeGB: 375,
-  percentUsed: 25
-}

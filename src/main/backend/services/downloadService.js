@@ -1871,6 +1871,22 @@ export async function executeDownloadJob(jobId, options = {}) {
         throw error
       }
 
+      if (startupEntry?.cancelRequested) {
+        throw new DownloadCancelledError('Download was cancelled during preparation')
+      }
+
+      if (startupEntry?.pauseRequested) {
+        throw new DownloadPausedError('Download was paused during preparation')
+      }
+
+      const checkDbJob = await getDatabase().models.DownloadJob.findByPk(jobId).catch(() => null)
+      if (checkDbJob?.status === 'cancelled') {
+        throw new DownloadCancelledError('Download was cancelled during preparation')
+      }
+      if (checkDbJob?.status === 'paused') {
+        throw new DownloadPausedError('Download was paused during preparation')
+      }
+
       const isTransient =
         isTransientNetworkError(error) ||
         error?.code === 'NETWORK_ERROR' ||
