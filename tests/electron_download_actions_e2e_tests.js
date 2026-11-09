@@ -40,10 +40,16 @@ import {
 } from '../src/main/backend/services/downloadHistoryService.js'
 
 async function runElectronDownloadActionsE2ETests() {
-  console.log('================================================================')
-  console.log(' APPLAN2: Electron UI Download Actions & E2E Integration Suite ')
+  console.log(
+    '=================================================================================================='
+  )
+  console.log(
+    ' APPLAN2: Order 13: React Download Actions Hook Integration Test (Simulated Desktop UI Workflow) '
+  )
   console.log(' Task 09: React Hook Mutex, Polling, IPC Handlers & File Safety ')
-  console.log('================================================================\n')
+  console.log(
+    '==================================================================================================\n'
+  )
 
   const originalWindow = globalThis.window
   const originalCustomEvent = globalThis.CustomEvent

@@ -10,6 +10,11 @@ export default defineConfig({
   main: {},
   preload: {},
   renderer: {
+    server: {
+      headers: {
+        'Cache-Control': 'no-store'
+      }
+    },
     resolve: {
       alias: {
         '@renderer': resolve('src/renderer/src')

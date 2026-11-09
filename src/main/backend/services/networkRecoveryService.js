@@ -201,6 +201,13 @@ export async function resumeInterruptedNetworkJobs(options = {}) {
       }
 
       await withJobOperationLock(job.id, async () => {
+        if (testHooks?.afterRecoveryLock) {
+          await testHooks.afterRecoveryLock({ jobId: job.id })
+        }
+        if (options?.testHooks?.afterRecoveryLock) {
+          await options.testHooks.afterRecoveryLock({ jobId: job.id })
+        }
+
         const currentJob = await DownloadJob.findByPk(job.id)
         if (!currentJob || currentJob.status !== 'interrupted') {
           console.log(
@@ -229,6 +236,13 @@ export async function resumeInterruptedNetworkJobs(options = {}) {
             savedProgress: currentJob.progress
           })
           hasValidPartial = isPartialDownloadResumable(partialResult)
+          if (testHooks?.beforeRecoveryTransition) {
+            await testHooks.beforeRecoveryTransition({ jobId: job.id })
+          }
+          if (options?.testHooks?.beforeRecoveryTransition) {
+            await options.testHooks.beforeRecoveryTransition({ jobId: job.id })
+          }
+
           if (hasValidPartial) {
             reconciledBytes = partialResult.reconciledBytes
           }
@@ -242,6 +256,13 @@ export async function resumeInterruptedNetworkJobs(options = {}) {
             `[network-recovery] Job ${job.id} status changed during verification. Aborting recovery.`
           )
           return
+        }
+
+        if (testHooks?.beforeRecoveryTransition) {
+          await testHooks.beforeRecoveryTransition({ jobId: job.id })
+        }
+        if (options?.testHooks?.beforeRecoveryTransition) {
+          await options.testHooks.beforeRecoveryTransition({ jobId: job.id })
         }
 
         if (hasValidPartial) {
@@ -719,4 +740,10 @@ export function resetJobRetryStateForTesting() {
 
 export function isNetworkOnline() {
   return lastKnownOnline === true
+}
+
+let testHooks = null
+
+export function setRecoveryHooksForTesting(hooks) {
+  testHooks = hooks
 }

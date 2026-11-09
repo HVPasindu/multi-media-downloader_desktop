@@ -30,6 +30,7 @@ import {
 
 import { initializeDatabase, closeDatabase } from '../src/main/backend/config/database.js'
 import { verifyStagedBinaries } from '../scripts/verify-windows-binaries.mjs'
+import { extractAndVerifyArchive, computeSha256 } from '../scripts/provision-windows-binaries.mjs'
 
 /**
  * ============================================================================
@@ -460,6 +461,132 @@ async function runAllWindowsPackagingTests() {
     )
 
     console.log('✓ TEST AA passed: Binary verifier strictly enforces existence and versions.\n')
+
+    // ==========================================================================
+    // TEST AB: Binary Provisioning & Immutable Archive Verification
+    // ==========================================================================
+    console.log('--- TEST AB: Binary Provisioning & Archive Verification ---')
+
+    const provTestDir = path.join(testTempDir, 'prov_test')
+    await fs.mkdir(provTestDir, { recursive: true })
+
+    const mockSourceDir = path.join(provTestDir, 'mock_src')
+    await fs.mkdir(path.join(mockSourceDir, 'bin'), { recursive: true })
+    const mockFfmpegContent = 'MOCK_FFMPEG_BINARY_CONTENT'
+    const mockFfprobeContent = 'MOCK_FFPROBE_BINARY_CONTENT'
+    await fs.writeFile(path.join(mockSourceDir, 'bin', 'ffmpeg.exe'), mockFfmpegContent)
+    await fs.writeFile(path.join(mockSourceDir, 'bin', 'ffprobe.exe'), mockFfprobeContent)
+
+    const expectedFfmpegHash = computeSha256(path.join(mockSourceDir, 'bin', 'ffmpeg.exe'))
+    const expectedFfprobeHash = computeSha256(path.join(mockSourceDir, 'bin', 'ffprobe.exe'))
+
+    const mockZipPath = path.join(provTestDir, 'mock_ffmpeg.zip')
+    execFileSync('powershell.exe', [
+      '-NoProfile',
+      '-Command',
+      `Compress-Archive -Path "${path.join(mockSourceDir, '*')}" -DestinationPath "${mockZipPath}" -Force`
+    ])
+    const validArchiveHash = computeSha256(mockZipPath)
+
+    const targetBinDir = path.join(provTestDir, 'target_bin')
+    await fs.mkdir(targetBinDir, { recursive: true })
+
+    // 1. Invalid archive checksum is rejected
+    await assert.rejects(
+      async () => {
+        await extractAndVerifyArchive({
+          archivePath: mockZipPath,
+          expectedArchiveSha256: 'INVALID_ARCHIVE_CHECKSUM_0000000000000000000000000000000000',
+          extractDir: path.join(provTestDir, 'ext_1'),
+          targetDir: targetBinDir,
+          requiredBinaries: [
+            { name: 'ffmpeg.exe', expectedSha256: expectedFfmpegHash },
+            { name: 'ffprobe.exe', expectedSha256: expectedFfprobeHash }
+          ]
+        })
+      },
+      /archive SHA-256 verification failed/i,
+      'TEST AB.1: Invalid archive checksum must throw error'
+    )
+
+    // 2. Missing FFprobe executable is rejected
+    const partialSourceDir = path.join(provTestDir, 'partial_src')
+    await fs.mkdir(path.join(partialSourceDir, 'bin'), { recursive: true })
+    await fs.writeFile(path.join(partialSourceDir, 'bin', 'ffmpeg.exe'), mockFfmpegContent)
+    const partialZipPath = path.join(provTestDir, 'partial_ffmpeg.zip')
+    execFileSync('powershell.exe', [
+      '-NoProfile',
+      '-Command',
+      `Compress-Archive -Path "${path.join(partialSourceDir, '*')}" -DestinationPath "${partialZipPath}" -Force`
+    ])
+    const partialZipHash = computeSha256(partialZipPath)
+
+    await assert.rejects(
+      async () => {
+        await extractAndVerifyArchive({
+          archivePath: partialZipPath,
+          expectedArchiveSha256: partialZipHash,
+          extractDir: path.join(provTestDir, 'ext_2'),
+          targetDir: targetBinDir,
+          requiredBinaries: [
+            { name: 'ffmpeg.exe', expectedSha256: expectedFfmpegHash },
+            { name: 'ffprobe.exe', expectedSha256: expectedFfprobeHash }
+          ]
+        })
+      },
+      /Required executable ffprobe.exe not found/i,
+      'TEST AB.2: Missing ffprobe.exe must throw error'
+    )
+
+    // 3. Invalid extracted executable checksum is rejected
+    await assert.rejects(
+      async () => {
+        await extractAndVerifyArchive({
+          archivePath: mockZipPath,
+          expectedArchiveSha256: validArchiveHash,
+          extractDir: path.join(provTestDir, 'ext_3'),
+          targetDir: targetBinDir,
+          requiredBinaries: [
+            { name: 'ffmpeg.exe', expectedSha256: 'WRONG_CHECKSUM_FOR_FFMPEG_EXE' },
+            { name: 'ffprobe.exe', expectedSha256: expectedFfprobeHash }
+          ]
+        })
+      },
+      /checksum mismatch/i,
+      'TEST AB.3: Checksum mismatch on extracted executable must throw error'
+    )
+
+    // 4. Failed provisioning does not leave invalid executable in target directory
+    assert.equal(
+      fsSync.existsSync(path.join(targetBinDir, 'ffmpeg.exe')),
+      false,
+      'TEST AB.4: Failed provisioning must not leave invalid final executable in target directory'
+    )
+
+    // 5. Valid pinned binary configuration is accepted
+    const extractSuccess = await extractAndVerifyArchive({
+      archivePath: mockZipPath,
+      expectedArchiveSha256: validArchiveHash,
+      extractDir: path.join(provTestDir, 'ext_5'),
+      targetDir: targetBinDir,
+      requiredBinaries: [
+        { name: 'ffmpeg.exe', expectedSha256: expectedFfmpegHash },
+        { name: 'ffprobe.exe', expectedSha256: expectedFfprobeHash }
+      ]
+    })
+    assert.equal(extractSuccess, true, 'TEST AB.5: Valid archive extraction must return true')
+    assert.equal(
+      fsSync.existsSync(path.join(targetBinDir, 'ffmpeg.exe')),
+      true,
+      'TEST AB.6: ffmpeg.exe must be copied after successful verification'
+    )
+    assert.equal(
+      fsSync.existsSync(path.join(targetBinDir, 'ffprobe.exe')),
+      true,
+      'TEST AB.7: ffprobe.exe must be copied after successful verification'
+    )
+
+    console.log('✓ TEST AB passed: Pinned binary provisioning & archive verification confirmed.\n')
 
     console.log('================================================================')
     console.log(' ALL WINDOWS PACKAGING TESTS (TESTS A - Z) PASSED SUCCESSFULLY!')

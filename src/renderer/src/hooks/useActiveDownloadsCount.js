@@ -63,3 +63,5 @@ export function useActiveDownloadsCount() {
 
   return activeCount
 }
+
+export default useActiveDownloadsCount

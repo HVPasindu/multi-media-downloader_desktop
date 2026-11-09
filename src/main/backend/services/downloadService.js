@@ -1691,6 +1691,17 @@ export async function executeDownloadJob(jobId, options = {}) {
     markPausePersisted: settlePause
   }
 
+  const settleStartupFailure = (outcome, message) => {
+    const data = { outcome, message }
+    settlePause(false, data)
+    settleCancel(false, data)
+
+    const currentEntry = activeDownloadProcesses.get(jobId)
+    if (currentEntry?.executionToken === executionToken) {
+      activeDownloadProcesses.delete(jobId)
+    }
+  }
+
   // Register startup reservation BEFORE claiming the queued job
   activeDownloadProcesses.set(jobId, startupEntry)
 
@@ -1698,17 +1709,13 @@ export async function executeDownloadJob(jobId, options = {}) {
   try {
     claimedJob = await claimQueuedDownloadJob(jobId)
   } catch (claimErr) {
-    if (activeDownloadProcesses.get(jobId)?.executionToken === executionToken) {
-      activeDownloadProcesses.delete(jobId)
-    }
+    settleStartupFailure('startup_claim_failed', claimErr.message)
     throw claimErr
   }
 
   if (!claimedJob) {
     console.log(`[download] Job ${jobId} is no longer queued; skipping execution.`)
-    if (activeDownloadProcesses.get(jobId)?.executionToken === executionToken) {
-      activeDownloadProcesses.delete(jobId)
-    }
+    settleStartupFailure('startup_not_claimed', 'Download job was not available for execution')
     return null
   }
 
