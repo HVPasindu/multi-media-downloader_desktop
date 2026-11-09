@@ -12,15 +12,8 @@ import { initializeDatabase } from './backend/config/database.js'
 import { recoverInterruptedDownloadJobs } from './backend/services/downloadRecoveryService.js'
 import { getDownloadHistoryDetails } from './backend/services/downloadHistoryService.js'
 import { registerDownloadFileHandlers } from './ipc/downloadFileHandlers.js'
+import { registerSettingsIpcHandlers } from './ipc/settingsHandlers.js'
 
-import { getDatabase } from './backend/config/database.js'
-import { getSavedDownloadPath } from './backend/services/downloadSettingsService.js'
-import { updateDownloadPreferences } from './backend/services/settingsService.js'
-import { getDefaultDownloadPath } from './backend/services/downloadPathService.js'
-import {
-  validateDownloadFolder,
-  verifyDownloadFolderWritable
-} from './backend/services/downloadFileSafetyService.js'
 import { getSessionToken } from './backend/services/localApiSecurityService.js'
 import {
   setStartupWindow,
@@ -29,11 +22,8 @@ import {
   updateStartupStatus,
   restartApplication
 } from './ui/startupManager.js'
-import { getWindowsLoginItemOptions } from './loginItemHelper.js'
 
-import path, { join } from 'path'
-import fs from 'node:fs'
-import { statfs } from 'node:fs/promises'
+import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 
@@ -141,206 +131,13 @@ app.whenReady().then(async () => {
     // Step 09 Section B - Start background network connectivity monitoring for auto-recovery
     startNetworkMonitoring()
 
-    // Allow the frontend to choose a download folder
-    ipcMain.handle('downloads:choose-folder', async (event) => {
-      const ownerWindow = BrowserWindow.fromWebContents(event.sender)
-
-      if (!ownerWindow) {
-        throw new Error('Application window not found')
-      }
-
-      const result = await dialog.showOpenDialog(ownerWindow, {
-        title: 'Choose Download Folder',
-        properties: ['openDirectory']
-      })
-
-      if (result.canceled || result.filePaths.length === 0) {
-        return null
-      }
-
-      const selectedPath = result.filePaths[0]
-
-      // Validate folder safety and write permissions before persisting
-      const validPath = await validateDownloadFolder(selectedPath)
-      await verifyDownloadFolderWritable(validPath)
-
-      // Reuse Settings API service to enforce active-job safety guard and persistence
-      const updatedPreferences = await updateDownloadPreferences({
-        downloadPath: validPath
-      })
-
-      return updatedPreferences.downloadPath
-    })
-
-    ipcMain.handle('downloads:get-folder', async () => {
-      const AppSetting = getDatabase().models.AppSetting
-
-      const savedPath = await getSavedDownloadPath(AppSetting)
-
-      if (savedPath) {
-        return savedPath
-      }
-
-      return await getDefaultDownloadPath()
-    })
-
-    const isTrustedIpcSender = (event) => {
-      const sender = event?.sender
-      if (!sender) return false
-      const ownerWindow = BrowserWindow.fromWebContents(sender)
-      const trustedWindow = getStartupWindow()
-      if (
-        !ownerWindow ||
-        (typeof ownerWindow.isDestroyed === 'function' && ownerWindow.isDestroyed())
-      ) {
-        return false
-      }
-      if (trustedWindow && ownerWindow !== trustedWindow) {
-        return false
-      }
-      return true
-    }
-
-    // Windows startup preference IPC handlers
-    ipcMain.handle('app-settings:get-start-with-windows', (event) => {
-      if (!isTrustedIpcSender(event)) {
-        throw new Error('Unauthorized IPC sender')
-      }
-
-      if (process.platform !== 'win32') {
-        return {
-          supported: false,
-          enabled: false
-        }
-      }
-
-      try {
-        const settings = app.getLoginItemSettings(getWindowsLoginItemOptions(app, is.dev))
-        if (typeof settings?.openAtLogin !== 'boolean') {
-          throw new Error('Invalid login item settings returned by Windows')
-        }
-        return {
-          supported: true,
-          enabled: settings.openAtLogin
-        }
-      } catch (err) {
-        console.error('Failed to get login item settings:', err)
-        return {
-          supported: true,
-          error: err?.message || String(err)
-        }
-      }
-    })
-
-    ipcMain.handle('app-settings:set-start-with-windows', (event, enabled) => {
-      if (!isTrustedIpcSender(event)) {
-        throw new Error('Unauthorized IPC sender')
-      }
-
-      if (typeof enabled !== 'boolean') {
-        throw new Error('Invalid startup setting: enabled must be a boolean')
-      }
-
-      if (process.platform !== 'win32') {
-        throw new Error('Windows startup setting is not supported on this platform')
-      }
-
-      try {
-        const options = {
-          openAtLogin: enabled,
-          ...getWindowsLoginItemOptions(app, is.dev)
-        }
-
-        app.setLoginItemSettings(options)
-
-        const verifySettings = app.getLoginItemSettings(getWindowsLoginItemOptions(app, is.dev))
-
-        if (
-          typeof verifySettings?.openAtLogin !== 'boolean' ||
-          verifySettings.openAtLogin !== enabled
-        ) {
-          return {
-            supported: true,
-            error: 'Windows did not confirm the startup setting.'
-          }
-        }
-
-        return {
-          supported: true,
-          enabled: verifySettings.openAtLogin
-        }
-      } catch (err) {
-        console.error('Failed to set login item settings:', err)
-        return {
-          supported: true,
-          error: err?.message || String(err)
-        }
-      }
-    })
-
-    // Real filesystem storage information IPC handler
-    ipcMain.handle('downloads:get-storage-info', async (event) => {
-      if (!isTrustedIpcSender(event)) {
-        throw new Error('Unauthorized IPC sender')
-      }
-
-      try {
-        const AppSetting = getDatabase()?.models?.AppSetting
-        let downloadPath = null
-        if (AppSetting) {
-          try {
-            downloadPath = await getSavedDownloadPath(AppSetting)
-          } catch {
-            // Non-fatal, fallback to default
-          }
-        }
-        if (!downloadPath || typeof downloadPath !== 'string' || !downloadPath.trim()) {
-          downloadPath = await getDefaultDownloadPath()
-        }
-
-        // Find nearest existing ancestor directory or drive root for statfs
-        let targetPath = path.resolve(downloadPath.trim())
-        while (targetPath && !fs.existsSync(targetPath)) {
-          const parent = path.dirname(targetPath)
-          if (parent === targetPath) break
-          targetPath = parent
-        }
-
-        if (!targetPath || !fs.existsSync(targetPath)) {
-          return {
-            available: false,
-            folderPath: downloadPath,
-            totalBytes: 0,
-            usedBytes: 0,
-            freeBytes: 0,
-            error: 'Target disk drive is not accessible'
-          }
-        }
-
-        const stats = await statfs(targetPath)
-        const bsize = Number(stats.bsize)
-        const totalBytes = Number(stats.blocks) * bsize
-        const freeBytes = Number(stats.bavail ?? stats.bfree) * bsize
-        const usedBytes = Math.max(0, totalBytes - freeBytes)
-
-        return {
-          available: true,
-          folderPath: downloadPath,
-          resolvedPath: targetPath,
-          totalBytes,
-          usedBytes,
-          freeBytes
-        }
-      } catch (err) {
-        console.error('Failed to retrieve disk storage info:', err?.message || err)
-        return {
-          available: false,
-          totalBytes: 0,
-          usedBytes: 0,
-          freeBytes: 0,
-          error: err?.message || 'Storage information unavailable'
-        }
-      }
+    // Register General Settings IPC handlers (choose folder, get folder, start with windows, storage info)
+    registerSettingsIpcHandlers({
+      ipcMain,
+      app,
+      BrowserWindow,
+      dialog,
+      getStartupWindow
     })
 
     // Step 05.12 & Task 04 - Secure IPC handlers to open downloaded media file or its folder (FIX 02 & Task 04)

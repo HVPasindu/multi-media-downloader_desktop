@@ -13,18 +13,29 @@ async function run() {
   console.log('App packaged status:', app.isPackaged)
   console.log('Login item options:', options)
 
-  // 1. Read initial settings
-  const initial = app.getLoginItemSettings(options)
-  console.log('1. Initial login item settings:', {
-    openAtLogin: initial.openAtLogin,
-    openAsHidden: initial.openAsHidden,
-    executableWillLaunchAtLogin: initial.executableWillLaunchAtLogin
-  })
-  const initialOpenAtLogin = initial.openAtLogin
+  let originalStartupSetting = null
+  let hasCapturedOriginalStartupSetting = false
 
   try {
+    // 1. Read initial settings
+    const initial = app.getLoginItemSettings(options)
+    console.log('1. Initial login item settings:', {
+      openAtLogin: initial?.openAtLogin,
+      openAsHidden: initial?.openAsHidden,
+      executableWillLaunchAtLogin: initial?.executableWillLaunchAtLogin
+    })
+
+    assert.equal(
+      typeof initial?.openAtLogin,
+      'boolean',
+      'initial openAtLogin must be a strict boolean from Windows'
+    )
+    originalStartupSetting = initial.openAtLogin
+    hasCapturedOriginalStartupSetting = true
+    console.log(`✓ Initial startup setting captured safely: ${originalStartupSetting}\n`)
+
     // 2. Toggle ON
-    console.log('\n2. Toggling Start With Windows -> ON...')
+    console.log('2. Toggling Start With Windows -> ON...')
     app.setLoginItemSettings({
       openAtLogin: true,
       ...options
@@ -36,9 +47,10 @@ async function run() {
       executableWillLaunchAtLogin: onState.executableWillLaunchAtLogin
     })
     assert.equal(onState.openAtLogin, true, 'openAtLogin must be true after setting true')
+    console.log('✓ Start With Windows -> ON verified.\n')
 
     // 3. Toggle OFF
-    console.log('\n3. Toggling Start With Windows -> OFF...')
+    console.log('3. Toggling Start With Windows -> OFF...')
     app.setLoginItemSettings({
       openAtLogin: false,
       ...options
@@ -50,40 +62,39 @@ async function run() {
       executableWillLaunchAtLogin: offState.executableWillLaunchAtLogin
     })
     assert.equal(offState.openAtLogin, false, 'openAtLogin must be false after setting false')
+    console.log('✓ Start With Windows -> OFF verified.\n')
 
-    // 4. Restore original user setting
-    console.log(`\n4. Restoring original preference (was: ${initialOpenAtLogin})...`)
-    app.setLoginItemSettings({
-      openAtLogin: initialOpenAtLogin,
-      ...options
-    })
-
-    const restoredState = app.getLoginItemSettings(options)
-    console.log('   Restored state:', {
-      openAtLogin: restoredState.openAtLogin
-    })
-    assert.equal(
-      restoredState.openAtLogin,
-      initialOpenAtLogin,
-      'Restored setting must match initial preference'
-    )
-
-    console.log('\n================================================================')
-    console.log(' ALL WINDOWS STARTUP INTEGRATION CHECKS PASSED (100% PASS)       ')
     console.log('================================================================')
-  } catch (err) {
-    // Ensure restoration even if assertion fails
-    try {
-      app.setLoginItemSettings({
-        openAtLogin: initialOpenAtLogin,
-        ...options
-      })
-    } catch (cleanupErr) {
-      console.error('Failed to restore login item settings in error handler:', cleanupErr)
-    }
-    throw err
+    console.log(' ALL WINDOWS STARTUP MUTATION CHECKS COMPLETED                  ')
+    console.log('================================================================')
   } finally {
-    app.quit()
+    try {
+      if (hasCapturedOriginalStartupSetting) {
+        console.log(`\n[Cleanup] Restoring original preference (was: ${originalStartupSetting})...`)
+        app.setLoginItemSettings({
+          openAtLogin: originalStartupSetting,
+          ...options
+        })
+
+        const restoredState = app.getLoginItemSettings(options)
+        console.log('   Restored state:', {
+          openAtLogin: restoredState.openAtLogin
+        })
+        assert.equal(
+          restoredState.openAtLogin,
+          originalStartupSetting,
+          'Restored setting must match initial preference exactly'
+        )
+        console.log(
+          `✓ Original Windows startup preference successfully restored to ${originalStartupSetting}.\n`
+        )
+      }
+    } catch (restoreErr) {
+      console.error('CRITICAL: Failed to restore Windows startup preference:', restoreErr)
+      process.exitCode = 1
+    } finally {
+      app.quit()
+    }
   }
 }
 

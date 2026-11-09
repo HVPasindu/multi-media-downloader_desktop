@@ -2,25 +2,21 @@ import { app, BrowserWindow, ipcMain, dialog } from 'electron'
 import assert from 'node:assert/strict'
 import path from 'node:path'
 import fs from 'node:fs'
-import { statfs } from 'node:fs/promises'
-import { getDatabase, initializeDatabase } from '../src/main/backend/config/database.js'
-import { getSavedDownloadPath } from '../src/main/backend/services/downloadSettingsService.js'
-import { getDefaultDownloadPath } from '../src/main/backend/services/downloadPathService.js'
-import {
-  validateDownloadFolder,
-  verifyDownloadFolderWritable
-} from '../src/main/backend/services/downloadFileSafetyService.js'
-import { updateDownloadPreferences } from '../src/main/backend/services/settingsService.js'
+import { initializeDatabase } from '../src/main/backend/config/database.js'
 import { setStartupWindow, getStartupWindow } from '../src/main/ui/startupManager.js'
-import { getWindowsLoginItemOptions } from '../src/main/loginItemHelper.js'
+import {
+  registerSettingsIpcHandlers,
+  isTrustedSettingsIpcSender
+} from '../src/main/ipc/settingsHandlers.js'
 
 let mainWindow = null
-let initialStartupSetting = false
+let originalStartupSetting = null
+let hasCapturedOriginalStartupSetting = false
 
 async function run() {
   console.log('================================================================')
   console.log(' APPLAN2 — Real Windows Startup & Storage IPC Integration Tests ')
-  console.log(' Scope: Renderer -> Preload (window.api) -> IPC -> Main -> Win32')
+  console.log(' Scope: Renderer -> Preload (window.api) -> Production IPC -> Win32')
   console.log('================================================================\n')
 
   assert.equal(process.platform, 'win32', 'Tests must execute on Windows platform')
@@ -29,160 +25,30 @@ async function run() {
   await initializeDatabase()
   console.log('[Setup] Database initialized successfully.')
 
-  // 2. Register real IPC handlers (identical to src/main/index.js)
-  const isTrustedIpcSender = (event) => {
-    const sender = event?.sender
-    if (!sender) return false
-    const ownerWindow = BrowserWindow.fromWebContents(sender)
-    const trustedWindow = getStartupWindow()
-    if (
-      !ownerWindow ||
-      (typeof ownerWindow.isDestroyed === 'function' && ownerWindow.isDestroyed())
-    ) {
-      return false
-    }
-    if (trustedWindow && ownerWindow !== trustedWindow) {
-      return false
-    }
-    return true
-  }
-
-  ipcMain.handle('downloads:choose-folder', async (event) => {
-    const ownerWindow = BrowserWindow.fromWebContents(event.sender)
-    if (!ownerWindow) throw new Error('Application window not found')
-
-    const result = await dialog.showOpenDialog(ownerWindow, {
-      title: 'Choose Download Folder',
-      properties: ['openDirectory']
-    })
-    if (result.canceled || result.filePaths.length === 0) return null
-
-    const selectedPath = result.filePaths[0]
-    const validPath = await validateDownloadFolder(selectedPath)
-    await verifyDownloadFolderWritable(validPath)
-    const updatedPreferences = await updateDownloadPreferences({ downloadPath: validPath })
-    return updatedPreferences.downloadPath
+  // 2. Register production IPC handlers using shared production module
+  registerSettingsIpcHandlers({
+    ipcMain,
+    app,
+    BrowserWindow,
+    dialog,
+    getStartupWindow
   })
+  console.log('[Setup] Registered production IPC handlers via registerSettingsIpcHandlers.')
 
-  ipcMain.handle('downloads:get-folder', async () => {
-    const AppSetting = getDatabase().models.AppSetting
-    const savedPath = await getSavedDownloadPath(AppSetting)
-    if (savedPath) return savedPath
-    return await getDefaultDownloadPath()
-  })
+  // 3. Verify sender trust verification logic
+  assert.equal(
+    isTrustedSettingsIpcSender({}, { BrowserWindow, getStartupWindow }),
+    false,
+    'Untrusted empty sender must be rejected'
+  )
+  assert.equal(
+    isTrustedSettingsIpcSender({ sender: null }, { BrowserWindow, getStartupWindow }),
+    false,
+    'Null sender must be rejected'
+  )
+  console.log('[Security] Verified isTrustedSettingsIpcSender rejects unauthorized senders.')
 
-  ipcMain.handle('app-settings:get-start-with-windows', (event) => {
-    if (!isTrustedIpcSender(event)) {
-      throw new Error('Unauthorized IPC sender')
-    }
-    if (process.platform !== 'win32') {
-      return { supported: false, enabled: false }
-    }
-    try {
-      const settings = app.getLoginItemSettings(getWindowsLoginItemOptions(app, true))
-      if (typeof settings?.openAtLogin !== 'boolean') {
-        throw new Error('Invalid login item settings returned by Windows')
-      }
-      return { supported: true, enabled: settings.openAtLogin }
-    } catch (err) {
-      console.error('Failed to get login item settings:', err)
-      return { supported: true, error: err?.message || String(err) }
-    }
-  })
-
-  ipcMain.handle('app-settings:set-start-with-windows', (event, enabled) => {
-    if (!isTrustedIpcSender(event)) {
-      throw new Error('Unauthorized IPC sender')
-    }
-    if (typeof enabled !== 'boolean') {
-      throw new Error('Invalid startup setting: enabled must be a boolean')
-    }
-    if (process.platform !== 'win32') {
-      throw new Error('Windows startup setting is not supported on this platform')
-    }
-    try {
-      const options = {
-        openAtLogin: enabled,
-        ...getWindowsLoginItemOptions(app, true)
-      }
-      app.setLoginItemSettings(options)
-      const verifySettings = app.getLoginItemSettings(getWindowsLoginItemOptions(app, true))
-      if (
-        typeof verifySettings?.openAtLogin !== 'boolean' ||
-        verifySettings.openAtLogin !== enabled
-      ) {
-        return { supported: true, error: 'Windows did not confirm the startup setting.' }
-      }
-      return { supported: true, enabled: verifySettings.openAtLogin }
-    } catch (err) {
-      console.error('Failed to set login item settings:', err)
-      return { supported: true, error: err?.message || String(err) }
-    }
-  })
-
-  ipcMain.handle('downloads:get-storage-info', async (event) => {
-    if (!isTrustedIpcSender(event)) {
-      throw new Error('Unauthorized IPC sender')
-    }
-    try {
-      const AppSetting = getDatabase()?.models?.AppSetting
-      let downloadPath = null
-      if (AppSetting) {
-        try {
-          downloadPath = await getSavedDownloadPath(AppSetting)
-        } catch {
-          // Fall back to default path
-        }
-      }
-      if (!downloadPath || typeof downloadPath !== 'string' || !downloadPath.trim()) {
-        downloadPath = await getDefaultDownloadPath()
-      }
-
-      let targetPath = path.resolve(downloadPath.trim())
-      while (targetPath && !fs.existsSync(targetPath)) {
-        const parent = path.dirname(targetPath)
-        if (parent === targetPath) break
-        targetPath = parent
-      }
-
-      if (!targetPath || !fs.existsSync(targetPath)) {
-        return {
-          available: false,
-          folderPath: downloadPath,
-          totalBytes: 0,
-          usedBytes: 0,
-          freeBytes: 0,
-          error: 'Target disk drive is not accessible'
-        }
-      }
-
-      const stats = await statfs(targetPath)
-      const bsize = Number(stats.bsize)
-      const totalBytes = Number(stats.blocks) * bsize
-      const freeBytes = Number(stats.bavail ?? stats.bfree) * bsize
-      const usedBytes = Math.max(0, totalBytes - freeBytes)
-
-      return {
-        available: true,
-        folderPath: downloadPath,
-        resolvedPath: targetPath,
-        totalBytes,
-        usedBytes,
-        freeBytes
-      }
-    } catch (err) {
-      console.error('Failed to retrieve disk storage info:', err?.message || err)
-      return {
-        available: false,
-        totalBytes: 0,
-        usedBytes: 0,
-        freeBytes: 0,
-        error: err?.message || 'Storage information unavailable'
-      }
-    }
-  })
-
-  // 3. Create real BrowserWindow with the real preload script
+  // 4. Create real BrowserWindow with the real compiled preload script
   const preloadPath = fs.existsSync(path.resolve('out/preload/index.js'))
     ? path.resolve('out/preload/index.js')
     : path.resolve('src/preload/index.js')
@@ -226,9 +92,12 @@ async function run() {
     assert.equal(initialRes.supported, true, 'Supported must be true on Windows')
     assert.equal(typeof initialRes.enabled, 'boolean', 'Enabled must be a strict boolean')
     assert.equal(initialRes.error, undefined, 'Error must be undefined on success')
-    initialStartupSetting = initialRes.enabled
+
+    // Capture original preference safely BEFORE any mutation
+    originalStartupSetting = initialRes.enabled
+    hasCapturedOriginalStartupSetting = true
     console.log(
-      `✓ Test A Passed: Startup read successful via IPC. Initial enabled = ${initialStartupSetting}\n`
+      `✓ Test A Passed: Startup read successful via IPC. Original enabled = ${originalStartupSetting}\n`
     )
 
     // Test B: Startup ON through IPC
@@ -262,30 +131,6 @@ async function run() {
     console.log('  Read-back OFF Response:', verifyOffRes)
     assert.equal(verifyOffRes.enabled, false, 'Read-back must confirm enabled === false')
     console.log('✓ Test C Passed: Startup OFF successfully applied and read back via IPC.\n')
-
-    // Test D: Original preference restoration
-    console.log(`Test D: Restoring original preference (was: ${initialStartupSetting}) via IPC...`)
-    const restoreRes = await mainWindow.webContents.executeJavaScript(
-      `window.api.setStartWithWindows(${initialStartupSetting})`
-    )
-    console.log('  Restore Response:', restoreRes)
-    assert.equal(
-      restoreRes.enabled,
-      initialStartupSetting,
-      'Restored enabled state must match initial'
-    )
-
-    const verifyRestored = await mainWindow.webContents.executeJavaScript(
-      'window.api.getStartWithWindows()'
-    )
-    assert.equal(
-      verifyRestored.enabled,
-      initialStartupSetting,
-      'Final read-back must match original preference exactly'
-    )
-    console.log(
-      `✓ Test D Passed: Original Windows startup preference (${initialStartupSetting}) restored.\n`
-    )
 
     // ------------------------------------------------------------------------
     // PHASE 06 — REAL STORAGE INFORMATION & DOWNLOAD FOLDER IPC TESTS
@@ -335,23 +180,46 @@ async function run() {
     console.log('================================================================')
     console.log(' ALL REAL IPC INTEGRATION TESTS PASSED SUCCESSFULLY (100% PASS)  ')
     console.log('================================================================\n')
-  } catch (err) {
-    // Ensure restoration of startup setting even if test fails
-    try {
-      const options = {
-        openAtLogin: initialStartupSetting,
-        ...getWindowsLoginItemOptions(app, true)
-      }
-      app.setLoginItemSettings(options)
-    } catch (cleanupErr) {
-      console.error('Failed to restore startup setting in cleanup:', cleanupErr)
-    }
-    throw err
   } finally {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.destroy()
+    try {
+      if (hasCapturedOriginalStartupSetting) {
+        console.log(
+          `[Cleanup] Restoring original preference (was: ${originalStartupSetting}) via IPC...`
+        )
+        const restoreRes = await mainWindow.webContents.executeJavaScript(
+          `window.api.setStartWithWindows(${originalStartupSetting})`
+        )
+        console.log('  Restore Response:', restoreRes)
+        assert.equal(
+          restoreRes.enabled,
+          originalStartupSetting,
+          'Restored enabled state must match original'
+        )
+
+        const verifyRestored = await mainWindow.webContents.executeJavaScript(
+          'window.api.getStartWithWindows()'
+        )
+        assert.equal(
+          verifyRestored.enabled,
+          originalStartupSetting,
+          'Final read-back must match original preference exactly'
+        )
+        console.log(
+          `✓ [Cleanup] Original Windows startup preference successfully restored to ${originalStartupSetting}.\n`
+        )
+      }
+    } catch (restoreErr) {
+      console.error(
+        'CRITICAL: Failed to restore Windows startup preference in cleanup:',
+        restoreErr
+      )
+      process.exitCode = 1
+    } finally {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.destroy()
+      }
+      app.quit()
     }
-    app.quit()
   }
 }
 

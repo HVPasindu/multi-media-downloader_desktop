@@ -10,14 +10,13 @@
  * In production/packaged mode, Electron uses the installed executable directly.
  *
  * @param {import('electron').App} app - Electron application instance
- * @param {boolean} [isDev] - Whether running in development mode (defaults to !app.isPackaged)
  * @returns {import('electron').Settings | {}}
  */
-export function getWindowsLoginItemOptions(app, isDev = !app?.isPackaged) {
-  if (isDev) {
+export function getWindowsLoginItemOptions(app) {
+  if (app && !app.isPackaged) {
     return {
       path: process.execPath,
-      args: [app.getAppPath()]
+      args: typeof app.getAppPath === 'function' ? [app.getAppPath()] : []
     }
   }
 

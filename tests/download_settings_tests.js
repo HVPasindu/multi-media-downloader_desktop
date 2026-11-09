@@ -14,6 +14,7 @@ import { getSavedDownloadPath } from '../src/main/backend/services/downloadSetti
 import { createDownloadJob } from '../src/main/backend/services/downloadService.js'
 import { createTestDatabase } from './helpers/testDatabase.js'
 import { SETTINGS_SECTIONS } from '../src/renderer/src/data/uiPreviewData.js'
+import { getWindowsLoginItemOptions } from '../src/main/loginItemHelper.js'
 
 /**
  * ============================================================================
@@ -280,7 +281,30 @@ async function runDownloadSettingsTests() {
     )
     assert.throws(() => validateStartupInput(null), /Invalid startup setting/, '7.5: Null rejected')
 
-    console.log('✓ Section 7: Windows startup input validation verified.\n')
+    // 7.6 - 7.9: getWindowsLoginItemOptions behavior
+    const mockDevApp = {
+      isPackaged: false,
+      getAppPath: () => 'C:\\test\\app\\path'
+    }
+    const devOptions = getWindowsLoginItemOptions(mockDevApp)
+    assert.equal(devOptions.path, process.execPath, '7.6: Dev mode specifies process.execPath')
+    assert.deepEqual(
+      devOptions.args,
+      ['C:\\test\\app\\path'],
+      '7.7: Dev mode specifies app path arg'
+    )
+
+    const mockPackagedApp = {
+      isPackaged: true,
+      getAppPath: () => 'C:\\Program Files\\App'
+    }
+    const packagedOptions = getWindowsLoginItemOptions(mockPackagedApp)
+    assert.deepEqual(packagedOptions, {}, '7.8: Packaged mode returns empty options object')
+
+    const nullOptions = getWindowsLoginItemOptions(null)
+    assert.deepEqual(nullOptions, {}, '7.9: Null/missing app safely returns empty options object')
+
+    console.log('✓ Section 7: Windows startup input & options helper verified.\n')
 
     console.log('================================================================')
     console.log(' ALL DOWNLOAD SETTINGS TESTS PASSED SUCCESSFULLY (100% PASS)    ')
