@@ -22,10 +22,12 @@ All existing functionality (Steps 05.01–05.14, platform extraction, recovery, 
 ## B. Root Cause Analysis
 
 ### 1. JSON Sensitive Credential Bypass (Task 01)
+
 - **Previous Regex:** `SENSITIVE_VALUE_PATTERN` was designed for standard key-value tokens (e.g., `po_token=secret123` or `visitor_data: secret123`).
 - **Defect:** In JSON objects such as `{"po_token":"secret123"}` or `{"auth_token": "secret"}`, the property name is enclosed in quotation marks (`"po_token"`). The regex delimiter check matched the opening quote before `po_token`, but did not accommodate the mandatory closing quote before the colon delimiter (`:`). Consequently, JSON-encoded credential payloads were not identified as unsafe, allowing raw token strings to bypass error sanitization.
 
 ### 2. DownloaderPage Folder Error Leakage (Task 02)
+
 - **Previous Implementation:** In `DownloaderPage.jsx`, two folder management operations—`loadSavedFolder` (on mount) and `handleChooseFolder` (on folder button click)—contained catch blocks that set `folderError` state using:
   ```javascript
   setFolderError(err?.message || 'Unable to retrieve saved download folder.')
@@ -46,7 +48,7 @@ All existing functionality (Steps 05.01–05.14, platform extraction, recovery, 
 @@ -263,12 +263,16 @@ export function getFriendlyErrorInfo(errorOrCode, fallbackMessage = null) {
  const SENSITIVE_VALUE_PATTERN =
    /(?:^|[?&;,\s"'`([])(?:po[\s_-]?token|visitor[\s_-]?data|session[\s_-]?id|auth[\s_-]?token|access[\s_-]?token|refresh[\s_-]?token|api[\s_-]?key|client[\s_-]?secret|password|authorization|cookie|set-cookie|signature|sig|SAPISID|__Secure-3PSID|SID|HSID|SSID|APISID|LOGIN_INFO)\s*[:=]\s*["']?[^&\s,;"'`)]+/i
- 
+
 +const JSON_SENSITIVE_VALUE_PATTERN =
 +  /(["'])(?:po[\s_-]?token|visitor[\s_-]?data|session[\s_-]?id|auth[\s_-]?token|access[\s_-]?token|refresh[\s_-]?token|api[\s_-]?key|client[\s_-]?secret|password|authorization|cookie|set-cookie|signature|sig|SAPISID|__Secure-3PSID|SID|HSID|SSID|APISID|LOGIN_INFO)\1\s*:\s*(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^,}\]\s]+)/i
 +
@@ -97,10 +99,10 @@ All existing functionality (Steps 05.01–05.14, platform extraction, recovery, 
 
 ## D. Modified Files
 
-| File | Purpose of Modification |
-| :--- | :--- |
-| [`src/renderer/src/utils/errorPresentation.js`](file:///i:/acpt/projects/multi-media-downloader/multi-media-downloader/src/renderer/src/utils/errorPresentation.js) | Implemented `JSON_SENSITIVE_VALUE_PATTERN` and registered it in `UNSAFE_ERROR_PATTERNS`. |
-| [`src/renderer/src/pages/DownloaderPage.jsx`](file:///i:/acpt/projects/multi-media-downloader/multi-media-downloader/src/renderer/src/pages/DownloaderPage.jsx) | Sanitized both folder error catch blocks (`loadSavedFolder` and `handleChooseFolder`) via `getSafeFriendlyErrorInfo`. |
+| File                                                                                                                                                                | Purpose of Modification                                                                                                                  |
+| :------------------------------------------------------------------------------------------------------------------------------------------------------------------ | :--------------------------------------------------------------------------------------------------------------------------------------- |
+| [`src/renderer/src/utils/errorPresentation.js`](file:///i:/acpt/projects/multi-media-downloader/multi-media-downloader/src/renderer/src/utils/errorPresentation.js) | Implemented `JSON_SENSITIVE_VALUE_PATTERN` and registered it in `UNSAFE_ERROR_PATTERNS`.                                                 |
+| [`src/renderer/src/pages/DownloaderPage.jsx`](file:///i:/acpt/projects/multi-media-downloader/multi-media-downloader/src/renderer/src/pages/DownloaderPage.jsx)     | Sanitized both folder error catch blocks (`loadSavedFolder` and `handleChooseFolder`) via `getSafeFriendlyErrorInfo`.                    |
 | [`tests/step14_frontend_download_api_tests.js`](file:///i:/acpt/projects/multi-media-downloader/multi-media-downloader/tests/step14_frontend_download_api_tests.js) | Added regression tests for all 21 JSON credential keys, nested JSON, whitespace, Error objects, and DownloaderPage folder source audits. |
 
 ---
@@ -133,19 +135,20 @@ In [`tests/step14_frontend_download_api_tests.js`](file:///i:/acpt/projects/mult
 
 ## F. Verification Results
 
-| Verification | Command Executed | Actual Result | Execution Time / Notes |
-| :--- | :--- | :--- | :--- |
-| **Focused Step 14 Tests** | `node --loader ./tests/loaders/electron_loader.mjs tests/step14_frontend_download_api_tests.js` | **PASS (7 / 7 Groups)** | ~1.2s; all JSON credential & folder error assertions passed |
-| **Full Regression Suite** | `npm test` (`scripts/run-backend-tests.mjs`) | **PASS (24 / 24 Suites)** | 52.34s; 100% pass across all test suites, zero regressions |
-| **ESLint & Prettier** | `npm run lint` (`eslint --cache .`) | **PASS (0 Errors, 0 Warnings)** | Fully compliant with code style & React Refresh rules |
-| **Production Build** | `npm run build` (`electron-vite build`) | **PASS (Exit Code 0)** | SSR chunks, preload, and renderer bundle built cleanly |
-| **Windows Binaries** | `npm run verify:binaries` | **PASS (100% PASS)** | `yt-dlp.exe` (17.05 MB), `ffmpeg.exe` (217.27 MB), `ffprobe.exe` (217.08 MB), `node.exe` (87.19 MB) |
+| Verification              | Command Executed                                                                                | Actual Result                   | Execution Time / Notes                                                                              |
+| :------------------------ | :---------------------------------------------------------------------------------------------- | :------------------------------ | :-------------------------------------------------------------------------------------------------- |
+| **Focused Step 14 Tests** | `node --loader ./tests/loaders/electron_loader.mjs tests/step14_frontend_download_api_tests.js` | **PASS (7 / 7 Groups)**         | ~1.2s; all JSON credential & folder error assertions passed                                         |
+| **Full Regression Suite** | `npm test` (`scripts/run-backend-tests.mjs`)                                                    | **PASS (24 / 24 Suites)**       | 52.34s; 100% pass across all test suites, zero regressions                                          |
+| **ESLint & Prettier**     | `npm run lint` (`eslint --cache .`)                                                             | **PASS (0 Errors, 0 Warnings)** | Fully compliant with code style & React Refresh rules                                               |
+| **Production Build**      | `npm run build` (`electron-vite build`)                                                         | **PASS (Exit Code 0)**          | SSR chunks, preload, and renderer bundle built cleanly                                              |
+| **Windows Binaries**      | `npm run verify:binaries`                                                                       | **PASS (100% PASS)**            | `yt-dlp.exe` (17.05 MB), `ffmpeg.exe` (217.27 MB), `ffprobe.exe` (217.08 MB), `node.exe` (87.19 MB) |
 
 ---
 
 ## G. Regression Protection
 
 The following components and existing subsystems were audited and verified to remain completely unaffected:
+
 - Steps 05.01–05.10 desktop React frontend components.
 - Steps 05.11–05.14 download management, history pagination, cancel, retry, and notification flows.
 - Instagram live duration extraction via Meta CDN `efg` parameter.
@@ -162,6 +165,7 @@ The following components and existing subsystems were audited and verified to re
 Per strict project instructions, **no Git commits or pushes were executed**.
 
 Working directory status (`git status --short`):
+
 ```text
  M src/renderer/src/pages/DownloaderPage.jsx
  M src/renderer/src/utils/errorPresentation.js
@@ -175,6 +179,7 @@ All changes are staged in the working tree for immediate independent review.
 ## I. Remaining Limitations
 
 There are no known unresolved technical defects in the implemented scope.
+
 - Automated unit, integration, and E2E regression verification have achieved 100% success.
 - Manual Desktop UI Acceptance Testing in a live desktop window remains the designated next step.
 

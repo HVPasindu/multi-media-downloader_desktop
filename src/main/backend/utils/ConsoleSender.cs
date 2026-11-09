@@ -98,6 +98,9 @@ public class ConsoleSender {
     private static extern bool CloseHandle(IntPtr hObject);
 
     [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool TerminateProcess(IntPtr hProcess, uint uExitCode);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
     private static extern IntPtr GetStdHandle(int nStdHandle);
 
     private static bool CtrlHandler(int ctrlType) {
@@ -143,20 +146,41 @@ public class ConsoleSender {
             IntPtr hOrigOut = GetStdHandle(STD_OUTPUT_HANDLE);
             IntPtr hOrigErr = GetStdHandle(STD_ERROR_HANDLE);
 
-            // Ensure handles are marked inheritable
+            if (hOrigOut == IntPtr.Zero || hOrigOut == new IntPtr(-1)) {
+                Console.Error.WriteLine("GetStdHandle (stdout) returned invalid handle");
+                return 1;
+            }
+            if (hOrigErr == IntPtr.Zero || hOrigErr == new IntPtr(-1)) {
+                Console.Error.WriteLine("GetStdHandle (stderr) returned invalid handle");
+                return 1;
+            }
+
+            // Ensure handles are marked inheritable (fail-closed on critical handle configuration failure)
             if (hOrigIn != IntPtr.Zero && hOrigIn != new IntPtr(-1)) {
-                SetHandleInformation(hOrigIn, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+                if (!SetHandleInformation(hOrigIn, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT)) {
+                    int hErr = Marshal.GetLastWin32Error();
+                    Console.Error.WriteLine("SetHandleInformation (stdin) failed: " + hErr);
+                    return 1;
+                }
             }
-            if (hOrigOut != IntPtr.Zero && hOrigOut != new IntPtr(-1)) {
-                SetHandleInformation(hOrigOut, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+            if (!SetHandleInformation(hOrigOut, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT)) {
+                int hErr = Marshal.GetLastWin32Error();
+                Console.Error.WriteLine("SetHandleInformation (stdout) failed: " + hErr);
+                return 1;
             }
-            if (hOrigErr != IntPtr.Zero && hOrigErr != new IntPtr(-1)) {
-                SetHandleInformation(hOrigErr, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+            if (!SetHandleInformation(hOrigErr, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT)) {
+                int hErr = Marshal.GetLastWin32Error();
+                Console.Error.WriteLine("SetHandleInformation (stderr) failed: " + hErr);
+                return 1;
             }
 
             // 2. Detach from current console (if any) and allocate a new dedicated console
             FreeConsole();
-            AllocConsole();
+            if (!AllocConsole()) {
+                int allocErr = Marshal.GetLastWin32Error();
+                Console.Error.WriteLine("AllocConsole failed: " + allocErr);
+                return 1;
+            }
 
             // 3. Immediately hide the newly allocated console window
             IntPtr hWnd = GetConsoleWindow();
@@ -187,36 +211,75 @@ public class ConsoleSender {
             si.hStdError = hOrigErr;
 
             PROCESS_INFORMATION pi = new PROCESS_INFORMATION();
-
-            // Note: CREATE_NEW_PROCESS_GROUP is specified WITHOUT CREATE_NEW_CONSOLE.
-            // Because AllocConsole() was called above, the child process inherits this dedicated
-            // hidden console, and Windows does NOT ignore CREATE_NEW_PROCESS_GROUP.
-            // As a result, the child process becomes the root of a genuine process group
-            // (dwProcessGroupId == dwProcessId) within this console session.
             uint flags = CREATE_NEW_PROCESS_GROUP;
 
-            bool created = CreateProcess(null, cmdLine.ToString(), IntPtr.Zero, IntPtr.Zero, true, flags, IntPtr.Zero, null, ref si, out pi);
-            if (!created) {
-                int err = Marshal.GetLastWin32Error();
-                Console.Error.WriteLine("Failed to launch process: " + err);
-                return 1;
+            bool created = false;
+            bool normalExit = false;
+            bool handlerInstalled = false;
+            int finalExitCode = 1;
+
+            try {
+                created = CreateProcess(null, cmdLine.ToString(), IntPtr.Zero, IntPtr.Zero, true, flags, IntPtr.Zero, null, ref si, out pi);
+                if (!created) {
+                    int err = Marshal.GetLastWin32Error();
+                    Console.Error.WriteLine("Failed to launch process: " + err);
+                    return 1;
+                }
+
+                // Emit process PID and PGID markers for Node.js parent tracking
+                Console.WriteLine("APPLAN2_PID:" + pi.dwProcessId);
+                Console.WriteLine("APPLAN2_PGID:" + pi.dwProcessId);
+
+                // Install CtrlHandler in the launcher so signals directed to this console do not terminate the launcher prematurely
+                if (!SetConsoleCtrlHandler(handler, true)) {
+                    int hErr = Marshal.GetLastWin32Error();
+                    Console.Error.WriteLine("SetConsoleCtrlHandler failed: " + hErr);
+                    return 1;
+                }
+                handlerInstalled = true;
+
+                uint waitResult = WaitForSingleObject(pi.hProcess, INFINITE);
+                if (waitResult == 0xFFFFFFFF) {
+                    int waitErr = Marshal.GetLastWin32Error();
+                    Console.Error.WriteLine("WaitForSingleObject failed: " + waitErr);
+                    return 1;
+                }
+
+                uint exitCode = 0;
+                if (!GetExitCodeProcess(pi.hProcess, out exitCode)) {
+                    int exitErr = Marshal.GetLastWin32Error();
+                    Console.Error.WriteLine("GetExitCodeProcess failed: " + exitErr);
+                    return 1;
+                }
+
+                normalExit = true;
+                finalExitCode = (int)exitCode;
+                return finalExitCode;
+            } finally {
+                if (created && !normalExit && pi.hProcess != IntPtr.Zero) {
+                    try {
+                        TerminateProcess(pi.hProcess, 1);
+                        WaitForSingleObject(pi.hProcess, 5000);
+                    } catch {}
+                }
+
+                if (handlerInstalled) {
+                    try {
+                        SetConsoleCtrlHandler(handler, false);
+                    } catch {}
+                }
+
+                if (pi.hProcess != IntPtr.Zero) {
+                    CloseHandle(pi.hProcess);
+                    pi.hProcess = IntPtr.Zero;
+                }
+                if (pi.hThread != IntPtr.Zero) {
+                    CloseHandle(pi.hThread);
+                    pi.hThread = IntPtr.Zero;
+                }
+
+                FreeConsole();
             }
-
-            // Emit process PID and PGID markers for Node.js parent tracking
-            Console.WriteLine("APPLAN2_PID:" + pi.dwProcessId);
-            Console.WriteLine("APPLAN2_PGID:" + pi.dwProcessId);
-
-            // Install CtrlHandler in the launcher so signals directed to this console do not terminate the launcher prematurely
-            SetConsoleCtrlHandler(handler, true);
-
-            WaitForSingleObject(pi.hProcess, INFINITE);
-
-            uint exitCode = 0;
-            GetExitCodeProcess(pi.hProcess, out exitCode);
-            CloseHandle(pi.hProcess);
-            CloseHandle(pi.hThread);
-
-            return (int)exitCode;
         }
 
         // Mode 2: Send CTRL_BREAK_EVENT to target process group
@@ -226,27 +289,44 @@ public class ConsoleSender {
             return 1;
         }
 
-        // Install handler BEFORE attaching to prevent self-interruption
-        SetConsoleCtrlHandler(handler, true);
+        bool handlerInstalledMode2 = false;
+        try {
+            // Install handler BEFORE attaching to prevent self-interruption
+            if (!SetConsoleCtrlHandler(handler, true)) {
+                int hErr = Marshal.GetLastWin32Error();
+                Console.Error.WriteLine("SetConsoleCtrlHandler failed: " + hErr);
+                return 1;
+            }
+            handlerInstalledMode2 = true;
 
-        FreeConsole();
-        if (!AttachConsole(pid)) {
-            int err = Marshal.GetLastWin32Error();
-            Console.WriteLine("AttachConsole failed: " + err);
-            return 2;
-        }
+            FreeConsole();
+            if (!AttachConsole(pid)) {
+                int err = Marshal.GetLastWin32Error();
+                Console.WriteLine("AttachConsole failed: " + err);
+                return 2;
+            }
 
-        // Generate Ctrl+Break for target process group only (never broadcast to group 0)
-        bool success = GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, pid);
+            bool success = false;
+            try {
+                // Generate Ctrl+Break for target process group only (never broadcast to group 0)
+                success = GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, pid);
+            } finally {
+                FreeConsole();
+            }
 
-        FreeConsole();
-
-        if (success) {
-            Console.WriteLine("CTRL_BREAK_SENT");
-            return 0;
-        } else {
-            Console.WriteLine("GenerateConsoleCtrlEvent failed: " + Marshal.GetLastWin32Error());
-            return 3;
+            if (success) {
+                Console.WriteLine("CTRL_BREAK_SENT");
+                return 0;
+            } else {
+                Console.WriteLine("GenerateConsoleCtrlEvent failed: " + Marshal.GetLastWin32Error());
+                return 3;
+            }
+        } finally {
+            if (handlerInstalledMode2) {
+                try {
+                    SetConsoleCtrlHandler(handler, false);
+                } catch {}
+            }
         }
     }
 }

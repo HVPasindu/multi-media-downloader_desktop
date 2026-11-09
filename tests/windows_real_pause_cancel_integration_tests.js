@@ -2,9 +2,15 @@ import assert from 'node:assert/strict'
 import http from 'node:http'
 import fs from 'node:fs'
 import path from 'node:path'
+import os from 'node:os'
 import crypto from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { createTestDatabase } from './helpers/testDatabase.js'
+import {
+  initializeDatabase,
+  closeDatabase,
+  getDatabase
+} from '../src/main/backend/config/database.js'
 import {
   enqueueDownloadJob,
   pauseDownloadJob,
@@ -16,10 +22,16 @@ import {
 } from '../src/main/backend/services/downloadQueueService.js'
 import {
   getActiveDownloadProcess,
+  setActiveDownloadProcessForTesting,
+  pauseRunningDownload,
   verifyFinalMediaContent
 } from '../src/main/backend/services/downloadService.js'
 import { retryDownloadJob } from '../src/main/backend/services/downloadRetryService.js'
-import { recoverInterruptedDownloadJobs } from '../src/main/backend/services/downloadRecoveryService.js'
+import {
+  resumeInterruptedNetworkJobs,
+  setRecoveryHooksForTesting
+} from '../src/main/backend/services/networkRecoveryService.js'
+import { resolveCtrlBreakHelperPath } from '../src/main/backend/services/processInterruptionService.js'
 import {
   setAllowLocalhostForTesting,
   resetAllowLocalhostForTesting
@@ -94,9 +106,42 @@ async function runWindowsRealIntegrationTests() {
 
   let lastRangeHeader = null
   let rangeHeadersReceived = []
+  let currentDashDir = null
 
   // 2. Throttled Range HTTP Server
   const server = http.createServer((req, res) => {
+    if (req.url && req.url.startsWith('/dash/')) {
+      if (!currentDashDir) {
+        res.writeHead(404, { 'Content-Type': 'text/plain' })
+        res.end('DASH directory not active')
+        return
+      }
+      const rawRelPath = req.url.replace(/^\/dash\/?/, '')
+      const cleanRelPath = path
+        .normalize(decodeURIComponent(rawRelPath))
+        .replace(/^(\.\.[/\\])+/, '')
+      const filePath = path.join(currentDashDir, cleanRelPath)
+
+      if (!filePath.startsWith(currentDashDir) || !fs.existsSync(filePath)) {
+        res.writeHead(404, { 'Content-Type': 'text/plain' })
+        res.end('File Not Found')
+        return
+      }
+
+      const fileStats = fs.statSync(filePath)
+      const isMpd = filePath.endsWith('.mpd')
+      const contentType = isMpd ? 'application/dash+xml' : 'video/iso.segment'
+
+      res.writeHead(200, {
+        'Content-Length': fileStats.size,
+        'Content-Type': contentType,
+        'Access-Control-Allow-Origin': '*'
+      })
+      const stream = fs.createReadStream(filePath)
+      stream.pipe(res)
+      return
+    }
+
     const range = req.headers.range
     if (range) {
       lastRangeHeader = range
@@ -152,19 +197,51 @@ async function runWindowsRealIntegrationTests() {
   console.log(`[test-server] Throttled Range HTTP server listening on port ${port}`)
 
   // Register analyzer mock for local HTTP fixture URL
-  setAnalyzerForTesting(async () => ({
-    platform: 'youtube',
-    title: 'Real Windows Test Video',
-    duration: 6,
-    availableFormats: {
-      mp4Formats: [{ formatId: 'b', quality: '720p', audioIncluded: true, fileSize: FILE_SIZE }],
-      audioFormats: [],
-      mp4Qualities: ['720p']
+  const mockAnalyzer = async (url) => {
+    if (typeof url === 'string' && url.includes('/dash/')) {
+      return {
+        platform: 'youtube',
+        title: 'Real Windows DASH Test Video',
+        duration: 8,
+        availableFormats: {
+          mp4Formats: [
+            {
+              formatId: '0',
+              quality: '360p',
+              audioIncluded: false,
+              extension: 'mp4',
+              videoCodec: 'avc1.42c01e',
+              fileSize: 2000000
+            }
+          ],
+          audioFormats: [
+            {
+              formatId: '1',
+              quality: 'audio',
+              extension: 'm4a',
+              audioCodec: 'mp4a.40.2',
+              fileSize: 70000
+            }
+          ],
+          mp4Qualities: ['360p']
+        }
+      }
     }
-  }))
+    return {
+      platform: 'youtube',
+      title: 'Real Windows Test Video',
+      duration: 6,
+      availableFormats: {
+        mp4Formats: [{ formatId: 'b', quality: '720p', audioIncluded: true, fileSize: FILE_SIZE }],
+        audioFormats: [],
+        mp4Qualities: ['720p']
+      }
+    }
+  }
+  setAnalyzerForTesting(mockAnalyzer)
 
   try {
-    const { DownloadJob, MediaItem, AppSetting } = testDb.sequelize.models
+    let { DownloadJob, MediaItem, AppSetting } = testDb.sequelize.models
 
     await AppSetting.create({
       key: 'download_path',
@@ -389,25 +466,67 @@ async function runWindowsRealIntegrationTests() {
     const savedBytesC = jobCBeforeRestart.downloaded_bytes
     assert.ok(savedBytesC > 0, 'Test C.3: Checkpoint bytes recorded')
 
-    // Simulate application restart
-    console.log('[Test C] Simulating application shutdown and restart...')
+    // Verify .part file exists on disk before shutdown
+    const partialDirC = path.join(testDb.tempDir, '.applan2-partial-downloads', `job-${jobC.id}`)
+    let foundPartFileC = null
+    if (fs.existsSync(partialDirC)) {
+      const partFiles = fs.readdirSync(partialDirC).filter((f) => f.endsWith('.part'))
+      if (partFiles.length > 0) {
+        foundPartFileC = path.join(partialDirC, partFiles[0])
+      }
+    }
+    assert.ok(
+      foundPartFileC && fs.existsSync(foundPartFileC),
+      'Test C.3b: .part file exists on disk before shutdown'
+    )
+
+    // Simulate real application restart: stop queue, close database connection, and spawn child process
+    console.log(
+      '[Test C] Closing parent database and spawning real restart recovery child process...'
+    )
     stopQueueForShutdown()
+    await closeDatabase()
+
+    const restartChildHelper = path.resolve('./tests/helpers/restart_recovery_child.mjs')
+    const childOutput = execFileSync(
+      process.execPath,
+      ['--loader', './tests/loaders/electron_loader.mjs', restartChildHelper, testDb.databasePath],
+      { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }
+    )
+
+    const resultLine = childOutput
+      .split('\n')
+      .find((l) => l.trim().startsWith('APPLAN2_CHILD_RESTART_RESULT:'))
+    assert.ok(resultLine, 'Test C.4: Child process emitted APPLAN2_CHILD_RESTART_RESULT')
+    const childResult = JSON.parse(resultLine.trim().slice('APPLAN2_CHILD_RESTART_RESULT:'.length))
+
+    const childJobC = childResult.jobs.find((j) => j.id === jobC.id)
+    assert.ok(childJobC, 'Test C.5: Job C found in child database state')
+    assert.equal(
+      childJobC.status,
+      'paused',
+      'Test C.6: Job remains paused across real child restart'
+    )
+    assert.equal(
+      childJobC.downloaded_bytes,
+      savedBytesC,
+      'Test C.7: Checkpoint bytes preserved in child'
+    )
+    assert.equal(
+      childResult.queueStatus.activeCount,
+      0,
+      'Test C.8: Child queue active count is strictly 0'
+    )
+
+    // Reconnect parent database connection
+    console.log('[Test C] Child process verified. Reopening parent database...')
+    await initializeDatabase({ storage: testDb.databasePath })
     resetQueueForTesting()
 
-    // Run recovery mechanism
-    await recoverInterruptedDownloadJobs({
-      autoEnqueue: false,
-      isOnline: true
-    })
-
-    const jobCAfterRestart = await DownloadJob.findByPk(jobC.id)
-    assert.equal(jobCAfterRestart.status, 'paused', 'Test C.4: Job remains paused across restart')
-    assert.equal(
-      jobCAfterRestart.downloaded_bytes,
-      savedBytesC,
-      'Test C.5: Checkpoint bytes preserved'
-    )
-    assert.equal(getQueueStatus().activeCount, 0, 'Test C.6: No automatic resume occurred')
+    // Re-bind models to the reopened database
+    DownloadJob = getDatabase().models.DownloadJob
+    MediaItem = getDatabase().models.MediaItem
+    AppSetting = getDatabase().models.AppSetting
 
     // Manually resume to verify continuity
     console.log(`[Test C] Manually resuming Job ${jobC.id}...`)
@@ -416,76 +535,224 @@ async function runWindowsRealIntegrationTests() {
       enqueue: (id) => enqueueDownloadJob(id)
     })
 
+    let jobCCompleted = null
     for (let i = 0; i < 60; i++) {
       await new Promise((r) => setTimeout(r, 200))
       const cur = await DownloadJob.findByPk(jobC.id)
       if (cur.status === 'completed' || cur.status === 'failed') {
-        assert.equal(cur.status, 'completed', 'Test C.7: Job C completed after manual resume')
+        jobCCompleted = cur
         break
       }
     }
 
+    assert.ok(jobCCompleted, 'Test C.9: Job C finished execution')
+    assert.equal(
+      jobCCompleted.status,
+      'completed',
+      'Test C.10: Job C completed after manual resume'
+    )
+    assert.equal(jobCCompleted.progress, 100, 'Test C.11: Job C final progress is 100%')
+
+    const rootFilesC = fs.readdirSync(testDb.tempDir)
+    const finalMp4C = rootFilesC.find((f) => f.includes(`[job-${jobC.id}]`) && f.endsWith('.mp4'))
+    assert.ok(finalMp4C, 'Test C.12: Final MP4 file exists for Job C')
+    const finalFilePathC = path.join(testDb.tempDir, finalMp4C)
+    const contentValidC = await verifyFinalMediaContent(finalFilePathC, 'mp4')
+    assert.equal(contentValidC, true, 'Test C.13: Final MP4 passes FFprobe verification')
+    const finalBufC = fs.readFileSync(finalFilePathC)
+    const finalHashC = crypto.createHash('sha256').update(finalBufC).digest('hex')
+    assert.equal(
+      finalHashC,
+      expectedHash,
+      'Test C.14: Bit-for-bit SHA-256 match after real restart recovery'
+    )
+
     console.log(
-      '✓ Test C Passed: Paused jobs remain paused across restart without auto-resuming, and resume manually.\n'
+      '✓ Test C Passed: Paused jobs remain paused across real child restart without auto-resuming, and resume manually to 100% with bit-for-bit SHA-256 verification.\n'
     )
 
     // ==========================================================================
-    // TEST D — PAUSE DURING FINALIZATION
+    // TEST D — PAUSE DURING FINALIZATION (REAL SEPARATE-STREAM MERGE)
     // ==========================================================================
     console.log('--- TEST D: Pause During Finalization ---')
 
-    const jobD = await DownloadJob.create({
-      media_id: media.id,
-      source_type: 'link',
-      output_format: 'mp4',
-      quality: '720p',
-      status: 'queued',
-      progress: 0,
-      downloaded_bytes: 0
-    })
+    let dashTempDir = null
+    try {
+      dashTempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'applan2-dash-fixture-'))
+      currentDashDir = dashTempDir
 
-    console.log(`[Test D] Starting Job ${jobD.id}...`)
-    enqueueDownloadJob(jobD.id)
+      const ffmpegExe = path.resolve(await resolveFFmpegPath())
+      execFileSync(
+        ffmpegExe,
+        [
+          '-y',
+          '-f',
+          'lavfi',
+          '-i',
+          'testsrc2=size=640x360:rate=30:duration=8',
+          '-f',
+          'lavfi',
+          '-i',
+          'sine=frequency=1000:sample_rate=48000:duration=8',
+          '-map',
+          '0:v',
+          '-map',
+          '1:a',
+          '-c:v',
+          'libx264',
+          '-preset',
+          'ultrafast',
+          '-c:a',
+          'aac',
+          '-f',
+          'dash',
+          '-seg_duration',
+          '2',
+          '-init_seg_name',
+          'init-stream$RepresentationID$.m4s',
+          '-media_seg_name',
+          'chunk-stream$RepresentationID$-$Number%05d$.m4s',
+          'manifest.mpd'
+        ],
+        {
+          cwd: dashTempDir,
+          stdio: 'pipe'
+        }
+      )
 
-    // Wait until process starts
-    let procEntryD = null
-    for (let i = 0; i < 30; i++) {
-      await new Promise((r) => setTimeout(r, 100))
-      procEntryD = getActiveDownloadProcess(jobD.id)
-      if (procEntryD && !procEntryD.closed) break
-    }
+      const dashUrl = `http://127.0.0.1:${port}/dash/manifest.mpd`
+      const dashMedia = await MediaItem.create({
+        source_url: dashUrl,
+        title: 'Real Windows DASH Test Video'
+      })
 
-    assert.ok(procEntryD, 'Test D.1: Active download process found')
+      const jobD = await DownloadJob.create({
+        media_id: dashMedia.id,
+        source_type: 'link',
+        output_format: 'mp4',
+        quality: '360p',
+        status: 'queued',
+        progress: 0,
+        downloaded_bytes: 0
+      })
 
-    // Transition phase to 'finalizing' (simulating FFmpeg merge / post-processing window)
-    procEntryD.phase = 'finalizing'
-    console.log('[Test D] Set phase to "finalizing", requesting pause...')
+      console.log(`[Test D] Starting Job ${jobD.id} (DASH separate-stream)...`)
+      enqueueDownloadJob(jobD.id)
 
-    const pauseResultD = await pauseDownloadJob(jobD.id)
-    assert.equal(
-      pauseResultD.outcome,
-      'already_finishing',
-      'Test D.2: pauseDownloadJob returns already_finishing'
-    )
-    assert.equal(pauseResultD.status, 'downloading', 'Test D.3: Job status remains downloading')
+      // Wait until process starts
+      let procEntryD = null
+      for (let i = 0; i < 40; i++) {
+        await new Promise((r) => setTimeout(r, 100))
+        procEntryD = getActiveDownloadProcess(jobD.id)
+        if (procEntryD && !procEntryD.closed) break
+      }
 
-    // Wait for job completion
-    for (let i = 0; i < 60; i++) {
-      await new Promise((r) => setTimeout(r, 200))
-      const cur = await DownloadJob.findByPk(jobD.id)
-      if (cur.status === 'completed' || cur.status === 'failed') {
-        assert.equal(
-          cur.status,
-          'completed',
-          'Test D.4: Job completed successfully without being marked as failed or paused'
-        )
-        break
+      assert.ok(procEntryD, 'Test D.1: Active download process found')
+
+      // Observe real transition to 'finalizing' phase as yt-dlp finishes downloading both streams
+      // and enters post-processing / FFmpeg merger (ZERO manual phase override!)
+      let pauseResultD = null
+      let attemptedPause = false
+
+      let livePhase = procEntryD.phase
+      Object.defineProperty(procEntryD, 'phase', {
+        get() {
+          return livePhase
+        },
+        set(val) {
+          livePhase = val
+          if (val === 'finalizing' && !attemptedPause) {
+            attemptedPause = true
+            console.log(
+              `[Test D] yt-dlp naturally entered phase: "finalizing". Issuing pauseDownloadJob(${jobD.id})...`
+            )
+            pauseDownloadJob(jobD.id).then((res) => {
+              pauseResultD = res
+            })
+          }
+        },
+        configurable: true
+      })
+
+      // Also poll in case phase was already finalizing before property definition
+      for (let i = 0; i < 80; i++) {
+        await new Promise((r) => setTimeout(r, 150))
+        if (procEntryD.phase === 'finalizing' && !attemptedPause) {
+          attemptedPause = true
+          console.log(
+            `[Test D] Poller detected phase: "finalizing". Issuing pauseDownloadJob(${jobD.id})...`
+          )
+          pauseResultD = await pauseDownloadJob(jobD.id)
+          break
+        }
+        if (pauseResultD) break
+        const cur = await DownloadJob.findByPk(jobD.id)
+        if (cur.status === 'completed' || cur.status === 'failed') break
+      }
+
+      if (attemptedPause && !pauseResultD) {
+        for (let i = 0; i < 30; i++) {
+          await new Promise((r) => setTimeout(r, 100))
+          if (pauseResultD) break
+        }
+      }
+
+      assert.ok(pauseResultD, 'Test D.2: pauseDownloadJob was executed during finalization phase')
+      assert.equal(
+        pauseResultD.outcome,
+        'already_finishing',
+        'Test D.3: pauseDownloadJob returns already_finishing'
+      )
+      assert.equal(pauseResultD.status, 'downloading', 'Test D.4: Job status remains downloading')
+      assert.equal(procEntryD.closed, false, 'Test D.5: yt-dlp process was NOT killed')
+
+      // Wait for job completion
+      let jobDCompleted = null
+      for (let i = 0; i < 80; i++) {
+        await new Promise((r) => setTimeout(r, 200))
+        const cur = await DownloadJob.findByPk(jobD.id)
+        if (cur.status === 'completed' || cur.status === 'failed') {
+          jobDCompleted = cur
+          break
+        }
+      }
+
+      assert.ok(jobDCompleted, 'Test D.6: Job D completed execution')
+      assert.equal(
+        jobDCompleted.status,
+        'completed',
+        'Test D.7: Job completed successfully without being marked as failed or paused'
+      )
+      assert.equal(jobDCompleted.progress, 100, 'Test D.8: Final progress is 100%')
+
+      const rootFilesD = fs.readdirSync(testDb.tempDir)
+      const finalMp4D = rootFilesD.find((f) => f.includes(`[job-${jobD.id}]`) && f.endsWith('.mp4'))
+      assert.ok(finalMp4D, 'Test D.9: Final MP4 file exists for Job D')
+      const finalFilePathD = path.join(testDb.tempDir, finalMp4D)
+      const contentValidD = await verifyFinalMediaContent(finalFilePathD, 'mp4')
+      assert.equal(contentValidD, true, 'Test D.10: Final MP4 passes FFprobe verification')
+
+      // Verify that the final MP4 has BOTH video and audio streams
+      const ffprobeExe = path.resolve(await resolveFFprobePath())
+      const probeOutput = execFileSync(
+        ffprobeExe,
+        ['-v', 'error', '-show_entries', 'stream=codec_type', '-of', 'json', finalFilePathD],
+        { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }
+      )
+      const probeData = JSON.parse(probeOutput)
+      const streamTypes = (probeData.streams || []).map((s) => s.codec_type)
+      assert.ok(streamTypes.includes('video'), 'Test D.11: Merged MP4 contains video stream')
+      assert.ok(streamTypes.includes('audio'), 'Test D.12: Merged MP4 contains audio stream')
+
+      console.log(
+        '✓ Test D Passed: Pause during natural finalization returns already_finishing and allows safe completion with verified video+audio merge.\n'
+      )
+    } finally {
+      currentDashDir = null
+      if (dashTempDir && fs.existsSync(dashTempDir)) {
+        await fs.promises.rm(dashTempDir, { recursive: true, force: true }).catch(() => {})
       }
     }
-
-    console.log(
-      '✓ Test D Passed: Pause during finalization returns already_finishing and allows safe completion.\n'
-    )
 
     // ==========================================================================
     // TEST E — REAL CANCEL
@@ -574,6 +841,12 @@ async function runWindowsRealIntegrationTests() {
       }
     }
 
+    // Wait for queue slot to be fully released by executor finally block
+    for (let i = 0; i < 30; i++) {
+      if (getQueueStatus().activeCount === 0) break
+      await new Promise((r) => setTimeout(r, 100))
+    }
+
     console.log(
       '✓ Test F Passed: Retry restarts clean from 0% under the same Job ID and completes successfully.\n'
     )
@@ -649,6 +922,12 @@ async function runWindowsRealIntegrationTests() {
     await cancelDownloadJob(jobG2.id).catch(() => {})
     await cancelDownloadJob(jobG3.id).catch(() => {})
 
+    // Wait for cancelled jobs to fully release queue slots
+    for (let i = 0; i < 30; i++) {
+      if (getQueueStatus().activeCount === 0) break
+      await new Promise((r) => setTimeout(r, 100))
+    }
+
     console.log(
       '✓ Test G Passed: Concurrency strictly capped at 2, FIFO order maintained, slots released on pause.\n'
     )
@@ -700,37 +979,456 @@ async function runWindowsRealIntegrationTests() {
       assert.ok(result.title, 'Test H.7: Media title extracted')
       const dur = result.durationSeconds ?? result.duration
       assert.ok(typeof dur === 'number' && dur > 0, 'Test H.8: Media duration extracted')
+      assert.ok(
+        result.availableFormats &&
+          (Array.isArray(result.availableFormats.mp4Formats) ||
+            Array.isArray(result.availableFormats.audioFormats)),
+        'Test H.8b: Available formats metadata extracted'
+      )
+      if (result.availableFormats?.mp4Formats?.length > 0) {
+        assert.ok(result.availableFormats.mp4Formats[0].formatId, 'Test H.8c: Format ID extracted')
+      }
       console.log(
-        `[Test H] YouTube extraction succeeded! Title: "${result.title}", Duration: ${dur}s`
+        `[Test H] Positive YouTube extraction succeeded! Title: "${result.title}", Duration: ${dur}s, Formats: MP4 (${result.availableFormats?.mp4Formats?.length || 0}) / Audio (${result.availableFormats?.audioFormats?.length || 0})`
       )
     } else if (ytDiagnostic) {
       const errCode = ytDiagnostic?.code || ytDiagnostic?.name || 'UNKNOWN'
       const userMsg = ytDiagnostic?.userMessage || ytDiagnostic?.message || ''
       console.log(`[Test H] YouTube extraction returned classified error: [${errCode}] ${userMsg}`)
 
-      // Verify accurate error classification for bot verification / login requirement
-      const isKnownYouTubeChallenge =
+      const isKnownExternalBlock =
         errCode === 'YOUTUBE_AUTH_REQUIRED' ||
         errCode === 'BOT_VERIFICATION_REQUIRED' ||
         errCode === 'HTTP_FORBIDDEN' ||
         errCode === 'RATE_LIMITED' ||
-        errCode === 'JS_CHALLENGE_FAILED' ||
-        errCode === 'MEDIA_ANALYSIS_FAILED'
+        errCode === 'JS_CHALLENGE_FAILED'
 
-      assert.ok(
-        isKnownYouTubeChallenge,
-        `Test H.7b: Error is cleanly classified into structured security/auth code: ${errCode}`
+      if (isKnownExternalBlock) {
+        console.warn(
+          `[Test H] BLOCKED — External YouTube verification unavailable: [${errCode}] ${userMsg}`
+        )
+        setAnalyzerForTesting(mockAnalyzer)
+        process.exitCode = 2
+        return
+      }
+
+      throw new Error(
+        `Test H Failed: YouTube extraction failed with unhandled error: [${errCode}] ${userMsg}`
       )
-      console.log(`[Test H] Handled environment condition gracefully: classified as ${errCode}.`)
     }
+
+    // Restore mock analyzer for subsequent local tests
+    setAnalyzerForTesting(mockAnalyzer)
 
     console.log(
       '✓ Test H Passed: yt-dlp, FFmpeg, Node runtime verified; YouTube analysis accurately handled.\n'
     )
 
+    // ==========================================================================
+    // TEST I — PAUSE DURING FINALIZING PHASE PROTECTION
+    // ==========================================================================
+    console.log('--- TEST I: Finalizing Phase Pause Protection ---')
+
+    const jobI = await DownloadJob.create({
+      media_id: media.id,
+      source_type: 'link',
+      output_format: 'mp4',
+      quality: '720p',
+      status: 'downloading',
+      progress: 98,
+      downloaded_bytes: FILE_SIZE
+    })
+
+    const mockProcessI = {
+      jobId: jobI.id,
+      managedByJobExecutor: true,
+      childProcess: { pid: process.pid },
+      actualPid: process.pid,
+      pgid: process.pid,
+      cancelRequested: false,
+      pauseRequested: false,
+      phase: 'finalizing',
+      closed: false
+    }
+    setActiveDownloadProcessForTesting(jobI.id, mockProcessI)
+
+    const pauseResultI = await pauseDownloadJob(jobI.id)
+    assert.equal(
+      pauseResultI.outcome,
+      'already_finishing',
+      'Test I.1: Outcome is already_finishing'
+    )
+    assert.equal(pauseResultI.status, 'downloading', 'Test I.2: Status remains downloading')
+    assert.ok(
+      pauseResultI.message.includes('finishing'),
+      'Test I.3: User-friendly finalizing message returned'
+    )
+
+    setActiveDownloadProcessForTesting(jobI.id, null)
+    console.log(
+      '✓ Test I Passed: Pause in finalizing phase rejected cleanly with already_finishing.\n'
+    )
+
+    // ==========================================================================
+    // TEST J — WINDOWS CONSOLE HELPER BINARY VALIDATION
+    // ==========================================================================
+    console.log('--- TEST J: Windows Console Helper PE Binary Validation ---')
+
+    const helperPath = resolveCtrlBreakHelperPath()
+    assert.ok(helperPath, 'Test J.1: Helper binary path resolved')
+    assert.ok(fs.existsSync(helperPath), 'Test J.2: Helper binary exists on disk')
+
+    const helperBuf = fs.readFileSync(helperPath)
+    assert.ok(helperBuf.length > 2048, 'Test J.3: Binary size is realistic (>2KB)')
+    assert.equal(helperBuf[0], 0x4d, 'Test J.4: MZ signature byte 0')
+    assert.equal(helperBuf[1], 0x5a, 'Test J.5: MZ signature byte 1')
+
+    const peOffset = helperBuf.readInt32LE(0x3c)
+    assert.equal(
+      helperBuf.toString('utf8', peOffset, peOffset + 4),
+      'PE\0\0',
+      'Test J.6: PE signature verified'
+    )
+    const machine = helperBuf.readUInt16LE(peOffset + 4)
+    assert.equal(machine, 0x8664, 'Test J.7: Machine type is AMD64 / x64')
+
+    // Test execution with invalid PID argument (should exit code 1 cleanly)
+    let helperExitCode = null
+    try {
+      execFileSync(helperPath, ['not_a_pid'], { stdio: 'pipe' })
+      helperExitCode = 0
+    } catch (err) {
+      helperExitCode = err.status
+    }
+    assert.equal(helperExitCode, 1, 'Test J.8: Helper exits 1 on invalid argument without crash')
+    console.log(
+      '✓ Test J Passed: send-ctrl-break.exe verified as genuine x64 PE binary with safe error exits.\n'
+    )
+
+    // ==========================================================================
+    // TEST K — NETWORK RECOVERY AND MANUAL PAUSE/CANCEL RACE PROTECTION
+    // ==========================================================================
+    console.log('--- TEST K: Network Recovery & Manual Pause/Cancel Race Protection ---')
+
+    // Scenario A: Network Recovery vs Concurrent Manual Pause
+    console.log('[Test K] Scenario A: Network Recovery vs Concurrent Manual Pause...')
+    resetQueueForTesting()
+
+    const jobKA = await DownloadJob.create({
+      media_id: media.id,
+      source_type: 'link',
+      output_format: 'mp4',
+      quality: '720p',
+      status: 'interrupted',
+      progress: 40,
+      downloaded_bytes: Math.floor(FILE_SIZE * 0.4),
+      error_message: 'Network connection lost'
+    })
+
+    const partialDirKA = path.join(testDb.tempDir, '.applan2-partial-downloads', `job-${jobKA.id}`)
+    fs.mkdirSync(partialDirKA, { recursive: true })
+    const partPathKA = path.join(partialDirKA, 'sample.mp4.part')
+    fs.writeFileSync(partPathKA, fixtureBuf.subarray(0, Math.floor(FILE_SIZE * 0.4)))
+
+    // Execute deterministic network recovery vs manual pause race
+    let recoveryEnteredKA = null
+    const recoveryEnteredPromiseKA = new Promise((r) => {
+      recoveryEnteredKA = r
+    })
+    let releaseRecoveryKA = null
+    const releaseRecoveryPromiseKA = new Promise((r) => {
+      releaseRecoveryKA = r
+    })
+
+    setRecoveryHooksForTesting({
+      afterRecoveryLock: async ({ jobId }) => {
+        if (jobId === jobKA.id) {
+          recoveryEnteredKA()
+          await releaseRecoveryPromiseKA
+        }
+      }
+    })
+
+    const recoveryPromiseKA = resumeInterruptedNetworkJobs({ isOnline: true })
+    await recoveryEnteredPromiseKA
+
+    const pausePromiseKA = pauseDownloadJob(jobKA.id)
+    await new Promise((r) => setImmediate(r))
+    releaseRecoveryKA()
+    const pauseResultKA = await pausePromiseKA
+    await recoveryPromiseKA
+    setRecoveryHooksForTesting(null)
+
+    // Wait for in-flight executor settlement
+    for (let i = 0; i < 20; i++) {
+      if (getQueueStatus().activeCount === 0) break
+      await new Promise((r) => setTimeout(r, 100))
+    }
+
+    const jobKAAfter = await DownloadJob.findByPk(jobKA.id)
+    assert.equal(
+      jobKAAfter.status,
+      'paused',
+      'Test K.1: Manual pause wins or is respected (status is paused)'
+    )
+    assert.ok(
+      ['paused', 'already_paused', 'already_finishing'].includes(pauseResultKA.outcome),
+      'Test K.2: Valid pause outcome received'
+    )
+    assert.ok(fs.existsSync(partPathKA), 'Test K.3: Partial file is preserved on disk')
+    assert.equal(
+      jobKAAfter.downloaded_bytes,
+      Math.floor(FILE_SIZE * 0.4),
+      'Test K.4: Downloaded bytes preserved'
+    )
+    assert.equal(
+      getQueueStatus().activeCount,
+      0,
+      'Test K.5: Job was not scheduled for active execution'
+    )
+
+    // Scenario B: Network Recovery vs Concurrent Manual Cancel
+    console.log('[Test K] Scenario B: Network Recovery vs Concurrent Manual Cancel...')
+    resetQueueForTesting()
+
+    const jobKB = await DownloadJob.create({
+      media_id: media.id,
+      source_type: 'link',
+      output_format: 'mp4',
+      quality: '720p',
+      status: 'interrupted',
+      progress: 40,
+      downloaded_bytes: Math.floor(FILE_SIZE * 0.4),
+      error_message: 'Network connection lost'
+    })
+
+    const partialDirKB = path.join(testDb.tempDir, '.applan2-partial-downloads', `job-${jobKB.id}`)
+    fs.mkdirSync(partialDirKB, { recursive: true })
+    const partPathKB = path.join(partialDirKB, 'sample.mp4.part')
+    fs.writeFileSync(partPathKB, fixtureBuf.subarray(0, Math.floor(FILE_SIZE * 0.4)))
+
+    // Execute deterministic network recovery vs manual cancel race
+    let recoveryEnteredKB = null
+    const recoveryEnteredPromiseKB = new Promise((r) => {
+      recoveryEnteredKB = r
+    })
+    let releaseRecoveryKB = null
+    const releaseRecoveryPromiseKB = new Promise((r) => {
+      releaseRecoveryKB = r
+    })
+
+    setRecoveryHooksForTesting({
+      afterRecoveryLock: async ({ jobId }) => {
+        if (jobId === jobKB.id) {
+          recoveryEnteredKB()
+          await releaseRecoveryPromiseKB
+        }
+      }
+    })
+
+    const recoveryPromiseKB = resumeInterruptedNetworkJobs({ isOnline: true })
+    await recoveryEnteredPromiseKB
+
+    const cancelPromiseKB = cancelDownloadJob(jobKB.id)
+    await new Promise((r) => setImmediate(r))
+    releaseRecoveryKB()
+    const cancelResultKB = await cancelPromiseKB
+    await recoveryPromiseKB
+    setRecoveryHooksForTesting(null)
+
+    // Wait for in-flight executor settlement
+    for (let i = 0; i < 20; i++) {
+      if (getQueueStatus().activeCount === 0) break
+      await new Promise((r) => setTimeout(r, 100))
+    }
+
+    const jobKBAfter = await DownloadJob.findByPk(jobKB.id)
+    assert.equal(jobKBAfter.status, 'cancelled', 'Test K.6: Cancelled status persists')
+    assert.equal(cancelResultKB.outcome, 'cancelled', 'Test K.7: Cancel outcome returned')
+    assert.equal(jobKBAfter.progress, 0, 'Test K.8: Progress reset to 0%')
+    assert.equal(jobKBAfter.downloaded_bytes, 0, 'Test K.9: Downloaded bytes reset to 0')
+    assert.equal(
+      fs.existsSync(partialDirKB),
+      false,
+      'Test K.10: Temporary partial folder cleanly cleaned up'
+    )
+    assert.equal(getQueueStatus().activeCount, 0, 'Test K.11: No active download running')
+
+    // Scenario C: Normal Network Recovery
+    console.log('[Test K] Scenario C: Normal Network Recovery...')
+    resetQueueForTesting()
+    setAnalyzerForTesting(mockAnalyzer)
+
+    const jobKC = await DownloadJob.create({
+      media_id: media.id,
+      source_type: 'link',
+      output_format: 'mp4',
+      quality: '720p',
+      status: 'interrupted',
+      progress: 40,
+      downloaded_bytes: Math.floor(FILE_SIZE * 0.4),
+      error_message: 'Network connection lost'
+    })
+
+    const partialDirKC = path.join(testDb.tempDir, '.applan2-partial-downloads', `job-${jobKC.id}`)
+    fs.mkdirSync(partialDirKC, { recursive: true })
+    const partPathKC = path.join(
+      partialDirKC,
+      `test_video [test_video] [720p] [job-${jobKC.id}].mp4.part`
+    )
+    fs.writeFileSync(partPathKC, fixtureBuf.subarray(0, Math.floor(FILE_SIZE * 0.4)))
+
+    const recoveryResultC = await resumeInterruptedNetworkJobs({ isOnline: true })
+    assert.ok(recoveryResultC.resumedCount >= 1, 'Test K.12: Interrupted job resumed by recovery')
+
+    let jobKCCompleted = null
+    for (let i = 0; i < 60; i++) {
+      await new Promise((r) => setTimeout(r, 200))
+      const cur = await DownloadJob.findByPk(jobKC.id)
+      if (cur.status === 'completed' || cur.status === 'failed') {
+        jobKCCompleted = cur
+        break
+      }
+    }
+
+    assert.ok(jobKCCompleted, 'Test K.13: Recovered job completed execution')
+    assert.equal(jobKCCompleted.status, 'completed', 'Test K.14: Job KC reached completed status')
+    assert.equal(jobKCCompleted.progress, 100, 'Test K.15: Final progress is 100%')
+
+    const rootFilesK = fs.readdirSync(testDb.tempDir)
+    const finalMp4K = rootFilesK.find((f) => f.includes(`[job-${jobKC.id}]`) && f.endsWith('.mp4'))
+    assert.ok(finalMp4K, 'Test K.16: Final MP4 file exists for Job KC')
+    const finalFilePathK = path.join(testDb.tempDir, finalMp4K)
+    const contentValidK = await verifyFinalMediaContent(finalFilePathK, 'mp4')
+    assert.equal(contentValidK, true, 'Test K.17: Final MP4 passes FFprobe verification')
+    const finalBufK = fs.readFileSync(finalFilePathK)
+    const finalHashK = crypto.createHash('sha256').update(finalBufK).digest('hex')
+    assert.equal(
+      finalHashK,
+      expectedHash,
+      'Test K.18: Final SHA-256 matches source MP4 (100% MATCH)'
+    )
+
+    // Duplicate pause in-flight deduplication test
+    let pauseResolve
+    const pausePromiseMock = new Promise((resolve) => {
+      pauseResolve = resolve
+    })
+    const mockProcessK = {
+      jobId: jobKA.id,
+      managedByJobExecutor: true,
+      childProcess: { pid: process.pid },
+      actualPid: process.pid,
+      pgid: process.pid,
+      cancelRequested: false,
+      pauseRequested: true,
+      pausePromise: pausePromiseMock,
+      phase: 'downloading',
+      closed: false
+    }
+    setActiveDownloadProcessForTesting(jobKA.id, mockProcessK)
+
+    // Call pauseRunningDownload concurrently while pausePromise is pending
+    const dupPausePromise = pauseRunningDownload(jobKA.id)
+    pauseResolve({ success: true, deduplicated: true })
+    const dupPauseResult = await dupPausePromise
+    assert.equal(
+      dupPauseResult.success,
+      true,
+      'Test K.19: Duplicate in-flight pause returns matching promise'
+    )
+    assert.equal(
+      dupPauseResult.deduplicated,
+      true,
+      'Test K.20: Deduplicated result received without re-invoking pause'
+    )
+
+    setActiveDownloadProcessForTesting(jobKA.id, null)
+    console.log(
+      '✓ Test K Passed: All 3 scenarios verified (Manual Pause wins, Cancel wins with cleanup, Normal Recovery completes to 100% with bit-for-bit SHA-256 match).\n'
+    )
+
+    // ==========================================================================
+    // TEST L — FULL LIFECYCLE: QUEUED -> DOWNLOADING -> PAUSE -> RESUME -> CANCEL -> RETRY
+    // ==========================================================================
+    console.log(
+      '--- TEST L: Full Lifecycle: Queued -> Downloading -> Pause -> Resume -> Cancel -> Retry ---'
+    )
+
+    resetQueueForTesting()
+    setAnalyzerForTesting(mockAnalyzer)
+
+    const mediaL = await MediaItem.create({
+      source_url: `${serverUrl}?lifecycle=L`,
+      title: 'Real Windows Test Video Lifecycle'
+    })
+
+    const jobL = await DownloadJob.create({
+      media_id: mediaL.id,
+      source_type: 'link',
+      output_format: 'mp4',
+      quality: '720p',
+      status: 'queued',
+      progress: 0,
+      downloaded_bytes: 0
+    })
+
+    console.log(`[Test L] 1. Enqueueing Job ${jobL.id}...`)
+    enqueueDownloadJob(jobL.id)
+
+    // Wait until downloading >= 15%
+    for (let i = 0; i < 40; i++) {
+      await new Promise((r) => setTimeout(r, 150))
+      const cur = await DownloadJob.findByPk(jobL.id)
+      if ((cur.progress || 0) >= 15) break
+    }
+
+    console.log(`[Test L] 2. Pausing Job ${jobL.id}...`)
+    const pauseL = await pauseDownloadJob(jobL.id)
+    assert.equal(pauseL.outcome, 'paused', 'Test L.1: Job paused')
+    const jobLPaused = await DownloadJob.findByPk(jobL.id)
+    assert.equal(jobLPaused.status, 'paused', 'Test L.2: SQLite status is paused')
+
+    console.log(`[Test L] 3. Resuming Job ${jobL.id}...`)
+    const resumeL = await resumeDownloadJob(jobL.id)
+    assert.equal(resumeL.outcome, 'resumed', 'Test L.3: Job resumed into queue')
+
+    // Wait briefly for download to resume
+    for (let i = 0; i < 20; i++) {
+      await new Promise((r) => setTimeout(r, 100))
+      const cur = await DownloadJob.findByPk(jobL.id)
+      if (cur.status === 'downloading') break
+    }
+
+    console.log(`[Test L] 4. Cancelling Job ${jobL.id}...`)
+    const cancelL = await cancelDownloadJob(jobL.id)
+    assert.equal(cancelL.outcome, 'cancelled', 'Test L.4: Job cancelled')
+    const jobLCancelled = await DownloadJob.findByPk(jobL.id)
+    assert.equal(jobLCancelled.status, 'cancelled', 'Test L.5: SQLite status is cancelled')
+    assert.equal(jobLCancelled.progress, 0, 'Test L.6: Progress reset to 0%')
+
+    console.log(`[Test L] 5. Retrying Job ${jobL.id}...`)
+    const retryL = await retryDownloadJob(jobL.id, {
+      enqueue: (id) => enqueueDownloadJob(id)
+    })
+    assert.equal(retryL.outcome, 'created', 'Test L.7: Retry enqueued')
+    assert.equal(retryL.originalJobId, jobL.id, 'Test L.8: Same Job ID preserved')
+
+    // Wait for retried job to finish
+    for (let i = 0; i < 60; i++) {
+      await new Promise((r) => setTimeout(r, 200))
+      const cur = await DownloadJob.findByPk(jobL.id)
+      if (cur.status === 'completed' || cur.status === 'failed') {
+        assert.equal(cur.status, 'completed', 'Test L.9: Lifecycle job completed to 100%')
+        break
+      }
+    }
+
+    console.log('✓ Test L Passed: Complete lifecycle executed flawlessly under production queue.\n')
+
     console.log('================================================================')
-    console.log(' ALL 8 REAL WINDOWS INTEGRATION TESTS PASSED (100% PASS)')
-    console.log(' Tests A-H: Genuine Production Paths, Win32 Ctrl-Break & Range   ')
+    console.log(' ALL 12 REAL WINDOWS INTEGRATION TESTS PASSED (100% PASS)')
+    console.log(' Tests A-L: Genuine Production Paths, Win32 Ctrl-Break & Range   ')
     console.log('================================================================\n')
   } finally {
     resetAnalyzerForTesting()

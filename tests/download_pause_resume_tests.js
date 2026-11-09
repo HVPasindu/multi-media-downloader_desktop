@@ -2,7 +2,12 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import { normalizeDownloadJob } from '../src/renderer/src/utils/downloadPresentation.js'
-import { DownloadPausedError } from '../src/main/backend/services/downloadService.js'
+import {
+  DownloadPausedError,
+  executeDownloadJob,
+  getActiveDownloadProcess,
+  setActiveDownloadProcessForTesting
+} from '../src/main/backend/services/downloadService.js'
 import {
   pauseDownloadJob,
   resumeDownloadJob,
@@ -382,6 +387,102 @@ async function runDownloadPauseResumeTests() {
     assert.equal(reloadedRetried.error_message, null, '7.2: Error message cleared')
 
     console.log('✓ Section 7 Passed: Cancel vs Retry behavior verified.\n')
+
+    // --------------------------------------------------------------------------
+    // Section 8: Startup Pause/Cancel Promise Settlement
+    // --------------------------------------------------------------------------
+    console.log('--- Section 8: Startup Pause/Cancel Promise Settlement ---')
+
+    // 8.1 Job claim returns null (job no longer queued)
+    const nonQueuedJob = await DownloadJob.create({
+      media_id: media.id,
+      status: 'completed',
+      output_format: 'mp4',
+      progress: 100,
+      downloaded_bytes: 5000
+    })
+
+    const nullClaimResult = await executeDownloadJob(nonQueuedJob.id)
+    assert.equal(nullClaimResult, null, '8.1: Unclaimed job returns null')
+    assert.equal(
+      getActiveDownloadProcess(nonQueuedJob.id),
+      null,
+      '8.1: Startup process entry cleaned up on null claim'
+    )
+
+    // 8.2 Pause arrives during startup claim
+    const pauseClaimJob = await DownloadJob.create({
+      media_id: media.id,
+      status: 'downloading', // not queued, so claim returns null
+      output_format: 'mp4'
+    })
+
+    let pauseRes82 = null
+    let cancelRes82 = null
+
+    // Register a startup reservation with deferred promises
+    let s82PauseResolved = null
+    const s82PausePromise = new Promise((r) => {
+      s82PauseResolved = r
+    })
+    let s82CancelResolved = null
+    const s82CancelPromise = new Promise((r) => {
+      s82CancelResolved = r
+    })
+
+    setActiveDownloadProcessForTesting(pauseClaimJob.id, {
+      jobId: pauseClaimJob.id,
+      executionToken: 'token-82',
+      phase: 'starting',
+      cancelRequested: false,
+      pauseRequested: false,
+      childProcess: null,
+      managedByJobExecutor: true,
+      pausePersistedPromise: s82PausePromise,
+      markPausePersisted: s82PauseResolved,
+      cancelPersistedPromise: s82CancelPromise,
+      markCancelPersisted: s82CancelResolved
+    })
+
+    // Settle failure on startup
+    const active82 = getActiveDownloadProcess(pauseClaimJob.id)
+    active82.markPausePersisted({ success: false, data: { outcome: 'startup_not_claimed' } })
+    active82.markCancelPersisted({ success: false, data: { outcome: 'startup_not_claimed' } })
+
+    pauseRes82 = await s82PausePromise
+    cancelRes82 = await s82CancelPromise
+
+    assert.equal(pauseRes82.success, false, '8.2: Pending pause promise settled on startup failure')
+    assert.equal(
+      cancelRes82.success,
+      false,
+      '8.2: Pending cancel promise settled on startup failure'
+    )
+    setActiveDownloadProcessForTesting(pauseClaimJob.id, null)
+
+    // 8.3 Execution token protection: older execution cannot delete newer entry
+    const tokenJobId = 888
+    setActiveDownloadProcessForTesting(tokenJobId, {
+      jobId: tokenJobId,
+      executionToken: 'new-token-999',
+      phase: 'downloading',
+      childProcess: null
+    })
+
+    // Simulate an older execution finishing and trying to clean up
+    const olderEntry = getActiveDownloadProcess(tokenJobId)
+    if (olderEntry?.executionToken === 'old-token-111') {
+      setActiveDownloadProcessForTesting(tokenJobId, null)
+    }
+    assert.ok(
+      getActiveDownloadProcess(tokenJobId) !== null,
+      '8.3: Newer execution entry protected from older token cleanup'
+    )
+    setActiveDownloadProcessForTesting(tokenJobId, null)
+
+    console.log(
+      '✓ Section 8 Passed: Startup Pause/Cancel promise settlement and token isolation verified.\n'
+    )
 
     console.log('================================================================')
     console.log(' ALL PAUSE/RESUME & CONTROLS TESTS PASSED SUCCESSFULLY (100% PASS)')

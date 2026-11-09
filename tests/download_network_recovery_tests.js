@@ -46,6 +46,7 @@ import {
 import {
   getQueueStatus,
   enqueueDownloadJob,
+  pauseDownloadJob,
   resetQueueForTesting,
   stopQueueForShutdown
 } from '../src/main/backend/services/downloadQueueService.js'
@@ -2729,6 +2730,58 @@ async function runNetworkRecoveryTests() {
       assert.equal(completedJobE.id, e2eJobE.id, 'Scenario E: Original Job ID strictly preserved')
       console.log(
         '  ✓ Scenario E passed: Application restart lifecycle recovers interrupted jobs safely\n'
+      )
+
+      // --------------------------------------------------------------------------
+      // Scenario F: Manual Pause Race Protection During Network Recovery
+      // --------------------------------------------------------------------------
+      console.log('--- Scenario F: Manual Pause Race Protection During Network Recovery ---')
+      const raceJob = await DownloadJob.create({
+        media_id: media.id,
+        source_type: 'link',
+        output_format: 'mp4',
+        quality: '720p',
+        status: 'interrupted',
+        progress: 35,
+        downloaded_bytes: 3500000
+      })
+
+      const racePartDir = join(testDownloadDir, '.applan2-partial-downloads', `job-${raceJob.id}`)
+      await fs.mkdir(racePartDir, { recursive: true })
+      const racePartFile = join(
+        racePartDir,
+        `test_song [test_song] [720p] [job-${raceJob.id}].mp4.part`
+      )
+      await fs.writeFile(racePartFile, Buffer.alloc(3500000))
+
+      // User manually pauses the job
+      const pauseRaceResult = await pauseDownloadJob(raceJob.id)
+      assert.equal(pauseRaceResult.outcome, 'paused', 'Scenario F: Job paused successfully')
+
+      const reloadedPaused = await DownloadJob.findByPk(raceJob.id)
+      assert.equal(reloadedPaused.status, 'paused', 'Scenario F: Status is paused in SQLite')
+
+      // Run network recovery scan while job is paused
+      const enqueuedRaceIds = []
+      const recoveryResult = await resumeInterruptedNetworkJobs({
+        isOnline: true,
+        enqueue: (id) => enqueuedRaceIds.push(id)
+      })
+
+      assert.ok(
+        !recoveryResult.resumedJobIds.includes(raceJob.id),
+        'Scenario F: Paused job not resumed by network recovery'
+      )
+      assert.ok(!enqueuedRaceIds.includes(raceJob.id), 'Scenario F: Paused job was not enqueued')
+
+      const finalRaceJob = await DownloadJob.findByPk(raceJob.id)
+      assert.equal(
+        finalRaceJob.status,
+        'paused',
+        'Scenario F: Job strictly remains in paused state in SQLite'
+      )
+      console.log(
+        '  ✓ Scenario F passed: Manual pause strictly preserved during network recovery\n'
       )
     } finally {
       await new Promise((resolve) => e2eServer.close(resolve))

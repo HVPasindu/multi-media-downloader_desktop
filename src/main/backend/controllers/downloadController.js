@@ -399,6 +399,14 @@ export async function cancelDownloadJobController(req, res, next) {
       })
     }
 
+    if (result.outcome === 'cleanup_failed') {
+      return res.status(500).json({
+        success: false,
+        message: result.message || 'Failed to clean partial files during cancellation',
+        status: result.status
+      })
+    }
+
     if (result.outcome === 'cancellation_requested') {
       return res.status(202).json({
         success: true,
@@ -682,6 +690,13 @@ export async function retryDownloadJobController(req, res, next) {
       return res.status(400).json({
         success: false,
         message: result.message || 'Media source URL failed security validation'
+      })
+    }
+
+    if (result.outcome === 'cleanup_failed') {
+      return res.status(500).json({
+        success: false,
+        message: result.message || 'Failed to clean partial files before retry'
       })
     }
 

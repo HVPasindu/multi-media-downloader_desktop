@@ -279,6 +279,8 @@ export async function gracefullyInterruptProcess(processEntry, timeoutMs = 4000)
 
 /**
  * Forcefully terminates a download process and its entire process tree (e.g. for Cancel).
+ * Validates both wrapper PID and actual child yt-dlp PID, executes taskkill,
+ * awaits closure, and independently verifies OS process termination.
  *
  * @param {object|ChildProcess} processEntryOrChild
  * @param {number} [timeoutMs=3000]
@@ -299,12 +301,14 @@ export async function terminateProcessTree(processEntryOrChild, timeoutMs = 3000
   const pid = child.pid
   const actualPid = processEntry?.actualPid
 
+  const targets = [actualPid, pid].filter((value) => Number.isSafeInteger(value) && value > 0)
+
   if (process.platform === 'win32') {
-    const pidsToKill = actualPid && actualPid !== pid ? [actualPid, pid] : [pid]
-    for (const p of pidsToKill) {
+    for (const p of targets) {
       try {
         await execFileAsync('taskkill.exe', ['/PID', String(p), '/T', '/F'], {
-          windowsHide: true
+          windowsHide: true,
+          timeout: 5000
         })
       } catch (error) {
         const message = String(error?.message || '')
@@ -314,17 +318,21 @@ export async function terminateProcessTree(processEntryOrChild, timeoutMs = 3000
           error?.code === 128
         ) {
           // Process already terminated
+        } else {
+          console.warn(`[terminateProcessTree] taskkill warning for PID ${p}:`, error.message)
         }
       }
     }
   } else {
-    try {
-      process.kill(-pid, 'SIGKILL')
-    } catch {
+    for (const p of targets) {
       try {
-        child.kill('SIGKILL')
+        process.kill(-p, 'SIGKILL')
       } catch {
-        // Ignore
+        try {
+          process.kill(p, 'SIGKILL')
+        } catch {
+          // Ignore
+        }
       }
     }
   }
@@ -342,10 +350,17 @@ export async function terminateProcessTree(processEntryOrChild, timeoutMs = 3000
 
   await Promise.race([exitWaitPromise, new Promise((resolve) => setTimeout(resolve, timeoutMs))])
 
-  if (!isProcessAlive(pid)) {
-    if (processEntry && typeof processEntry.markClosed === 'function') {
-      processEntry.markClosed(1, 'SIGKILL')
+  // Independently verify all target processes have terminated in the OS
+  const remainingProcesses = targets.filter(isProcessAlive)
+  if (remainingProcesses.length > 0) {
+    return {
+      success: false,
+      error: `Download process termination could not be verified (PID(s) ${remainingProcesses.join(', ')} still alive)`
     }
+  }
+
+  if (processEntry && typeof processEntry.markClosed === 'function') {
+    processEntry.markClosed(1, 'SIGKILL')
   }
 
   return { success: true }

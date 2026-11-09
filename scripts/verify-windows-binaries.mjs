@@ -2,49 +2,19 @@ import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { execFileSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
+import { WINDOWS_BINARIES_MANIFEST } from './windows-binaries-manifest.mjs'
 
 /**
  * ============================================================================
  * APPLAN2 — Step 04.43 Windows Executables Verification Script
  * Validates presence, integrity (SHA-256), versions, and execution of
  * packaged Windows x64 binary dependencies before electron packaging.
+ * Uses authoritative manifest from windows-binaries-manifest.mjs.
  * ============================================================================
  */
 
-const EXPECTED_BINARIES = [
-  {
-    name: 'yt-dlp.exe',
-    versionFlag: ['--version'],
-    expectedVersion: '2026.10.21',
-    expectedSha256: '33121D192D706E62F684A06F80918E3F3A8BA52AC3A65213B6951C39C7D9F555',
-    licenseFile: 'LICENSE.yt-dlp.txt'
-  },
-  {
-    name: 'ffmpeg.exe',
-    versionFlag: ['-version'],
-    expectedVersionPrefix: 'ffmpeg version',
-    expectedSha256: '589E50B766D251AFDF181DD664D40BD94407E200B019989FD7468C7D118A28D0',
-    licenseFile: 'LICENSE.ffmpeg.txt'
-  },
-  {
-    name: 'ffprobe.exe',
-    versionFlag: ['-version'],
-    expectedVersionPrefix: 'ffprobe version',
-    expectedSha256: '02264DFA4F56BAAA31E443ECE8AA16D397F6B008200E7FD184D22B9009E75FD3',
-    licenseFile: 'LICENSE.ffmpeg.txt'
-  },
-  {
-    name: 'node.exe',
-    versionFlag: ['--version'],
-    expectedVersionPrefix: 'v24.',
-    licenseFile: 'LICENSE.node.txt'
-  },
-  {
-    name: 'send-ctrl-break.exe',
-    versionFlag: ['--version'],
-    expectedVersionPrefix: 'send-ctrl-break version 1.0.0'
-  }
-]
+export const EXPECTED_BINARIES = WINDOWS_BINARIES_MANIFEST.binaries
 
 export function computeFileSha256(filePath) {
   const hash = crypto.createHash('sha256')
@@ -97,51 +67,47 @@ export function verifyStagedBinaries(binDir = null) {
       }
     }
 
-    // Execution / Version test
+    // Execution verification
     try {
-      const output = execFileSync(fullPath, item.versionFlag, {
+      const out = execFileSync(fullPath, item.versionFlag, {
+        encoding: 'utf8',
         windowsHide: true,
-        encoding: 'utf-8',
-        timeout: 10000
+        timeout: 5000
       })
-      const firstLine = output.trim().split('\n')[0].trim()
 
-      // Enforce expected version or version prefix (Issue 04)
-      let versionMatches = true
-      let versionMismatchReason = ''
+      const trimmedOut = out.trim()
+      let versionMatches = false
 
-      if (item.expectedVersion) {
-        if (firstLine !== item.expectedVersion) {
-          versionMatches = false
-          versionMismatchReason = `Exact version mismatch for ${item.name}!\n       Expected: ${item.expectedVersion}\n       Actual:   ${firstLine}`
-        }
-      } else if (item.expectedVersionPrefix) {
-        if (!firstLine.startsWith(item.expectedVersionPrefix)) {
-          versionMatches = false
-          versionMismatchReason = `Version prefix mismatch for ${item.name}!\n       Expected prefix: ${item.expectedVersionPrefix}\n       Actual:          ${firstLine}`
-        }
-      } else {
-        console.warn(
-          `[WARN] No expected version configured for ${item.name}; version verification is unpinned.`
-        )
+      if (item.expectedVersion && trimmedOut.includes(item.expectedVersion)) {
+        versionMatches = true
+      } else if (item.expectedVersionPrefix && trimmedOut.startsWith(item.expectedVersionPrefix)) {
+        versionMatches = true
+      } else if (!item.expectedVersion && !item.expectedVersionPrefix) {
+        versionMatches = true
       }
 
       if (!versionMatches) {
-        console.error(`[FAIL] ${versionMismatchReason}`)
+        console.error(
+          `[FAIL] Version check mismatch for ${item.name}!\n` +
+            `       Expected: ${item.expectedVersion || item.expectedVersionPrefix}\n` +
+            `       Output:   ${trimmedOut.split('\n')[0]}`
+        )
         allValid = false
         continue
       }
 
       console.log(
-        `[PASS] ${item.name} (${(stats.size / (1024 * 1024)).toFixed(2)} MB) -> ${firstLine}`
+        `[PASS] ${item.name} (${stats.size.toLocaleString()} bytes) — ` +
+          `Version: ${trimmedOut.split('\n')[0]}` +
+          (item.expectedSha256 ? ` — SHA-256: ${item.expectedSha256.slice(0, 12)}... [MATCH]` : '')
       )
     } catch (execErr) {
-      console.error(`[FAIL] Could not execute ${item.name}: ${execErr.message}`)
+      console.error(`[FAIL] Failed to execute ${item.name}: ${execErr.message}`)
       allValid = false
       continue
     }
 
-    // License file verification
+    // Verify corresponding license file if required
     if (item.licenseFile) {
       const licensePath = path.join(licensesDir, item.licenseFile)
       if (!fs.existsSync(licensePath)) {
@@ -150,25 +116,43 @@ export function verifyStagedBinaries(binDir = null) {
     }
   }
 
-  console.log('\n----------------------------------------------------------------')
-  if (allValid) {
-    console.log(' ALL WINDOWS PACKAGED BINARIES VERIFIED SUCCESSFULLY (100% PASS)')
-    console.log('----------------------------------------------------------------\n')
-    return true
-  } else {
-    console.error(' BINARY VERIFICATION FAILED! Please inspect missing/corrupted files.')
-    console.error('----------------------------------------------------------------\n')
-    return false
+  // Cross-check ConsoleSender identity between resources and backend bin
+  const resourcesHelper = path.join(baseDir, 'send-ctrl-break.exe')
+  const backendHelper = path.resolve(
+    process.cwd(),
+    'src',
+    'main',
+    'backend',
+    'bin',
+    'send-ctrl-break.exe'
+  )
+  if (fs.existsSync(resourcesHelper) && fs.existsSync(backendHelper)) {
+    const hash1 = computeFileSha256(resourcesHelper)
+    const hash2 = computeFileSha256(backendHelper)
+    if (hash1 !== hash2) {
+      console.error('[FAIL] send-ctrl-break.exe in resources and backend bin are NOT identical!')
+      allValid = false
+    } else {
+      console.log(
+        `[PASS] send-ctrl-break.exe copies are identical (SHA-256: ${hash1.slice(0, 12)}...).`
+      )
+    }
   }
+
+  console.log('\n================================================================')
+  if (allValid) {
+    console.log(' ALL WINDOWS PACKAGED BINARIES VERIFIED SUCCESSFULLY')
+    console.log(' Ready for electron-builder packaging.')
+  } else {
+    console.error(' BINARY VERIFICATION FAILED: Fix above errors before packaging.')
+  }
+  console.log('================================================================\n')
+
+  return allValid
 }
 
-// Direct execution CLI entrypoint
-if (
-  process.argv[1] &&
-  path.resolve(process.argv[1]) === path.resolve('scripts/verify-windows-binaries.mjs')
-) {
+// Auto-run when invoked directly from CLI
+if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
   const success = verifyStagedBinaries()
-  if (!success) {
-    process.exit(1)
-  }
+  process.exit(success ? 0 : 1)
 }

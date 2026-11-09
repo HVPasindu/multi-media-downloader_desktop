@@ -1,4 +1,4 @@
-import { app, shell, BrowserWindow, ipcMain, dialog } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, dialog, session } from 'electron'
 
 import { startServer, stopServer } from './backend/server.js'
 import { stopQueueForShutdown } from './backend/services/downloadQueueService.js'
@@ -91,6 +91,15 @@ app.whenReady().then(async () => {
 
   // IPC test
   ipcMain.on('ping', () => console.log('pong'))
+
+  // Step 05.14 / Dev Reliability: In development, clear session cache to prevent stale module caching
+  if (is.dev && session.defaultSession) {
+    try {
+      await session.defaultSession.clearCache()
+    } catch {
+      // Non-fatal if clearing cache fails
+    }
+  }
 
   // Create application window early so the branded Splash Screen displays during startup
   createWindow()
