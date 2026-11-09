@@ -1,17 +1,6 @@
 import { app } from 'electron'
 import assert from 'node:assert/strict'
-import path from 'node:path'
-
-// Helper matching src/main/index.js
-function getWindowsLoginItemOptions() {
-  if (process.env.NODE_ENV === 'development' || !app.isPackaged) {
-    return {
-      path: process.execPath,
-      args: [path.resolve(process.argv[1] || '.')]
-    }
-  }
-  return {}
-}
+import { getWindowsLoginItemOptions } from '../src/main/loginItemHelper.js'
 
 async function run() {
   console.log('================================================================')
@@ -20,7 +9,7 @@ async function run() {
 
   assert.equal(process.platform, 'win32', 'Test must run on Windows')
 
-  const options = getWindowsLoginItemOptions()
+  const options = getWindowsLoginItemOptions(app)
   console.log('App packaged status:', app.isPackaged)
   console.log('Login item options:', options)
 
@@ -89,7 +78,9 @@ async function run() {
         openAtLogin: initialOpenAtLogin,
         ...options
       })
-    } catch {}
+    } catch (cleanupErr) {
+      console.error('Failed to restore login item settings in error handler:', cleanupErr)
+    }
     throw err
   } finally {
     app.quit()

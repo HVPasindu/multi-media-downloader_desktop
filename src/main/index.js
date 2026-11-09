@@ -29,6 +29,7 @@ import {
   updateStartupStatus,
   restartApplication
 } from './ui/startupManager.js'
+import { getWindowsLoginItemOptions } from './loginItemHelper.js'
 
 import path, { join } from 'path'
 import fs from 'node:fs'
@@ -200,16 +201,6 @@ app.whenReady().then(async () => {
       return true
     }
 
-    const getWindowsLoginItemOptions = () => {
-      if (is.dev) {
-        return {
-          path: process.execPath,
-          args: [app.getAppPath()]
-        }
-      }
-      return {}
-    }
-
     // Windows startup preference IPC handlers
     ipcMain.handle('app-settings:get-start-with-windows', (event) => {
       if (!isTrustedIpcSender(event)) {
@@ -224,16 +215,18 @@ app.whenReady().then(async () => {
       }
 
       try {
-        const settings = app.getLoginItemSettings(getWindowsLoginItemOptions())
+        const settings = app.getLoginItemSettings(getWindowsLoginItemOptions(app, is.dev))
+        if (typeof settings?.openAtLogin !== 'boolean') {
+          throw new Error('Invalid login item settings returned by Windows')
+        }
         return {
           supported: true,
-          enabled: settings.openAtLogin === true
+          enabled: settings.openAtLogin
         }
       } catch (err) {
         console.error('Failed to get login item settings:', err)
         return {
           supported: true,
-          enabled: false,
           error: err?.message || String(err)
         }
       }
@@ -252,17 +245,36 @@ app.whenReady().then(async () => {
         throw new Error('Windows startup setting is not supported on this platform')
       }
 
-      const options = {
-        openAtLogin: enabled,
-        ...getWindowsLoginItemOptions()
-      }
+      try {
+        const options = {
+          openAtLogin: enabled,
+          ...getWindowsLoginItemOptions(app, is.dev)
+        }
 
-      app.setLoginItemSettings(options)
+        app.setLoginItemSettings(options)
 
-      const verifySettings = app.getLoginItemSettings(getWindowsLoginItemOptions())
-      return {
-        supported: true,
-        enabled: verifySettings.openAtLogin === true
+        const verifySettings = app.getLoginItemSettings(getWindowsLoginItemOptions(app, is.dev))
+
+        if (
+          typeof verifySettings?.openAtLogin !== 'boolean' ||
+          verifySettings.openAtLogin !== enabled
+        ) {
+          return {
+            supported: true,
+            error: 'Windows did not confirm the startup setting.'
+          }
+        }
+
+        return {
+          supported: true,
+          enabled: verifySettings.openAtLogin
+        }
+      } catch (err) {
+        console.error('Failed to set login item settings:', err)
+        return {
+          supported: true,
+          error: err?.message || String(err)
+        }
       }
     })
 

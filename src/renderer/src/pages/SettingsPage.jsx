@@ -70,24 +70,32 @@ export default function SettingsPage() {
       // 1. Load Windows startup preference
       try {
         const startupRes = await getStartWithWindows()
-        if (isMounted && startupRes) {
-          if (startupRes.supported === false) {
-            // Situation B: Unsupported OS
-            setIsStartupSupported(false)
-            setIsStartupStatusAvailable(false)
-            setStartupError(null)
-          } else if (startupRes.error) {
-            // Situation C: Retrieval Error
-            setIsStartupSupported(true)
-            setIsStartupStatusAvailable(false)
-            setStartupError(String(startupRes.error))
-          } else {
-            // Situation A: Success
-            setIsStartupSupported(true)
-            setIsStartupStatusAvailable(true)
-            setStartWithWindows(Boolean(startupRes.enabled))
-            setStartupError(null)
-          }
+        if (!isMounted) return
+
+        if (!startupRes || typeof startupRes !== 'object') {
+          throw new Error('Invalid Windows startup response.')
+        }
+
+        if (startupRes.supported === false) {
+          // Situation B – Unsupported platform
+          setIsStartupSupported(false)
+          setIsStartupStatusAvailable(false)
+          setStartupError(null)
+        } else if (
+          startupRes.supported !== true ||
+          typeof startupRes.enabled !== 'boolean' ||
+          startupRes.error
+        ) {
+          // Situation C – Retrieval or invalid response error
+          setIsStartupSupported(true)
+          setIsStartupStatusAvailable(false)
+          setStartupError(startupRes.error || 'Invalid Windows startup response.')
+        } else {
+          // Situation A – Successful response
+          setIsStartupSupported(true)
+          setIsStartupStatusAvailable(true)
+          setStartWithWindows(startupRes.enabled)
+          setStartupError(null)
         }
       } catch (err) {
         if (isMounted) {
@@ -147,13 +155,19 @@ export default function SettingsPage() {
     setStartupError(null)
     try {
       const res = await updateStartWithWindows(enabled)
-      if (res && res.error) {
-        setStartupError(String(res.error))
-      } else if (res && typeof res.enabled === 'boolean') {
-        setStartWithWindows(res.enabled)
-      } else {
-        setStartWithWindows(enabled)
+
+      if (
+        !res ||
+        res.supported !== true ||
+        typeof res.enabled !== 'boolean' ||
+        res.enabled !== enabled ||
+        res.error
+      ) {
+        throw new Error(res?.error || 'Windows did not confirm the startup setting.')
       }
+
+      setStartWithWindows(res.enabled)
+      setStartupError(null)
     } catch (err) {
       setStartupError(err?.message || 'Failed to update Windows startup setting.')
     } finally {
