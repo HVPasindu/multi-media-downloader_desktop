@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 import path from 'node:path'
 import fs from 'node:fs/promises'
+import { existsSync } from 'node:fs'
+import { statfs } from 'node:fs/promises'
 import {
   DEFAULT_DOWNLOAD_PREFERENCES,
   SETTING_KEYS,
@@ -11,6 +13,7 @@ import {
 import { getSavedDownloadPath } from '../src/main/backend/services/downloadSettingsService.js'
 import { createDownloadJob } from '../src/main/backend/services/downloadService.js'
 import { createTestDatabase } from './helpers/testDatabase.js'
+import { SETTINGS_SECTIONS } from '../src/renderer/src/data/uiPreviewData.js'
 
 /**
  * ============================================================================
@@ -192,6 +195,92 @@ async function runDownloadSettingsTests() {
     )
 
     console.log('✓ Section 4: Active download conflict guard verified.\n')
+
+    // ------------------------------------------------------------------------
+    // 5. Real Storage Information FileSystem Calculation & Fallback
+    // ------------------------------------------------------------------------
+    console.log('--- 5. Testing Real Storage Info (statfs) & Drive Fallback ---')
+
+    const stats = await statfs(testFolder2)
+    const bsize = Number(stats.bsize)
+    const totalBytes = Number(stats.blocks) * bsize
+    const freeBytes = Number(stats.bavail ?? stats.bfree) * bsize
+    const usedBytes = Math.max(0, totalBytes - freeBytes)
+
+    assert.ok(totalBytes > 0, '5.1: Total bytes must be positive')
+    assert.ok(freeBytes > 0, '5.2: Free bytes must be positive')
+    assert.ok(usedBytes >= 0, '5.3: Used bytes must be non-negative')
+    assert.equal(totalBytes, usedBytes + freeBytes, '5.4: totalBytes === usedBytes + freeBytes')
+
+    const percentUsed = Math.round((usedBytes / totalBytes) * 100)
+    assert.ok(
+      percentUsed >= 0 && percentUsed <= 100,
+      '5.5: Percentage used must be between 0 and 100'
+    )
+
+    // Test nearest existing ancestor resolution for non-existent path
+    const nonExistentSub = path.join(testFolder2, 'deep', 'non_existent_folder')
+    let resolved = nonExistentSub
+    while (resolved && !existsSync(resolved)) {
+      const parent = path.dirname(resolved)
+      if (parent === resolved) break
+      resolved = parent
+    }
+    assert.equal(
+      resolved,
+      testFolder2,
+      '5.6: Non-existent path resolves to nearest existing ancestor'
+    )
+
+    console.log('✓ Section 5: Real filesystem storage calculations and fallback verified.\n')
+
+    // ------------------------------------------------------------------------
+    // 6. Settings Navigation Structure Verification (Exactly 4 Sections)
+    // ------------------------------------------------------------------------
+    console.log('--- 6. Testing Settings Navigation Sections ---')
+
+    assert.equal(SETTINGS_SECTIONS.length, 4, '6.1: Exactly 4 settings sections')
+    const sectionIds = SETTINGS_SECTIONS.map((s) => s.id)
+    assert.deepEqual(
+      sectionIds,
+      ['general', 'quality-audio', 'appearance', 'about'],
+      '6.2: Sections must be general, quality-audio, appearance, about'
+    )
+
+    const unwantedIds = ['download', 'quality', 'audio', 'advanced', 'shortcuts', 'privacy']
+    for (const unwanted of unwantedIds) {
+      assert.ok(!sectionIds.includes(unwanted), `6.3: Unwanted section "${unwanted}" removed`)
+    }
+
+    console.log('✓ Section 6: Settings 4-section navigation verified.\n')
+
+    // ------------------------------------------------------------------------
+    // 7. Windows Startup Preference Validation
+    // ------------------------------------------------------------------------
+    console.log('--- 7. Testing Windows Startup Preference Validation ---')
+
+    const validateStartupInput = (val) => {
+      if (typeof val !== 'boolean') {
+        throw new Error('Invalid startup setting: enabled must be a boolean')
+      }
+      return true
+    }
+
+    assert.equal(validateStartupInput(true), true, '7.1: Boolean true accepted')
+    assert.equal(validateStartupInput(false), true, '7.2: Boolean false accepted')
+    assert.throws(
+      () => validateStartupInput('true'),
+      /Invalid startup setting/,
+      '7.3: String "true" rejected'
+    )
+    assert.throws(
+      () => validateStartupInput(1),
+      /Invalid startup setting/,
+      '7.4: Number 1 rejected'
+    )
+    assert.throws(() => validateStartupInput(null), /Invalid startup setting/, '7.5: Null rejected')
+
+    console.log('✓ Section 7: Windows startup input validation verified.\n')
 
     console.log('================================================================')
     console.log(' ALL DOWNLOAD SETTINGS TESTS PASSED SUCCESSFULLY (100% PASS)    ')

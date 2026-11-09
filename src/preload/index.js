@@ -12,6 +12,18 @@ const api = {
     return ipcRenderer.invoke('downloads:get-folder')
   },
 
+  getStorageInfo: () => {
+    return ipcRenderer.invoke('downloads:get-storage-info')
+  },
+
+  getStartWithWindows: () => {
+    return ipcRenderer.invoke('app-settings:get-start-with-windows')
+  },
+
+  setStartWithWindows: (enabled) => {
+    return ipcRenderer.invoke('app-settings:set-start-with-windows', enabled)
+  },
+
   openFile: (jobId) => {
     return ipcRenderer.invoke('shell:open-file', jobId)
   },

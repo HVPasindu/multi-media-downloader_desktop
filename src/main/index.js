@@ -30,7 +30,9 @@ import {
   restartApplication
 } from './ui/startupManager.js'
 
-import { join } from 'path'
+import path, { join } from 'path'
+import fs from 'node:fs'
+import { statfs } from 'node:fs/promises'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 
@@ -179,6 +181,154 @@ app.whenReady().then(async () => {
       }
 
       return await getDefaultDownloadPath()
+    })
+
+    const isTrustedIpcSender = (event) => {
+      const sender = event?.sender
+      if (!sender) return false
+      const ownerWindow = BrowserWindow.fromWebContents(sender)
+      const trustedWindow = getStartupWindow()
+      if (
+        !ownerWindow ||
+        (typeof ownerWindow.isDestroyed === 'function' && ownerWindow.isDestroyed())
+      ) {
+        return false
+      }
+      if (trustedWindow && ownerWindow !== trustedWindow) {
+        return false
+      }
+      return true
+    }
+
+    const getWindowsLoginItemOptions = () => {
+      if (is.dev) {
+        return {
+          path: process.execPath,
+          args: [app.getAppPath()]
+        }
+      }
+      return {}
+    }
+
+    // Windows startup preference IPC handlers
+    ipcMain.handle('app-settings:get-start-with-windows', (event) => {
+      if (!isTrustedIpcSender(event)) {
+        throw new Error('Unauthorized IPC sender')
+      }
+
+      if (process.platform !== 'win32') {
+        return {
+          supported: false,
+          enabled: false
+        }
+      }
+
+      try {
+        const settings = app.getLoginItemSettings(getWindowsLoginItemOptions())
+        return {
+          supported: true,
+          enabled: settings.openAtLogin === true
+        }
+      } catch (err) {
+        console.error('Failed to get login item settings:', err)
+        return {
+          supported: true,
+          enabled: false,
+          error: err?.message || String(err)
+        }
+      }
+    })
+
+    ipcMain.handle('app-settings:set-start-with-windows', (event, enabled) => {
+      if (!isTrustedIpcSender(event)) {
+        throw new Error('Unauthorized IPC sender')
+      }
+
+      if (typeof enabled !== 'boolean') {
+        throw new Error('Invalid startup setting: enabled must be a boolean')
+      }
+
+      if (process.platform !== 'win32') {
+        throw new Error('Windows startup setting is not supported on this platform')
+      }
+
+      const options = {
+        openAtLogin: enabled,
+        ...getWindowsLoginItemOptions()
+      }
+
+      app.setLoginItemSettings(options)
+
+      const verifySettings = app.getLoginItemSettings(getWindowsLoginItemOptions())
+      return {
+        supported: true,
+        enabled: verifySettings.openAtLogin === true
+      }
+    })
+
+    // Real filesystem storage information IPC handler
+    ipcMain.handle('downloads:get-storage-info', async (event) => {
+      if (!isTrustedIpcSender(event)) {
+        throw new Error('Unauthorized IPC sender')
+      }
+
+      try {
+        const AppSetting = getDatabase()?.models?.AppSetting
+        let downloadPath = null
+        if (AppSetting) {
+          try {
+            downloadPath = await getSavedDownloadPath(AppSetting)
+          } catch {
+            // Non-fatal, fallback to default
+          }
+        }
+        if (!downloadPath || typeof downloadPath !== 'string' || !downloadPath.trim()) {
+          downloadPath = await getDefaultDownloadPath()
+        }
+
+        // Find nearest existing ancestor directory or drive root for statfs
+        let targetPath = path.resolve(downloadPath.trim())
+        while (targetPath && !fs.existsSync(targetPath)) {
+          const parent = path.dirname(targetPath)
+          if (parent === targetPath) break
+          targetPath = parent
+        }
+
+        if (!targetPath || !fs.existsSync(targetPath)) {
+          return {
+            available: false,
+            folderPath: downloadPath,
+            totalBytes: 0,
+            usedBytes: 0,
+            freeBytes: 0,
+            error: 'Target disk drive is not accessible'
+          }
+        }
+
+        const stats = await statfs(targetPath)
+        const bsize = Number(stats.bsize)
+        const totalBytes = Number(stats.blocks) * bsize
+        const freeBytes = Number(stats.bavail ?? stats.bfree) * bsize
+        const usedBytes = Math.max(0, totalBytes - freeBytes)
+
+        return {
+          available: true,
+          folderPath: downloadPath,
+          resolvedPath: targetPath,
+          totalBytes,
+          usedBytes,
+          freeBytes
+        }
+      } catch (err) {
+        console.error('Failed to retrieve disk storage info:', err?.message || err)
+        return {
+          available: false,
+          totalBytes: 0,
+          usedBytes: 0,
+          freeBytes: 0,
+          error: err?.message || 'Storage information unavailable'
+        }
+      }
     })
 
     // Step 05.12 & Task 04 - Secure IPC handlers to open downloaded media file or its folder (FIX 02 & Task 04)

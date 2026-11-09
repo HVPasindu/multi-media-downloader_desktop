@@ -1,50 +1,90 @@
 import { useState, useEffect } from 'react'
 import {
   Settings as SettingsIcon,
-  Download,
   Sliders,
-  Music,
-  Cpu,
   Palette,
-  Keyboard,
-  Shield,
   Info,
   Folder,
   HardDrive,
-  Check,
   AlertCircle
 } from 'lucide-react'
 import ToggleSwitch from '../components/ui/ToggleSwitch'
-import { SETTINGS_SECTIONS, SETTINGS_STORAGE_INFO } from '../data/uiPreviewData'
-import { chooseDownloadFolder, getDownloadFolder } from '../services/api'
+import { SETTINGS_SECTIONS } from '../data/uiPreviewData'
+import {
+  chooseDownloadFolder,
+  getDownloadFolder,
+  getStorageInfo,
+  getStartWithWindows,
+  setStartWithWindows as updateStartWithWindows
+} from '../services/api'
+
+/**
+ * Format raw disk bytes into readable human-friendly values (GB/TB).
+ */
+function formatDiskBytes(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 GB'
+  const gb = bytes / 1024 ** 3
+  if (gb >= 1000) {
+    const tb = gb / 1024
+    return `${Number(tb.toFixed(1))} TB`
+  }
+  if (gb < 10) {
+    return `${Number(gb.toFixed(1))} GB`
+  }
+  return `${Math.round(gb)} GB`
+}
 
 /**
  * Settings Page
  * Features:
- * - Left secondary settings sidebar navigation (General, Download, Quality, Audio, Advanced, Appearance, Shortcuts, Privacy, About)
- * - General Settings card: Language dropdown and 4 interactive preview-only toggle switches (Problem 08)
- * - Default Download Folder card: Path display and 4 folder organization checkboxes
- * - Storage Information card: Correctly bound disk space bar showing 125 GB used of 500 GB (375 GB free) (Problem 03)
+ * - Four approved sections in secondary navigation: General, Quality & Audio, Appearance, About.
+ * - General Section with ONLY three approved cards:
+ *   1. Start with Windows (Real Windows openAtLogin via Electron app.get/setLoginItemSettings)
+ *   2. Default Download Folder (Existing SQLite-persisted folder selection with 409 conflict guard)
+ *   3. Storage Information (Real dynamic filesystem statistics via node:fs/promises statfs)
  */
 export default function SettingsPage() {
   const [activeSection, setActiveSection] = useState('general')
 
-  // General Settings preview-only demonstration state (Problem 08: not persisted to SQLite or backend)
-  const [language, setLanguage] = useState('English')
-  const [startWithWindows, setStartWithWindows] = useState(true)
-  const [minimizeToTray, setMinimizeToTray] = useState(true)
-  const [showNotifications, setShowNotifications] = useState(true)
-  const [checkForUpdates, setCheckForUpdates] = useState(true)
+  // 1. Start with Windows real state
+  const [startWithWindows, setStartWithWindows] = useState(false)
+  const [isLoadingStartup, setIsLoadingStartup] = useState(true)
+  const [isUpdatingStartup, setIsUpdatingStartup] = useState(false)
+  const [startupError, setStartupError] = useState(null)
+  const [isStartupSupported, setIsStartupSupported] = useState(true)
 
-  // Download Folder state connected to SQLite settings via Electron IPC (Step 05.08)
+  // 2. Default Download Folder state
   const [downloadFolder, setDownloadFolder] = useState('')
   const [isLoadingFolder, setIsLoadingFolder] = useState(true)
   const [folderError, setFolderError] = useState(null)
 
+  // 3. Storage Information real filesystem state
+  const [storageInfo, setStorageInfo] = useState(null)
+  const [isLoadingStorage, setIsLoadingStorage] = useState(true)
+
   useEffect(() => {
     let isMounted = true
 
-    async function loadSavedFolder() {
+    async function loadInitialSettings() {
+      // 1. Load Windows startup preference
+      try {
+        const startupRes = await getStartWithWindows()
+        if (isMounted && startupRes) {
+          setIsStartupSupported(startupRes.supported !== false)
+          setStartWithWindows(Boolean(startupRes.enabled))
+          setStartupError(null)
+        }
+      } catch (err) {
+        if (isMounted) {
+          setStartupError(err?.message || 'Unable to retrieve Windows startup setting.')
+        }
+      } finally {
+        if (isMounted) {
+          setIsLoadingStartup(false)
+        }
+      }
+
+      // 2. Load saved download folder
       try {
         const folder = await getDownloadFolder()
         if (isMounted && folder) {
@@ -60,14 +100,48 @@ export default function SettingsPage() {
           setIsLoadingFolder(false)
         }
       }
+
+      // 3. Load real storage information
+      try {
+        const info = await getStorageInfo()
+        if (isMounted) {
+          setStorageInfo(info)
+        }
+      } catch {
+        if (isMounted) {
+          setStorageInfo({ available: false })
+        }
+      } finally {
+        if (isMounted) {
+          setIsLoadingStorage(false)
+        }
+      }
     }
 
-    loadSavedFolder()
+    loadInitialSettings()
 
     return () => {
       isMounted = false
     }
   }, [])
+
+  const handleToggleStartWithWindows = async (enabled) => {
+    if (isUpdatingStartup || !isStartupSupported) return
+    setIsUpdatingStartup(true)
+    setStartupError(null)
+    try {
+      const res = await updateStartWithWindows(enabled)
+      if (res && typeof res.enabled === 'boolean') {
+        setStartWithWindows(res.enabled)
+      } else {
+        setStartWithWindows(enabled)
+      }
+    } catch (err) {
+      setStartupError(err?.message || 'Failed to update Windows startup setting.')
+    } finally {
+      setIsUpdatingStartup(false)
+    }
+  }
 
   const handleChooseFolder = async () => {
     setFolderError(null)
@@ -75,35 +149,38 @@ export default function SettingsPage() {
       const selected = await chooseDownloadFolder()
       if (selected) {
         setDownloadFolder(selected)
+        // Refresh real storage info after changing the download folder
+        setIsLoadingStorage(true)
+        try {
+          const info = await getStorageInfo()
+          setStorageInfo(info)
+        } catch {
+          setStorageInfo({ available: false })
+        } finally {
+          setIsLoadingStorage(false)
+        }
       }
     } catch (err) {
       setFolderError(err?.message || 'Failed to update download folder.')
     }
   }
 
-  const [folderOptions, setFolderOptions] = useState({
-    subfolderPerPlatform: true,
-    subfolderPerVideo: true,
-    useOriginalTitle: true,
-    askLocationBeforeDownload: false
-  })
-
-  const toggleFolderOption = (key) => {
-    setFolderOptions((prev) => ({ ...prev, [key]: !prev[key] }))
-  }
-
-  // Icon mapping for left sub-navigation menu
+  // Icon mapping for the four approved sections
   const sectionIcons = {
     general: SettingsIcon,
-    download: Download,
-    quality: Sliders,
-    audio: Music,
-    advanced: Cpu,
+    'quality-audio': Sliders,
     appearance: Palette,
-    shortcuts: Keyboard,
-    privacy: Shield,
     about: Info
   }
+
+  const currentSectionMeta = SETTINGS_SECTIONS.find((s) => s.id === activeSection)
+  const currentSectionLabel = currentSectionMeta?.label || activeSection
+
+  const totalBytes = Number(storageInfo?.totalBytes) || 0
+  const usedBytes = Number(storageInfo?.usedBytes) || 0
+  const freeBytes = Number(storageInfo?.freeBytes) || 0
+  const percentUsed =
+    totalBytes > 0 ? Math.min(100, Math.max(0, Math.round((usedBytes / totalBytes) * 100))) : 0
 
   return (
     <div className="p-6 lg:p-8 max-w-[1400px] w-full mx-auto flex flex-col gap-6 select-none animate-fadeIn">
@@ -114,7 +191,7 @@ export default function SettingsPage() {
             Settings
           </h1>
           <span className="text-[10px] font-bold tracking-wider px-2 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20 uppercase">
-            Preview
+            General
           </span>
         </div>
         <p className="text-sm text-text-muted mt-1 font-medium">
@@ -154,13 +231,14 @@ export default function SettingsPage() {
             /* Sub-category Standby Notice */
             <div className="p-8 rounded-2xl bg-[#07152E]/80 border border-primary/15 text-center flex flex-col items-center justify-center gap-2">
               <span className="text-sm font-bold text-white capitalize">
-                {activeSection} Preferences Standby
+                {currentSectionLabel} Standby
               </span>
               <p className="text-xs text-text-muted max-w-md">
-                Detailed configuration options for {activeSection} will be integrated in later
+                Detailed configuration options for {currentSectionLabel} will be integrated in later
                 roadmap steps.
               </p>
               <button
+                type="button"
                 onClick={() => setActiveSection('general')}
                 className="mt-3 px-4 py-1.5 rounded-xl text-xs font-bold bg-primary/10 hover:bg-primary/20 text-primary border border-primary/25 cursor-pointer transition-all"
               >
@@ -169,229 +247,98 @@ export default function SettingsPage() {
             </div>
           ) : (
             <>
-              {/* Top Row: General Settings Card + Default Folder Card */}
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                {/* Card 1: General Settings (Problem 08: preview demonstration controls) */}
-                <div className="p-5 lg:p-6 rounded-2xl bg-[#07152E]/90 border border-primary/20 shadow-[0_4px_24px_rgba(0,0,0,0.35)] backdrop-blur-md flex flex-col gap-5">
-                  {/* Card Header */}
-                  <div className="flex items-center gap-3">
-                    <div className="w-9 h-9 rounded-xl bg-cyan-500/15 text-[#19D8FF] flex items-center justify-center">
-                      <SettingsIcon className="w-5 h-5" />
-                    </div>
-                    <div>
-                      <h2 className="text-sm font-extrabold text-white">General Settings</h2>
-                      <p className="text-[11px] text-text-muted">Basic application preferences</p>
-                    </div>
+              {/* Card 1: Start with Windows */}
+              <div className="p-5 lg:p-6 rounded-2xl bg-[#07152E]/90 border border-primary/20 shadow-[0_4px_24px_rgba(0,0,0,0.35)] backdrop-blur-md flex flex-col gap-5">
+                {/* Card Header */}
+                <div className="flex items-center gap-3">
+                  <div className="w-9 h-9 rounded-xl bg-cyan-500/15 text-[#19D8FF] flex items-center justify-center">
+                    <SettingsIcon className="w-5 h-5" />
                   </div>
-
-                  {/* Setting Item: Application Language */}
-                  <div className="flex items-center justify-between gap-4 pt-1">
-                    <div>
-                      <span className="text-xs font-bold text-white block">
-                        Application Language
-                      </span>
-                      <span className="text-[11px] text-text-muted">
-                        Choose your preferred language
-                      </span>
-                    </div>
-                    <select
-                      value={language}
-                      onChange={(e) => setLanguage(e.target.value)}
-                      className="bg-[#040B1C] border border-primary/20 rounded-xl px-3 py-1.5 text-xs font-semibold text-white focus:outline-none focus:border-primary cursor-pointer"
-                    >
-                      <option value="English">English</option>
-                      <option value="Spanish">Spanish</option>
-                      <option value="French">French</option>
-                      <option value="German">German</option>
-                      <option value="Sinhala">Sinhala (සිංහල)</option>
-                    </select>
+                  <div>
+                    <h2 className="text-sm font-extrabold text-white">Start with Windows</h2>
+                    <p className="text-[11px] text-text-muted">System startup preference</p>
                   </div>
+                </div>
 
-                  {/* Setting Item: Start with Windows */}
-                  <div className="flex items-center justify-between gap-4 pt-1 border-t border-primary/10">
+                {/* Setting Item */}
+                <div className="flex flex-col gap-2 pt-1">
+                  <div className="flex items-center justify-between gap-4">
                     <div>
                       <span className="text-xs font-bold text-white block">Start with Windows</span>
                       <span className="text-[11px] text-text-muted">
-                        Launch app automatically when Windows starts
+                        {isStartupSupported
+                          ? 'Launch app automatically when Windows starts'
+                          : 'Automatic startup is only supported on Windows'}
                       </span>
                     </div>
                     <ToggleSwitch
                       id="toggle-start-windows"
                       checked={startWithWindows}
-                      onChange={setStartWithWindows}
+                      disabled={isLoadingStartup || isUpdatingStartup || !isStartupSupported}
+                      onChange={handleToggleStartWithWindows}
                     />
                   </div>
 
-                  {/* Setting Item: Minimize to System Tray */}
-                  <div className="flex items-center justify-between gap-4 pt-1 border-t border-primary/10">
-                    <div>
-                      <span className="text-xs font-bold text-white block">
-                        Minimize to System Tray
-                      </span>
-                      <span className="text-[11px] text-text-muted">
-                        Keep app running in background
-                      </span>
+                  {startupError && (
+                    <div
+                      role="alert"
+                      className="flex items-center gap-2 text-xs text-rose-400 bg-rose-500/10 border border-rose-500/20 px-3 py-1.5 rounded-xl animate-fadeIn"
+                    >
+                      <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
+                      <span>{startupError}</span>
                     </div>
-                    <ToggleSwitch
-                      id="toggle-minimize-tray"
-                      checked={minimizeToTray}
-                      onChange={setMinimizeToTray}
-                    />
-                  </div>
-
-                  {/* Setting Item: Show Notifications */}
-                  <div className="flex items-center justify-between gap-4 pt-1 border-t border-primary/10">
-                    <div>
-                      <span className="text-xs font-bold text-white block">Show Notifications</span>
-                      <span className="text-[11px] text-text-muted">
-                        Show download completion notifications
-                      </span>
-                    </div>
-                    <ToggleSwitch
-                      id="toggle-show-notifs"
-                      checked={showNotifications}
-                      onChange={setShowNotifications}
-                    />
-                  </div>
-
-                  {/* Setting Item: Check for Updates */}
-                  <div className="flex items-center justify-between gap-4 pt-1 border-t border-primary/10">
-                    <div>
-                      <span className="text-xs font-bold text-white block">Check for Updates</span>
-                      <span className="text-[11px] text-text-muted">
-                        Automatically check for new version
-                      </span>
-                    </div>
-                    <ToggleSwitch
-                      id="toggle-check-updates"
-                      checked={checkForUpdates}
-                      onChange={setCheckForUpdates}
-                    />
-                  </div>
-                </div>
-
-                {/* Card 2: Default Download Folder */}
-                <div className="p-5 lg:p-6 rounded-2xl bg-[#07152E]/90 border border-primary/20 shadow-[0_4px_24px_rgba(0,0,0,0.35)] backdrop-blur-md flex flex-col gap-5">
-                  {/* Card Header */}
-                  <div className="flex items-center gap-3">
-                    <div className="w-9 h-9 rounded-xl bg-blue-500/15 text-blue-400 flex items-center justify-center">
-                      <Folder className="w-5 h-5" />
-                    </div>
-                    <div>
-                      <h2 className="text-sm font-extrabold text-white">Default Download Folder</h2>
-                      <p className="text-[11px] text-text-muted">
-                        Choose where to save your downloaded files
-                      </p>
-                    </div>
-                  </div>
-
-                  {/* Folder Path Input & Change Button */}
-                  <div className="flex flex-col gap-2">
-                    <div className="flex items-center gap-2">
-                      <input
-                        type="text"
-                        readOnly
-                        value={isLoadingFolder ? 'Loading saved folder...' : downloadFolder}
-                        placeholder="Choose download folder..."
-                        className="flex-1 bg-[#040B1C] border border-primary/20 rounded-xl py-2 px-3 text-xs text-text-muted font-mono focus:outline-none focus:border-primary select-text"
-                      />
-                      <button
-                        type="button"
-                        onClick={handleChooseFolder}
-                        title="Choose destination directory"
-                        className="px-4 py-2 rounded-xl text-xs font-bold bg-gradient-to-r from-[#19D8FF] to-[#3388FF] text-white shadow-[0_0_12px_rgba(25,216,255,0.3)] hover:shadow-[0_0_18px_rgba(25,216,255,0.45)] transition-all cursor-pointer flex-shrink-0"
-                      >
-                        Change
-                      </button>
-                    </div>
-
-                    {folderError && (
-                      <div
-                        role="alert"
-                        className="flex items-center gap-2 text-xs text-rose-400 bg-rose-500/10 border border-rose-500/20 px-3 py-2 rounded-xl animate-fadeIn"
-                      >
-                        <AlertCircle className="w-4 h-4 flex-shrink-0" />
-                        <span>{folderError}</span>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Folder Options Checkboxes */}
-                  <div className="flex flex-col gap-3 pt-2">
-                    <span className="text-xs font-bold text-white uppercase tracking-wider text-[10px] text-text-muted">
-                      Folder Options
-                    </span>
-
-                    {/* Option 1 */}
-                    <label className="flex items-center gap-2.5 text-xs text-text-muted hover:text-white cursor-pointer select-none">
-                      <div
-                        onClick={() => toggleFolderOption('subfolderPerPlatform')}
-                        className={`w-4 h-4 rounded border flex items-center justify-center transition-all ${
-                          folderOptions.subfolderPerPlatform
-                            ? 'bg-[#19D8FF] border-[#19D8FF] text-[#040B1C]'
-                            : 'border-primary/30 bg-[#040B1C]'
-                        }`}
-                      >
-                        {folderOptions.subfolderPerPlatform && (
-                          <Check className="w-3 h-3 stroke-[3]" />
-                        )}
-                      </div>
-                      <span>Create subfolder for each platform</span>
-                    </label>
-
-                    {/* Option 2 */}
-                    <label className="flex items-center gap-2.5 text-xs text-text-muted hover:text-white cursor-pointer select-none">
-                      <div
-                        onClick={() => toggleFolderOption('subfolderPerVideo')}
-                        className={`w-4 h-4 rounded border flex items-center justify-center transition-all ${
-                          folderOptions.subfolderPerVideo
-                            ? 'bg-[#19D8FF] border-[#19D8FF] text-[#040B1C]'
-                            : 'border-primary/30 bg-[#040B1C]'
-                        }`}
-                      >
-                        {folderOptions.subfolderPerVideo && (
-                          <Check className="w-3 h-3 stroke-[3]" />
-                        )}
-                      </div>
-                      <span>Create subfolder for each video</span>
-                    </label>
-
-                    {/* Option 3 */}
-                    <label className="flex items-center gap-2.5 text-xs text-text-muted hover:text-white cursor-pointer select-none">
-                      <div
-                        onClick={() => toggleFolderOption('useOriginalTitle')}
-                        className={`w-4 h-4 rounded border flex items-center justify-center transition-all ${
-                          folderOptions.useOriginalTitle
-                            ? 'bg-[#19D8FF] border-[#19D8FF] text-[#040B1C]'
-                            : 'border-primary/30 bg-[#040B1C]'
-                        }`}
-                      >
-                        {folderOptions.useOriginalTitle && <Check className="w-3 h-3 stroke-[3]" />}
-                      </div>
-                      <span>Use original video title as filename</span>
-                    </label>
-
-                    {/* Option 4 */}
-                    <label className="flex items-center gap-2.5 text-xs text-text-muted hover:text-white cursor-pointer select-none">
-                      <div
-                        onClick={() => toggleFolderOption('askLocationBeforeDownload')}
-                        className={`w-4 h-4 rounded border flex items-center justify-center transition-all ${
-                          folderOptions.askLocationBeforeDownload
-                            ? 'bg-[#19D8FF] border-[#19D8FF] text-[#040B1C]'
-                            : 'border-primary/30 bg-[#040B1C]'
-                        }`}
-                      >
-                        {folderOptions.askLocationBeforeDownload && (
-                          <Check className="w-3 h-3 stroke-[3]" />
-                        )}
-                      </div>
-                      <span>Ask for folder location before downloading</span>
-                    </label>
-                  </div>
+                  )}
                 </div>
               </div>
 
-              {/* Card 3: Storage Information (Problem 03: Fixed Properties from SETTINGS_STORAGE_INFO) */}
+              {/* Card 2: Default Download Folder */}
+              <div className="p-5 lg:p-6 rounded-2xl bg-[#07152E]/90 border border-primary/20 shadow-[0_4px_24px_rgba(0,0,0,0.35)] backdrop-blur-md flex flex-col gap-5">
+                {/* Card Header */}
+                <div className="flex items-center gap-3">
+                  <div className="w-9 h-9 rounded-xl bg-blue-500/15 text-blue-400 flex items-center justify-center">
+                    <Folder className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h2 className="text-sm font-extrabold text-white">Default Download Folder</h2>
+                    <p className="text-[11px] text-text-muted">
+                      Choose where to save your downloaded files
+                    </p>
+                  </div>
+                </div>
+
+                {/* Folder Path Input & Change Button */}
+                <div className="flex flex-col gap-2">
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      readOnly
+                      value={isLoadingFolder ? 'Loading saved folder...' : downloadFolder}
+                      placeholder="Choose download folder..."
+                      className="flex-1 bg-[#040B1C] border border-primary/20 rounded-xl py-2 px-3 text-xs text-text-muted font-mono focus:outline-none focus:border-primary select-text"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleChooseFolder}
+                      title="Choose destination directory"
+                      className="px-4 py-2 rounded-xl text-xs font-bold bg-gradient-to-r from-[#19D8FF] to-[#3388FF] text-white shadow-[0_0_12px_rgba(25,216,255,0.3)] hover:shadow-[0_0_18px_rgba(25,216,255,0.45)] transition-all cursor-pointer flex-shrink-0"
+                    >
+                      Change
+                    </button>
+                  </div>
+
+                  {folderError && (
+                    <div
+                      role="alert"
+                      className="flex items-center gap-2 text-xs text-rose-400 bg-rose-500/10 border border-rose-500/20 px-3 py-2 rounded-xl animate-fadeIn"
+                    >
+                      <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                      <span>{folderError}</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Card 3: Storage Information */}
               <div className="p-5 lg:p-6 rounded-2xl bg-[#07152E]/90 border border-primary/20 shadow-[0_4px_24px_rgba(0,0,0,0.35)] backdrop-blur-md flex flex-col gap-4">
                 {/* Header */}
                 <div className="flex items-center gap-3">
@@ -400,32 +347,47 @@ export default function SettingsPage() {
                   </div>
                   <div>
                     <h2 className="text-sm font-extrabold text-white">Storage Information</h2>
-                    <p className="text-[11px] text-text-muted">
-                      Disk space usage for downloaded files
-                    </p>
+                    <p className="text-[11px] text-text-muted">Disk space on your download drive</p>
                   </div>
                 </div>
 
-                {/* Glowing Progress Bar */}
-                <div className="flex flex-col gap-2 pt-1">
-                  <div className="w-full h-3 rounded-full bg-[#040B1C] overflow-hidden border border-primary/20">
-                    <div
-                      className="h-full bg-gradient-to-r from-[#19D8FF] to-[#3388FF] rounded-full shadow-[0_0_12px_rgba(25,216,255,0.5)]"
-                      style={{ width: `${SETTINGS_STORAGE_INFO.percentUsed}%` }}
-                    />
+                {/* Storage Content */}
+                {isLoadingStorage ? (
+                  <div className="flex items-center gap-2 text-xs text-text-muted py-2">
+                    <div className="w-3.5 h-3.5 border-2 border-primary/40 border-t-primary rounded-full animate-spin" />
+                    <span>Loading drive storage information...</span>
                   </div>
-
-                  {/* Captions with actual GB values */}
-                  <div className="flex items-center justify-between text-xs text-text-muted font-medium">
+                ) : storageInfo?.available === false ? (
+                  <div
+                    role="alert"
+                    className="flex items-center gap-2 text-xs text-amber-400 bg-amber-500/10 border border-amber-500/20 px-3 py-2 rounded-xl"
+                  >
+                    <AlertCircle className="w-4 h-4 flex-shrink-0" />
                     <span>
-                      <strong className="text-white">{SETTINGS_STORAGE_INFO.usedGB} GB</strong> used
-                      of {SETTINGS_STORAGE_INFO.totalGB} GB ({SETTINGS_STORAGE_INFO.percentUsed}%)
-                    </span>
-                    <span className="text-[#00DEA5] font-semibold">
-                      {SETTINGS_STORAGE_INFO.freeGB} GB free
+                      {storageInfo?.error ||
+                        'Disk space information is unavailable for the selected drive.'}
                     </span>
                   </div>
-                </div>
+                ) : (
+                  <div className="flex flex-col gap-2 pt-1">
+                    <div className="w-full h-3 rounded-full bg-[#040B1C] overflow-hidden border border-primary/20">
+                      <div
+                        className="h-full bg-gradient-to-r from-[#19D8FF] to-[#3388FF] rounded-full shadow-[0_0_12px_rgba(25,216,255,0.5)] transition-all duration-500"
+                        style={{ width: `${percentUsed}%` }}
+                      />
+                    </div>
+
+                    <div className="flex items-center justify-between text-xs text-text-muted font-medium">
+                      <span>
+                        <strong className="text-white">{formatDiskBytes(usedBytes)}</strong> used of{' '}
+                        {formatDiskBytes(totalBytes)} ({percentUsed}%)
+                      </span>
+                      <span className="text-[#00DEA5] font-semibold">
+                        {formatDiskBytes(freeBytes)} free
+                      </span>
+                    </div>
+                  </div>
+                )}
               </div>
             </>
           )}
