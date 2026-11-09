@@ -3,7 +3,7 @@ import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { Download, ListCollapse, History, Settings, Sparkles } from 'lucide-react'
 import officialLogo from '../../assets/branding/official-cloud-logo-transparent.png'
 import SidebarDecoration from './SidebarDecoration'
-import { useActiveDownloadsCount } from '../../hooks/useActiveDownloadsCount'
+import useActiveDownloadsCount from '../../hooks/useActiveDownloadsCount'
 
 /**
  * Main application layout matching the attached dark navy & electric cyan UI design.
