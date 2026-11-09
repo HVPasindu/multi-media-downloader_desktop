@@ -113,6 +113,10 @@ const TEST_SUITES = [
   {
     name: 'Order 13: React Download Actions Hook Integration Test (Simulated Desktop UI Workflow)',
     file: 'tests/electron_download_actions_e2e_tests.js'
+  },
+  {
+    name: 'Security: Settings IPC Sender Hardening & Multi-Window Isolation',
+    file: 'tests/settings_ipc_security_tests.js'
   }
 ]
 

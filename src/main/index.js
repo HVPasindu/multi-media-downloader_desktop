@@ -137,7 +137,10 @@ app.whenReady().then(async () => {
       app,
       BrowserWindow,
       dialog,
-      getStartupWindow
+      getStartupWindow,
+      isDev: is.dev,
+      rendererUrl: process.env['ELECTRON_RENDERER_URL'],
+      rendererFilePath: join(__dirname, '../renderer/index.html')
     })
 
     // Step 05.12 & Task 04 - Secure IPC handlers to open downloaded media file or its folder (FIX 02 & Task 04)

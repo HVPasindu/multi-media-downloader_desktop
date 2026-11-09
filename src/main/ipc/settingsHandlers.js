@@ -1,6 +1,7 @@
 import path from 'node:path'
 import fs from 'node:fs'
 import { statfs } from 'node:fs/promises'
+import { fileURLToPath } from 'node:url'
 import { getDatabase } from '../backend/config/database.js'
 import { getSavedDownloadPath } from '../backend/services/downloadSettingsService.js'
 import { getDefaultDownloadPath } from '../backend/services/downloadPathService.js'
@@ -13,27 +14,69 @@ import { getWindowsLoginItemOptions } from '../loginItemHelper.js'
 
 /**
  * Validates whether an incoming IPC event originates from the authentic,
- * trusted Main Window instance.
+ * trusted Main Window's top-level frame matching development or production origin.
+ * Fails closed if trusted window is missing, destroyed, or sender is unauthorized.
  *
  * @param {import('electron').IpcMainInvokeEvent} event
  * @param {object} options
  * @returns {boolean}
  */
-export function isTrustedSettingsIpcSender(event, { BrowserWindow, getStartupWindow } = {}) {
+export function isTrustedSettingsIpcSender(event, options = {}) {
+  const {
+    BrowserWindow,
+    getStartupWindow,
+    getTrustedWindow,
+    isDev,
+    rendererUrl,
+    rendererFilePath
+  } = options
+
+  const trustedWindowGetter = getStartupWindow || getTrustedWindow
+  const trustedWindow = typeof trustedWindowGetter === 'function' ? trustedWindowGetter() : null
   const sender = event?.sender
-  if (!sender) return false
-  const ownerWindow = BrowserWindow?.fromWebContents?.(sender)
-  const trustedWindow = typeof getStartupWindow === 'function' ? getStartupWindow() : null
+
+  // Check 1 — Trusted window existence and vitality
   if (
-    !ownerWindow ||
-    (typeof ownerWindow.isDestroyed === 'function' && ownerWindow.isDestroyed())
+    !trustedWindow ||
+    (typeof trustedWindow.isDestroyed === 'function' && trustedWindow.isDestroyed())
   ) {
     return false
   }
-  if (trustedWindow && ownerWindow !== trustedWindow) {
+
+  // Check 2 — Sender existence
+  if (!sender) {
     return false
   }
-  return true
+
+  // Check 3 — Exact BrowserWindow and WebContents validation
+  const ownerWindow = BrowserWindow?.fromWebContents?.(sender)
+  if (ownerWindow !== trustedWindow || sender !== trustedWindow.webContents) {
+    return false
+  }
+
+  // Check 4 — Top-level main frame validation (reject iframes / subframes)
+  if (!event.senderFrame || event.senderFrame !== sender.mainFrame) {
+    return false
+  }
+
+  // Check 5 & 6 — Origin / file path validation
+  try {
+    const actualUrl = new URL(event.senderFrame.url)
+
+    if (isDev) {
+      if (!rendererUrl) return false
+      const expectedUrl = new URL(rendererUrl)
+      return actualUrl.origin === expectedUrl.origin
+    }
+
+    if (actualUrl.protocol !== 'file:' || !rendererFilePath) {
+      return false
+    }
+
+    return path.resolve(fileURLToPath(actualUrl)) === path.resolve(rendererFilePath)
+  } catch {
+    return false
+  }
 }
 
 /**
@@ -44,25 +87,43 @@ export function isTrustedSettingsIpcSender(event, { BrowserWindow, getStartupWin
  * - app-settings:set-start-with-windows
  * - downloads:get-storage-info
  *
+ * Every handler strictly validates its sender before performing any operation.
+ *
  * @param {object} options
  * @param {import('electron').IpcMain} options.ipcMain
  * @param {import('electron').App} options.app
  * @param {typeof import('electron').BrowserWindow} options.BrowserWindow
  * @param {import('electron').Dialog} options.dialog
  * @param {() => import('electron').BrowserWindow | null} [options.getStartupWindow]
+ * @param {boolean} [options.isDev]
+ * @param {string} [options.rendererUrl]
+ * @param {string} [options.rendererFilePath]
  */
 export function registerSettingsIpcHandlers({
   ipcMain,
   app,
   BrowserWindow,
   dialog,
-  getStartupWindow
+  getStartupWindow,
+  isDev,
+  rendererUrl,
+  rendererFilePath
 }) {
   const checkSender = (event) =>
-    isTrustedSettingsIpcSender(event, { BrowserWindow, getStartupWindow })
+    isTrustedSettingsIpcSender(event, {
+      BrowserWindow,
+      getStartupWindow,
+      isDev,
+      rendererUrl,
+      rendererFilePath
+    })
 
   // 1. Choose download folder via native directory picker
   ipcMain.handle('downloads:choose-folder', async (event) => {
+    if (!checkSender(event)) {
+      throw new Error('Unauthorized IPC sender')
+    }
+
     const ownerWindow = BrowserWindow?.fromWebContents?.(event.sender)
     if (!ownerWindow) {
       throw new Error('Application window not found')
@@ -92,7 +153,11 @@ export function registerSettingsIpcHandlers({
   })
 
   // 2. Retrieve currently persisted download folder
-  ipcMain.handle('downloads:get-folder', async () => {
+  ipcMain.handle('downloads:get-folder', async (event) => {
+    if (!checkSender(event)) {
+      throw new Error('Unauthorized IPC sender')
+    }
+
     const AppSetting = getDatabase()?.models?.AppSetting
     const savedPath = await getSavedDownloadPath(AppSetting)
 
