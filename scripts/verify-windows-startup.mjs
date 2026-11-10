@@ -9,12 +9,14 @@ async function run() {
 
   assert.equal(process.platform, 'win32', 'Test must run on Windows')
 
+  let originalStartupSetting = null
+  let hasCapturedOriginalStartupSetting = false
+  let testError = null
+  const cleanupErrors = []
+
   const options = getWindowsLoginItemOptions(app)
   console.log('App packaged status:', app.isPackaged)
   console.log('Login item options:', options)
-
-  let originalStartupSetting = null
-  let hasCapturedOriginalStartupSetting = false
 
   try {
     // 1. Read initial settings
@@ -63,10 +65,9 @@ async function run() {
     })
     assert.equal(offState.openAtLogin, false, 'openAtLogin must be false after setting false')
     console.log('✓ Start With Windows -> OFF verified.\n')
-
-    console.log('================================================================')
-    console.log(' ALL WINDOWS STARTUP MUTATION CHECKS COMPLETED                  ')
-    console.log('================================================================')
+  } catch (err) {
+    testError = err
+    console.error('[WINDOWS STARTUP TEST FAILURE]', err)
   } finally {
     try {
       if (hasCapturedOriginalStartupSetting) {
@@ -90,12 +91,35 @@ async function run() {
         )
       }
     } catch (restoreErr) {
+      cleanupErrors.push(restoreErr)
       console.error('CRITICAL: Failed to restore Windows startup preference:', restoreErr)
-      process.exitCode = 1
     } finally {
       app.quit()
     }
   }
+
+  // Determine final result and report only after cleanup finishes
+  if (testError || cleanupErrors.length > 0) {
+    process.exitCode = 1
+    console.error('================================================================')
+    console.error(' WINDOWS STARTUP INTEGRATION TEST: FAILED                       ')
+    console.error('================================================================')
+    for (const error of cleanupErrors) {
+      console.error('[CLEANUP ERROR]', error)
+    }
+    return
+  }
+
+  console.log('================================================================')
+  console.log(' ALL WINDOWS STARTUP INTEGRATION CHECKS PASSED (100% PASS)       ')
+  console.log('================================================================')
 }
 
-app.whenReady().then(run)
+app
+  .whenReady()
+  .then(run)
+  .catch((err) => {
+    console.error('[FATAL STARTUP TEST ERROR]', err)
+    process.exitCode = 1
+    app.quit()
+  })

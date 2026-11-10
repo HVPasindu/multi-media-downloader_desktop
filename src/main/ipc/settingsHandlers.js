@@ -73,7 +73,13 @@ export function isTrustedSettingsIpcSender(event, options = {}) {
       return false
     }
 
-    return path.resolve(fileURLToPath(actualUrl)) === path.resolve(rendererFilePath)
+    const resolvedActual = path.resolve(fileURLToPath(actualUrl))
+    const resolvedExpected = path.resolve(rendererFilePath)
+    if (process.platform === 'win32') {
+      return resolvedActual.toLowerCase() === resolvedExpected.toLowerCase()
+    }
+
+    return resolvedActual === resolvedExpected
   } catch {
     return false
   }

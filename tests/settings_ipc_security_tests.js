@@ -5,6 +5,7 @@ import {
   isTrustedSettingsIpcSender,
   registerSettingsIpcHandlers
 } from '../src/main/ipc/settingsHandlers.js'
+import { getWindowsLoginItemOptions } from '../src/main/loginItemHelper.js'
 
 /**
  * ============================================================================
@@ -339,8 +340,48 @@ async function runSettingsIpcSecurityTests() {
     )
   }
 
+  // --- 14. Development / Packaged Windows Startup Arguments Helper ---
+  console.log('--- 14. Testing Development / Packaged Windows Startup Arguments Helper ---')
+  {
+    // Test A — Development mode
+    const devApp = {
+      isPackaged: false,
+      getAppPath: () => 'C:\\APPLAN2\\project'
+    }
+    assert.deepEqual(
+      getWindowsLoginItemOptions(devApp),
+      {
+        path: process.execPath,
+        args: ['C:\\APPLAN2\\project']
+      },
+      '14.1: Development mode must specify process.execPath and app path argument'
+    )
+
+    // Test B — Packaged mode
+    const packagedApp = {
+      isPackaged: true,
+      getAppPath: () => 'C:\\Program Files\\APPLAN2'
+    }
+    assert.deepEqual(
+      getWindowsLoginItemOptions(packagedApp),
+      {},
+      '14.2: Packaged mode must return empty options object'
+    )
+
+    // Test C — Safe fallback
+    assert.deepEqual(
+      getWindowsLoginItemOptions(null),
+      {},
+      '14.3: Null/missing app instance must safely return empty options object'
+    )
+
+    console.log(
+      '✓ Test 14: Development, Packaged, and Fallback startup argument options verified.\n'
+    )
+  }
+
   console.log('================================================================')
-  console.log(' ALL 13 SETTINGS IPC SECURITY TESTS PASSED (100% PASS)          ')
+  console.log(' ALL SETTINGS IPC SECURITY & STARTUP TESTS PASSED (100% PASS)   ')
   console.log('================================================================\n')
 }
 

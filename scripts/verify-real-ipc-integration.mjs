@@ -9,12 +9,7 @@ import {
   registerSettingsIpcHandlers,
   isTrustedSettingsIpcSender
 } from '../src/main/ipc/settingsHandlers.js'
-
-let mainWindow = null
-let unauthorizedWindow = null
-let tempRoot = null
-let originalStartupSetting = null
-let hasCapturedOriginalStartupSetting = false
+import { getWindowsLoginItemOptions } from '../src/main/loginItemHelper.js'
 
 async function run() {
   console.log('================================================================')
@@ -24,82 +19,94 @@ async function run() {
 
   assert.equal(process.platform, 'win32', 'Tests must execute on Windows platform')
 
-  // 1. Create unique temporary directory and initialize isolated SQLite database
-  tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'applan2-settings-ipc-'))
-  const databasePath = path.join(tempRoot, 'isolated_test.db')
-  console.log(`[Database Isolation] Initializing isolated test database at: ${databasePath}`)
+  let mainWindow = null
+  let unauthorizedOriginWindow = null
+  let differentWindow = null
+  let tempRoot = null
+  let databaseInitialized = false
 
-  const { databasePath: actualDbPath } = await initializeDatabase({
-    storage: databasePath
-  })
+  let originalStartupSetting = null
+  let hasCapturedOriginalStartupSetting = false
 
-  assert.equal(
-    path.resolve(actualDbPath),
-    path.resolve(databasePath),
-    'Actual database path must strictly match isolated temporary path'
-  )
-  assert.ok(
-    actualDbPath.includes('applan2-settings-ipc-'),
-    'Database must reside inside the unique temporary test directory'
-  )
-  console.log('[Database Isolation] Isolated database initialized successfully with migrations.')
-
-  // 2. Validate production build artifacts
-  const preloadPath = path.resolve('out/preload/index.js')
-  const rendererFilePath = path.resolve('out/renderer/index.html')
-
-  assert.ok(
-    fs.existsSync(preloadPath),
-    `Compiled preload script must exist at ${preloadPath}. Run npm run build first.`
-  )
-  assert.ok(
-    fs.existsSync(rendererFilePath),
-    `Compiled renderer index.html must exist at ${rendererFilePath}. Run npm run build first.`
-  )
-  console.log('[Artifacts] Verified compiled preload and renderer files exist.')
-
-  // 3. Create real BrowserWindow with compiled preload script and production renderer file
-  mainWindow = new BrowserWindow({
-    width: 800,
-    height: 600,
-    show: false,
-    webPreferences: {
-      preload: preloadPath,
-      sandbox: false,
-      contextIsolation: true
-    }
-  })
-
-  mainWindow.webContents.on('console-message', (_, level, message) => {
-    // Filter out cosmetic warnings from dev/eval
-    if (!message.includes('Electron Security Warning')) {
-      console.log(`[Renderer Console] ${message}`)
-    }
-  })
-
-  // Set trusted startup window before registering IPC handlers and loading renderer
-  setStartupWindow(mainWindow)
-
-  // 4. Register production IPC handlers using shared production module with full security config
-  registerSettingsIpcHandlers({
-    ipcMain,
-    app,
-    BrowserWindow,
-    dialog,
-    getStartupWindow,
-    isDev: false,
-    rendererUrl: undefined,
-    rendererFilePath
-  })
-  console.log(
-    '[Setup] Registered production IPC handlers with production origin & file path security.'
-  )
-
-  // 5. Load production renderer index.html
-  await mainWindow.loadFile(rendererFilePath)
-  console.log('[Setup] Real BrowserWindow loaded production renderer file successfully.\n')
+  let testError = null
+  const cleanupErrors = []
 
   try {
+    // 1. Create unique temporary directory and initialize isolated SQLite database
+    tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'applan2-settings-ipc-'))
+    const databasePath = path.join(tempRoot, 'isolated_test.db')
+    console.log(`[Database Isolation] Initializing isolated test database at: ${databasePath}`)
+
+    const { databasePath: actualDbPath } = await initializeDatabase({
+      storage: databasePath
+    })
+    databaseInitialized = true
+
+    assert.equal(
+      path.resolve(actualDbPath),
+      path.resolve(databasePath),
+      'Actual database path must strictly match isolated temporary path'
+    )
+    assert.ok(
+      actualDbPath.includes('applan2-settings-ipc-'),
+      'Database must reside inside the unique temporary test directory'
+    )
+    console.log('[Database Isolation] Isolated database initialized successfully with migrations.')
+
+    // 2. Validate production build artifacts
+    const preloadPath = path.resolve('out/preload/index.js')
+    const rendererFilePath = path.resolve('out/renderer/index.html')
+
+    assert.ok(
+      fs.existsSync(preloadPath),
+      `Compiled preload script must exist at ${preloadPath}. Run npm run build first.`
+    )
+    assert.ok(
+      fs.existsSync(rendererFilePath),
+      `Compiled renderer index.html must exist at ${rendererFilePath}. Run npm run build first.`
+    )
+    console.log('[Artifacts] Verified compiled preload and renderer files exist.')
+
+    // 3. Create real BrowserWindow with compiled preload script and production renderer file
+    mainWindow = new BrowserWindow({
+      width: 800,
+      height: 600,
+      show: false,
+      webPreferences: {
+        preload: preloadPath,
+        sandbox: false,
+        contextIsolation: true
+      }
+    })
+
+    mainWindow.webContents.on('console-message', (_, level, message) => {
+      if (!message.includes('Electron Security Warning')) {
+        console.log(`[Renderer Console] ${message}`)
+      }
+    })
+
+    // Set trusted startup window before registering IPC handlers and loading renderer
+    setStartupWindow(mainWindow)
+
+    // 4. Register production IPC handlers using shared production module with full security config
+    registerSettingsIpcHandlers({
+      ipcMain,
+      app,
+      BrowserWindow,
+      dialog,
+      getStartupWindow,
+      isDev: false,
+      rendererUrl: undefined,
+      rendererFilePath
+    })
+    console.log(
+      '[Setup] Registered production IPC handlers with production origin & file path security.'
+    )
+
+    // 5. Load production renderer index.html
+    await mainWindow.loadFile(rendererFilePath)
+    console.log('[Setup] Real BrowserWindow loaded production renderer file successfully.\n')
+
     // ------------------------------------------------------------------------
     // VERIFY PRELOAD BRIDGE INTEGRITY
     // ------------------------------------------------------------------------
@@ -223,9 +230,9 @@ async function run() {
     console.log('✓ Test 2 Passed: Real filesystem storage info verified via IPC.\n')
 
     // ------------------------------------------------------------------------
-    // PHASE 05.3 — REAL UNAUTHORIZED IPC SENDER ISOLATION CHECKS
+    // PHASE 05.3 — REAL UNAUTHORIZED PRODUCTION ORIGIN & WINDOW ISOLATION CHECKS
     // ------------------------------------------------------------------------
-    console.log('--- PHASE 05.3: Real Unauthorized Window Isolation Checks ---')
+    console.log('--- PHASE 05.3: Real Unauthorized Origin & Window Isolation Checks ---')
 
     // Direct helper security checks
     assert.equal(
@@ -239,9 +246,16 @@ async function run() {
       'Null sender must be rejected'
     )
 
-    // Create an unauthorized second BrowserWindow with an untrusted origin
-    console.log('Testing unauthorized second BrowserWindow rejection...')
-    unauthorizedWindow = new BrowserWindow({
+    // Check 1: Real Production File-Path Validation
+    // A window registered as trusted startup window, but loading an unauthorized local HTML file
+    console.log('Testing unauthorized local HTML file rejection (production file-path check)...')
+    const untrustedHtmlPath = path.join(tempRoot, 'untrusted-renderer.html')
+    fs.writeFileSync(
+      untrustedHtmlPath,
+      '<!doctype html><html><body><h1>Unauthorized test page</h1></body></html>'
+    )
+
+    unauthorizedOriginWindow = new BrowserWindow({
       width: 400,
       height: 300,
       show: false,
@@ -252,118 +266,242 @@ async function run() {
       }
     })
 
-    // Load an untrusted data URL to verify origin rejection
-    await unauthorizedWindow.loadURL(
-      'data:text/html,<!DOCTYPE html><html><body><h1>Untrusted</h1></body></html>'
+    // Deliberately set as trusted window so Checks 1-4 pass and Check 6 (file-path validation) is reached
+    setStartupWindow(unauthorizedOriginWindow)
+    await unauthorizedOriginWindow.loadFile(untrustedHtmlPath)
+
+    const unauthOriginResult = await unauthorizedOriginWindow.webContents.executeJavaScript(`
+      window.api.getStartWithWindows()
+        .then(value => ({ success: true, value }))
+        .catch(error => ({
+          success: false,
+          message: error.message
+        }))
+    `)
+    console.log('  Unauthorized Local HTML Origin Result:', unauthOriginResult)
+    assert.equal(
+      unauthOriginResult.success,
+      false,
+      'Unauthorized HTML file must not succeed in invoking IPC'
+    )
+    assert.ok(
+      unauthOriginResult.message.includes('Unauthorized IPC sender'),
+      'Unauthorized local HTML file must be rejected by production file-path validation'
     )
 
-    const unauthStartupResult = await unauthorizedWindow.webContents.executeJavaScript(`
+    // Restore original startup window reference
+    setStartupWindow(mainWindow)
+    unauthorizedOriginWindow.destroy()
+    unauthorizedOriginWindow = null
+    console.log('✓ Test passed: Unauthorized local HTML file rejected by file-path validation.\n')
+
+    // Check 2: Different BrowserWindow Rejection
+    console.log('Testing unauthorized different BrowserWindow rejection...')
+    differentWindow = new BrowserWindow({
+      width: 400,
+      height: 300,
+      show: false,
+      webPreferences: {
+        preload: preloadPath,
+        sandbox: false,
+        contextIsolation: true
+      }
+    })
+
+    await differentWindow.loadURL(
+      'data:text/html,<!DOCTYPE html><html><body><h1>Untrusted Window</h1></body></html>'
+    )
+
+    const diffStartupResult = await differentWindow.webContents.executeJavaScript(`
       window.api.getStartWithWindows().catch(err => ({ caught: true, message: err.message }))
     `)
-    console.log('  Unauthorized Startup Call Result:', unauthStartupResult)
+    console.log('  Different Window Startup Result:', diffStartupResult)
     assert.ok(
-      unauthStartupResult.caught && unauthStartupResult.message.includes('Unauthorized IPC sender'),
-      'Unauthorized second BrowserWindow must be rejected on startup read'
+      diffStartupResult.caught && diffStartupResult.message.includes('Unauthorized IPC sender'),
+      'Different BrowserWindow must be rejected on startup read'
     )
 
-    const unauthFolderResult = await unauthorizedWindow.webContents.executeJavaScript(`
+    const diffFolderResult = await differentWindow.webContents.executeJavaScript(`
       window.api.getDownloadFolder().catch(err => ({ caught: true, message: err.message }))
     `)
-    console.log('  Unauthorized Folder Call Result:', unauthFolderResult)
+    console.log('  Different Window Folder Result:', diffFolderResult)
     assert.ok(
-      unauthFolderResult.caught && unauthFolderResult.message.includes('Unauthorized IPC sender'),
-      'Unauthorized second BrowserWindow must be rejected on folder read'
+      diffFolderResult.caught && diffFolderResult.message.includes('Unauthorized IPC sender'),
+      'Different BrowserWindow must be rejected on folder read'
     )
 
-    const unauthStorageResult = await unauthorizedWindow.webContents.executeJavaScript(`
+    const diffStorageResult = await differentWindow.webContents.executeJavaScript(`
       window.api.getStorageInfo().catch(err => ({ caught: true, message: err.message }))
     `)
-    console.log('  Unauthorized Storage Call Result:', unauthStorageResult)
+    console.log('  Different Window Storage Result:', diffStorageResult)
     assert.ok(
-      unauthStorageResult.caught && unauthStorageResult.message.includes('Unauthorized IPC sender'),
-      'Unauthorized second BrowserWindow must be rejected on storage read'
+      diffStorageResult.caught && diffStorageResult.message.includes('Unauthorized IPC sender'),
+      'Different BrowserWindow must be rejected on storage read'
     )
 
-    console.log(
-      '✓ Phase 05.3 Passed: Unauthorized window calls fail closed with Unauthorized IPC sender.\n'
-    )
-
-    console.log('================================================================')
-    console.log(' ALL REAL IPC INTEGRATION TESTS PASSED SUCCESSFULLY (100% PASS)  ')
-    console.log('================================================================\n')
+    differentWindow.destroy()
+    differentWindow = null
+    console.log('✓ Test passed: Different BrowserWindow rejected with Unauthorized IPC sender.\n')
+  } catch (err) {
+    testError = err
+    console.error('[REAL IPC TEST FAILURE]', err)
   } finally {
-    // 1. Safe restoration of original Windows startup setting
-    try {
-      if (hasCapturedOriginalStartupSetting) {
-        console.log(
-          `\n[Cleanup] Restoring original Windows startup setting (${originalStartupSetting}) via IPC...`
-        )
-        const restoreRes = await mainWindow.webContents.executeJavaScript(
-          `window.api.setStartWithWindows(${originalStartupSetting})`
-        )
-        console.log('  Restore Response:', restoreRes)
-        assert.equal(
-          restoreRes.enabled,
-          originalStartupSetting,
-          'Restored enabled state must match original'
-        )
+    // 1. Safe restoration of Windows startup setting if captured
+    if (hasCapturedOriginalStartupSetting) {
+      let restored = false
 
-        const verifyRestored = await mainWindow.webContents.executeJavaScript(
-          'window.api.getStartWithWindows()'
-        )
-        assert.equal(
-          verifyRestored.enabled,
-          originalStartupSetting,
-          'Final read-back must match original preference exactly'
-        )
-        console.log(
-          `✓ [Cleanup] Original Windows startup preference successfully restored to ${originalStartupSetting}.\n`
+      // Preferred path: Restore via mainWindow IPC
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        try {
+          console.log(
+            `\n[Cleanup] Restoring original Windows startup setting (${originalStartupSetting}) via IPC...`
+          )
+          const restoreRes = await mainWindow.webContents.executeJavaScript(
+            `window.api.setStartWithWindows(${originalStartupSetting})`
+          )
+          if (restoreRes && restoreRes.enabled === originalStartupSetting) {
+            const finalReadBack = await mainWindow.webContents.executeJavaScript(
+              'window.api.getStartWithWindows()'
+            )
+            if (finalReadBack && finalReadBack.enabled === originalStartupSetting) {
+              restored = true
+              console.log(
+                `✓ [Cleanup] Original Windows startup preference successfully restored to ${originalStartupSetting} via IPC.\n`
+              )
+            }
+          }
+        } catch (ipcErr) {
+          console.warn(
+            '[Cleanup] IPC restoration failed or window unavailable, falling back to native API:',
+            ipcErr?.message || ipcErr
+          )
+        }
+      }
+
+      // Fallback path: Native Electron API restoration
+      if (!restored) {
+        try {
+          console.log(
+            `[Cleanup] Fallback: Restoring original Windows startup preference (${originalStartupSetting}) via native Electron API...`
+          )
+          const options = getWindowsLoginItemOptions(app)
+          app.setLoginItemSettings({
+            openAtLogin: originalStartupSetting,
+            ...options
+          })
+          const nativeReadBack = app.getLoginItemSettings(options)
+          if (nativeReadBack && nativeReadBack.openAtLogin === originalStartupSetting) {
+            restored = true
+            console.log(
+              `✓ [Cleanup] Fallback succeeded: Restored Windows startup preference to ${originalStartupSetting} via native API.\n`
+            )
+          } else {
+            const err = new Error(
+              `Native read-back verification failed: expected ${originalStartupSetting}, got ${nativeReadBack?.openAtLogin}`
+            )
+            cleanupErrors.push(err)
+            console.error(
+              'CRITICAL: Failed to restore Windows startup preference via native API:',
+              err
+            )
+          }
+        } catch (nativeErr) {
+          cleanupErrors.push(nativeErr)
+          console.error(
+            'CRITICAL: Failed to restore Windows startup preference via native API:',
+            nativeErr
+          )
+        }
+      }
+
+      if (!restored) {
+        cleanupErrors.push(
+          new Error(
+            `Failed to restore original Windows startup setting to ${originalStartupSetting}`
+          )
         )
       }
-    } catch (restoreErr) {
-      console.error(
-        'CRITICAL: Failed to restore Windows startup preference in cleanup:',
-        restoreErr
-      )
-      process.exitCode = 1
     }
 
-    // 2. Destroy windows
+    // 2. Destroy test windows safely
     try {
-      if (unauthorizedWindow && !unauthorizedWindow.isDestroyed()) {
-        unauthorizedWindow.destroy()
+      if (unauthorizedOriginWindow && !unauthorizedOriginWindow.isDestroyed()) {
+        unauthorizedOriginWindow.destroy()
+      }
+      if (differentWindow && !differentWindow.isDestroyed()) {
+        differentWindow.destroy()
       }
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.destroy()
       }
     } catch (winErr) {
+      cleanupErrors.push(winErr)
       console.error('Failed to destroy test windows:', winErr)
     }
 
     // 3. Close isolated database
-    try {
-      console.log('[Cleanup] Closing isolated database connection...')
-      await closeDatabase()
-      console.log('[Cleanup] Isolated database closed.')
-    } catch (dbCloseErr) {
-      console.error('Failed to close isolated test database:', dbCloseErr)
+    if (databaseInitialized) {
+      try {
+        console.log('[Cleanup] Closing isolated database connection...')
+        await closeDatabase()
+        console.log('[Cleanup] Isolated database closed.')
+      } catch (dbCloseErr) {
+        cleanupErrors.push(dbCloseErr)
+        console.error('Failed to close isolated test database:', dbCloseErr)
+      }
     }
 
-    // 4. Clean up temporary test directory
-    try {
-      if (tempRoot && fs.existsSync(tempRoot)) {
+    // 4. Remove temporary test directory with bounded retries
+    if (tempRoot && fs.existsSync(tempRoot)) {
+      try {
         console.log(`[Cleanup] Removing temporary test directory: ${tempRoot}`)
-        fs.rmSync(tempRoot, { recursive: true, force: true })
-        assert.ok(!fs.existsSync(tempRoot), 'Temporary test directory must be completely removed')
+        await fs.promises.rm(tempRoot, {
+          recursive: true,
+          force: true,
+          maxRetries: 10,
+          retryDelay: 100
+        })
+        assert.equal(
+          fs.existsSync(tempRoot),
+          false,
+          'Temporary test directory must be completely removed'
+        )
         console.log('[Cleanup] Temporary test directory removed successfully.')
+      } catch (rmErr) {
+        cleanupErrors.push(rmErr)
+        console.error('Failed to remove temporary test directory:', rmErr)
       }
-    } catch (rmErr) {
-      console.error('Failed to remove temporary test directory:', rmErr)
     }
 
     // 5. Quit electron
     app.quit()
   }
+
+  // Determine final result and report only AFTER all cleanup has executed
+  if (testError || cleanupErrors.length > 0) {
+    process.exitCode = 1
+    console.error('================================================================')
+    console.error(' REAL IPC INTEGRATION TEST: FAILED                              ')
+    console.error('================================================================')
+    if (testError) {
+      console.error('[TEST ERROR]', testError)
+    }
+    for (const error of cleanupErrors) {
+      console.error('[CLEANUP ERROR]', error)
+    }
+    return
+  }
+
+  console.log('================================================================')
+  console.log(' ALL REAL IPC INTEGRATION TESTS PASSED SUCCESSFULLY (100% PASS)  ')
+  console.log('================================================================\n')
 }
 
-app.whenReady().then(run)
+app
+  .whenReady()
+  .then(run)
+  .catch((err) => {
+    console.error('[FATAL IPC TEST ERROR]', err)
+    process.exitCode = 1
+    app.quit()
+  })
