@@ -27,6 +27,8 @@ import DownloaderHeroIllustration from '../components/ui/DownloaderHeroIllustrat
 import MediaThumbnail from '../components/ui/MediaThumbnail'
 import PlatformBadge from '../components/ui/PlatformBadge'
 import { chooseDownloadFolder, getDownloadFolder } from '../services/api'
+import { getDownloadSettings } from '../services/downloadSettingsApi'
+import { resolvePreferredVideoQuality } from '../utils/downloadPreferenceResolver'
 import { createDownload, listDownloads, deleteDownloadHistory } from '../services/downloadsApi'
 import { useDownloadJobActions } from '../hooks/useDownloadJobActions'
 import { analyzeMedia } from '../services/mediaApi'
@@ -103,6 +105,10 @@ export default function DownloaderPage() {
   const speedTrackerRef = useRef(new Map())
   const isPollingRecentRef = useRef(false)
   const hasActiveRecentRef = useRef(false)
+  const savedPreferencesRef = useRef({
+    preferredMp4Quality: 'best',
+    preferredMp3BitrateKbps: 192
+  })
 
   /**
    * Cooldown countdown timer for YouTube rate limit (Step 02).
@@ -461,21 +467,27 @@ export default function DownloaderPage() {
           setSelectedFormat(null)
         }
 
-        // Auto-select valid MP4 quality
+        // Auto-select valid MP4 quality based on saved user preference and available streams
         if (availableMp4Qualities.length > 0) {
           setSelectedVideoQuality((prev) => {
             if (prev !== 'best' && availableMp4Qualities.includes(prev)) {
               return prev
             }
-            return 'best'
+            return resolvePreferredVideoQuality(
+              savedPreferencesRef.current.preferredMp4Quality,
+              availableMp4Qualities
+            )
           })
         }
 
-        // Auto-select valid MP3 bitrate
+        // Auto-select valid MP3 bitrate based on saved user preference
         if (availability.mp3Available) {
-          setSelectedAudioBitrate((prev) =>
-            [128, 192, 320].includes(Number(prev)) ? Number(prev) : 192
-          )
+          setSelectedAudioBitrate((prev) => {
+            if ([128, 192, 320].includes(Number(prev))) {
+              return Number(prev)
+            }
+            return savedPreferencesRef.current.preferredMp3BitrateKbps || 192
+          })
         }
       } else {
         const status = response.status
@@ -585,6 +597,42 @@ export default function DownloaderPage() {
     }
 
     loadSavedFolder()
+
+    return () => {
+      isMounted = false
+    }
+  }, [])
+
+  // Load saved download preferences on mount to set initial defaults
+  useEffect(() => {
+    let isMounted = true
+
+    async function loadSavedPreferences() {
+      try {
+        const response = await getDownloadSettings()
+        if (!isMounted) return
+
+        if (response.ok && response.data?.success && response.data?.data) {
+          const { preferredMp4Quality, preferredMp3BitrateKbps } = response.data.data
+          const validQuality = preferredMp4Quality || 'best'
+          const validBitrate = [128, 192, 320].includes(Number(preferredMp3BitrateKbps))
+            ? Number(preferredMp3BitrateKbps)
+            : 192
+
+          savedPreferencesRef.current = {
+            preferredMp4Quality: validQuality,
+            preferredMp3BitrateKbps: validBitrate
+          }
+
+          setSelectedVideoQuality((prev) => (prev === 'best' ? validQuality : prev))
+          setSelectedAudioBitrate((prev) => (prev === 192 ? validBitrate : prev))
+        }
+      } catch {
+        // Fall back to existing safe defaults ('best' and 192)
+      }
+    }
+
+    loadSavedPreferences()
 
     return () => {
       isMounted = false

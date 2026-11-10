@@ -9,6 +9,7 @@ import {
   AlertCircle
 } from 'lucide-react'
 import ToggleSwitch from '../components/ui/ToggleSwitch'
+import QualityAudioSettings from '../components/settings/QualityAudioSettings'
 import { SETTINGS_SECTIONS } from '../data/uiPreviewData'
 import {
   chooseDownloadFolder,
@@ -223,7 +224,7 @@ export default function SettingsPage() {
             Settings
           </h1>
           <span className="text-[10px] font-bold tracking-wider px-2 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20 uppercase">
-            General
+            {currentSectionLabel}
           </span>
         </div>
         <p className="text-sm text-text-muted mt-1 font-medium">
@@ -259,25 +260,7 @@ export default function SettingsPage() {
 
         {/* ================= RIGHT CONTENT AREA (9 COLS) ================= */}
         <div className="md:col-span-9 flex flex-col gap-6">
-          {activeSection !== 'general' ? (
-            /* Sub-category Standby Notice */
-            <div className="p-8 rounded-2xl bg-[#07152E]/80 border border-primary/15 text-center flex flex-col items-center justify-center gap-2">
-              <span className="text-sm font-bold text-white capitalize">
-                {currentSectionLabel} Standby
-              </span>
-              <p className="text-xs text-text-muted max-w-md">
-                Detailed configuration options for {currentSectionLabel} will be integrated in later
-                roadmap steps.
-              </p>
-              <button
-                type="button"
-                onClick={() => setActiveSection('general')}
-                className="mt-3 px-4 py-1.5 rounded-xl text-xs font-bold bg-primary/10 hover:bg-primary/20 text-primary border border-primary/25 cursor-pointer transition-all"
-              >
-                Return to General Settings
-              </button>
-            </div>
-          ) : (
+          {activeSection === 'general' ? (
             <>
               {/* Card 1: Start with Windows */}
               <div className="p-5 lg:p-6 rounded-2xl bg-[#07152E]/90 border border-primary/20 shadow-[0_4px_24px_rgba(0,0,0,0.35)] backdrop-blur-md flex flex-col gap-5">
@@ -427,6 +410,26 @@ export default function SettingsPage() {
                 )}
               </div>
             </>
+          ) : activeSection === 'quality-audio' ? (
+            <QualityAudioSettings />
+          ) : (
+            /* Sub-category Standby Notice */
+            <div className="p-8 rounded-2xl bg-[#07152E]/80 border border-primary/15 text-center flex flex-col items-center justify-center gap-2">
+              <span className="text-sm font-bold text-white capitalize">
+                {currentSectionLabel} Standby
+              </span>
+              <p className="text-xs text-text-muted max-w-md">
+                Detailed configuration options for {currentSectionLabel} will be integrated in later
+                roadmap steps.
+              </p>
+              <button
+                type="button"
+                onClick={() => setActiveSection('general')}
+                className="mt-3 px-4 py-1.5 rounded-xl text-xs font-bold bg-primary/10 hover:bg-primary/20 text-primary border border-primary/25 cursor-pointer transition-all"
+              >
+                Return to General Settings
+              </button>
+            </div>
           )}
         </div>
       </div>

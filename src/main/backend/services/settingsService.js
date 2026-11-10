@@ -11,7 +11,7 @@ import {
 // Default download preferences when none have been saved in SQLite
 export const DEFAULT_DOWNLOAD_PREFERENCES = Object.freeze({
   defaultFormat: 'mp4',
-  preferredMp4Quality: '720p',
+  preferredMp4Quality: 'best',
   preferredMp3BitrateKbps: 192
 })
 
@@ -75,13 +75,19 @@ export async function validateDownloadPreferences(changes) {
   // 3. Validate preferred MP4 quality
   if ('preferredMp4Quality' in changes) {
     const val = changes.preferredMp4Quality
-    if (typeof val !== 'string' || !/^\d+p$/.test(val.trim()) || val.trim().length > 10) {
+    if (typeof val !== 'string') {
       errors.preferredMp4Quality =
-        'Preferred MP4 quality must be a resolution string like "720p" or "1080p"'
+        'Preferred MP4 quality must be best or a valid resolution such as 1080p'
     } else {
-      const height = Number.parseInt(val.trim(), 10)
-      if (height <= 0 || height > 4320) {
-        errors.preferredMp4Quality = 'Invalid MP4 video resolution'
+      const quality = val.trim().toLowerCase()
+      if (quality !== 'best' && (!/^\d+p$/.test(quality) || quality.length > 10)) {
+        errors.preferredMp4Quality =
+          'Preferred MP4 quality must be best or a valid resolution such as 1080p'
+      } else if (quality !== 'best') {
+        const height = Number.parseInt(quality, 10)
+        if (height <= 0 || height > 4320) {
+          errors.preferredMp4Quality = 'Invalid MP4 video resolution'
+        }
       }
     }
   }
@@ -131,13 +137,16 @@ export async function getDownloadPreferences() {
     defaultFormat = DEFAULT_DOWNLOAD_PREFERENCES.defaultFormat
   }
 
-  // 3. Preferred MP4 Quality: from DB or default '720p'
+  // 3. Preferred MP4 Quality: from DB or default 'best'
   let preferredMp4Quality = settingsMap.get(SETTING_KEYS.PREFERRED_MP4_QUALITY)
-  if (
-    !preferredMp4Quality ||
-    typeof preferredMp4Quality !== 'string' ||
-    !/^\d+p$/.test(preferredMp4Quality)
-  ) {
+  if (typeof preferredMp4Quality === 'string') {
+    const normalized = preferredMp4Quality.trim().toLowerCase()
+    if (normalized === 'best' || /^\d+p$/.test(normalized)) {
+      preferredMp4Quality = normalized
+    } else {
+      preferredMp4Quality = DEFAULT_DOWNLOAD_PREFERENCES.preferredMp4Quality
+    }
+  } else {
     preferredMp4Quality = DEFAULT_DOWNLOAD_PREFERENCES.preferredMp4Quality
   }
 
@@ -221,7 +230,7 @@ export async function updateDownloadPreferences(changes) {
       await AppSetting.upsert(
         {
           key: SETTING_KEYS.PREFERRED_MP4_QUALITY,
-          value: changes.preferredMp4Quality.trim()
+          value: changes.preferredMp4Quality.trim().toLowerCase()
         },
         { transaction }
       )

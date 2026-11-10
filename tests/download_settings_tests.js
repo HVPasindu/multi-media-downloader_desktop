@@ -15,6 +15,7 @@ import { createDownloadJob } from '../src/main/backend/services/downloadService.
 import { createTestDatabase } from './helpers/testDatabase.js'
 import { SETTINGS_SECTIONS } from '../src/renderer/src/data/uiPreviewData.js'
 import { getWindowsLoginItemOptions } from '../src/main/loginItemHelper.js'
+import { resolvePreferredVideoQuality } from '../src/renderer/src/utils/downloadPreferenceResolver.js'
 
 /**
  * ============================================================================
@@ -50,7 +51,7 @@ async function runDownloadSettingsTests() {
     console.log('--- 1. Testing Default Settings & Schema Constants ---')
 
     assert.equal(DEFAULT_DOWNLOAD_PREFERENCES.defaultFormat, 'mp4')
-    assert.equal(DEFAULT_DOWNLOAD_PREFERENCES.preferredMp4Quality, '720p')
+    assert.equal(DEFAULT_DOWNLOAD_PREFERENCES.preferredMp4Quality, 'best')
     assert.equal(DEFAULT_DOWNLOAD_PREFERENCES.preferredMp3BitrateKbps, 192)
 
     assert.equal(SETTING_KEYS.DOWNLOAD_PATH, 'download_path')
@@ -61,7 +62,7 @@ async function runDownloadSettingsTests() {
     // Initially, default preferences are returned
     const initialPrefs = await getDownloadPreferences()
     assert.equal(initialPrefs.defaultFormat, 'mp4', '1.1: Default format is mp4')
-    assert.equal(initialPrefs.preferredMp4Quality, '720p', '1.2: Default quality is 720p')
+    assert.equal(initialPrefs.preferredMp4Quality, 'best', '1.2: Default quality is best')
     assert.equal(initialPrefs.preferredMp3BitrateKbps, 192, '1.3: Default bitrate is 192')
     assert.ok(typeof initialPrefs.downloadPath === 'string', '1.4: downloadPath is a string')
 
@@ -85,26 +86,49 @@ async function runDownloadSettingsTests() {
     const v4 = await validateDownloadPreferences({ downloadPath: testFolder1 })
     assert.equal(v4.isValid, true, '2.4: Valid existing absolute path passes')
 
+    // Test all approved video quality options
+    const approvedQualities = ['best', '2160p', '1440p', '1080p', '720p', '480p', '850p']
+    for (const q of approvedQualities) {
+      const vQual = await validateDownloadPreferences({ preferredMp4Quality: q })
+      assert.equal(vQual.isValid, true, `2.5: Quality option "${q}" must pass validation`)
+    }
+
+    // Test all approved audio bitrate options
+    const approvedBitrates = [128, 192, 320]
+    for (const b of approvedBitrates) {
+      const vBit = await validateDownloadPreferences({ preferredMp3BitrateKbps: b })
+      assert.equal(vBit.isValid, true, `2.6: Audio bitrate "${b}" must pass validation`)
+    }
+
     // Unknown property rejection
     const vBadKey = await validateDownloadPreferences({ unknownSettingKey: 'val' })
-    assert.equal(vBadKey.isValid, false, '2.5: Unknown setting property rejected')
+    assert.equal(vBadKey.isValid, false, '2.7: Unknown setting property rejected')
     assert.ok(vBadKey.errors.unknownSettingKey)
 
     // Invalid format rejection
     const vBadFmt = await validateDownloadPreferences({ defaultFormat: 'flac' })
-    assert.equal(vBadFmt.isValid, false, '2.6: Unsupported format flac rejected')
+    assert.equal(vBadFmt.isValid, false, '2.8: Unsupported format flac rejected')
 
     // Invalid bitrate rejection
     const vBadBit = await validateDownloadPreferences({ preferredMp3BitrateKbps: 256 })
-    assert.equal(vBadBit.isValid, false, '2.7: Unsupported bitrate 256 rejected')
+    assert.equal(vBadBit.isValid, false, '2.9: Unsupported bitrate 256 rejected')
+
+    const vBadBitStr = await validateDownloadPreferences({ preferredMp3BitrateKbps: '192' })
+    assert.equal(vBadBitStr.isValid, false, '2.10: String bitrate rejected')
 
     // Invalid quality format rejection
     const vBadQual = await validateDownloadPreferences({ preferredMp4Quality: 'super_hd' })
-    assert.equal(vBadQual.isValid, false, '2.8: Invalid resolution format rejected')
+    assert.equal(vBadQual.isValid, false, '2.11: Invalid resolution format rejected')
+
+    const vBadQualZero = await validateDownloadPreferences({ preferredMp4Quality: '0p' })
+    assert.equal(vBadQualZero.isValid, false, '2.12: 0p resolution rejected')
+
+    const vBadQualHuge = await validateDownloadPreferences({ preferredMp4Quality: '5000p' })
+    assert.equal(vBadQualHuge.isValid, false, '2.13: >4320p resolution rejected')
 
     // Invalid relative path rejection
     const vBadPath = await validateDownloadPreferences({ downloadPath: 'relative/folder' })
-    assert.equal(vBadPath.isValid, false, '2.9: Relative download path rejected')
+    assert.equal(vBadPath.isValid, false, '2.14: Relative download path rejected')
 
     console.log('✓ Section 2: Validation of properties, formats, bitrates, and paths verified.\n')
 
@@ -122,21 +146,40 @@ async function runDownloadSettingsTests() {
 
     assert.equal(updated1.defaultFormat, 'mp3')
     assert.equal(updated1.preferredMp3BitrateKbps, 320)
-    assert.equal(updated1.preferredMp4Quality, '720p', '3.1: Unspecified quality remains preserved')
+    assert.equal(
+      updated1.preferredMp4Quality,
+      'best',
+      '3.1: Unspecified quality remains preserved as best'
+    )
     assert.equal(updated1.downloadPath, testFolder1)
 
     // Verify raw SQLite records
     const savedPathFromDb = await getSavedDownloadPath(AppSetting)
     assert.equal(savedPathFromDb, testFolder1, '3.2: getSavedDownloadPath returns saved value')
 
-    // Second partial update (only quality)
+    // Second partial update (only quality to 1080p)
     const updated2 = await updateDownloadPreferences({
       preferredMp4Quality: '1080p'
     })
-    assert.equal(updated2.preferredMp4Quality, '1080p', '3.3: Quality updated')
+    assert.equal(updated2.preferredMp4Quality, '1080p', '3.3: Quality updated to 1080p')
     assert.equal(updated2.defaultFormat, 'mp3', '3.4: Format remains mp3')
     assert.equal(updated2.preferredMp3BitrateKbps, 320, '3.5: Bitrate remains 320')
     assert.equal(updated2.downloadPath, testFolder1, '3.6: Path remains testFolder1')
+
+    // Third partial update (quality back to best)
+    const updated3 = await updateDownloadPreferences({
+      preferredMp4Quality: 'best'
+    })
+    assert.equal(updated3.preferredMp4Quality, 'best', '3.7: Quality updated back to best')
+    assert.equal(updated3.defaultFormat, 'mp3', '3.8: Format remains mp3')
+    assert.equal(updated3.preferredMp3BitrateKbps, 320, '3.9: Bitrate remains 320')
+
+    // Fourth partial update (audio bitrate to 128)
+    const updated4 = await updateDownloadPreferences({
+      preferredMp3BitrateKbps: 128
+    })
+    assert.equal(updated4.preferredMp3BitrateKbps, 128, '3.10: Bitrate updated to 128')
+    assert.equal(updated4.preferredMp4Quality, 'best', '3.11: Quality remains best')
 
     console.log('✓ Section 3: Partial updates and SQLite persistence verified.\n')
 
@@ -305,6 +348,91 @@ async function runDownloadSettingsTests() {
     assert.deepEqual(nullOptions, {}, '7.9: Null/missing app safely returns empty options object')
 
     console.log('✓ Section 7: Windows startup input & options helper verified.\n')
+
+    // ------------------------------------------------------------------------
+    // 8. Quality Preference Resolver (resolvePreferredVideoQuality)
+    // ------------------------------------------------------------------------
+    console.log('--- 8. Testing Quality Preference Resolver ---')
+
+    const standardQualities = ['2160p', '1440p', '1080p', '720p', '480p']
+    const dynamicQualities = ['1700p', '1134p', '850p', '720p', '480p', '360p']
+
+    // 8.1 Best available
+    assert.equal(
+      resolvePreferredVideoQuality('best', standardQualities),
+      'best',
+      '8.1: best returns best'
+    )
+    assert.equal(
+      resolvePreferredVideoQuality(null, standardQualities),
+      'best',
+      '8.2: null pref returns best'
+    )
+    assert.equal(
+      resolvePreferredVideoQuality(undefined, standardQualities),
+      'best',
+      '8.3: undefined pref returns best'
+    )
+
+    // 8.2 Exact match
+    assert.equal(
+      resolvePreferredVideoQuality('1080p', standardQualities),
+      '1080p',
+      '8.4: exact 1080p match'
+    )
+    assert.equal(
+      resolvePreferredVideoQuality('720p', standardQualities),
+      '720p',
+      '8.5: exact 720p match'
+    )
+    assert.equal(
+      resolvePreferredVideoQuality('2160p', standardQualities),
+      '2160p',
+      '8.6: exact 2160p match'
+    )
+
+    // 8.3 Unavailable preference -> highest below preference
+    assert.equal(
+      resolvePreferredVideoQuality('1080p', dynamicQualities),
+      '850p',
+      '8.7: 1080p pref with dynamic qualities resolves to 850p'
+    )
+    assert.equal(
+      resolvePreferredVideoQuality('1440p', dynamicQualities),
+      '1134p',
+      '8.8: 1440p pref with dynamic qualities resolves to 1134p'
+    )
+
+    // 8.4 Preference lower than all available -> lowest available
+    assert.equal(
+      resolvePreferredVideoQuality('360p', ['2160p', '1080p', '720p']),
+      '720p',
+      '8.9: falls back to lowest available'
+    )
+    assert.equal(
+      resolvePreferredVideoQuality('240p', ['1080p', '720p']),
+      '720p',
+      '8.10: 240p falls back to 720p'
+    )
+
+    // 8.5 Empty or invalid available list
+    assert.equal(
+      resolvePreferredVideoQuality('1080p', []),
+      null,
+      '8.11: empty available array returns null'
+    )
+    assert.equal(
+      resolvePreferredVideoQuality('1080p', null),
+      null,
+      '8.12: null available array returns null'
+    )
+    assert.equal(
+      resolvePreferredVideoQuality('1080p', undefined),
+      null,
+      '8.13: undefined available returns null'
+    )
+
+    console.log('✓ Section 8: Quality preference resolver utility verified.\n')
 
     console.log('================================================================')
     console.log(' ALL DOWNLOAD SETTINGS TESTS PASSED SUCCESSFULLY (100% PASS)    ')
