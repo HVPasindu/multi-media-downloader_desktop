@@ -52,6 +52,7 @@ export default function SettingsPage() {
   const [isUpdatingStartup, setIsUpdatingStartup] = useState(false)
   const [startupError, setStartupError] = useState(null)
   const [isStartupSupported, setIsStartupSupported] = useState(true)
+  const [isStartupStatusAvailable, setIsStartupStatusAvailable] = useState(false)
 
   // 2. Default Download Folder state
   const [downloadFolder, setDownloadFolder] = useState('')
@@ -69,13 +70,36 @@ export default function SettingsPage() {
       // 1. Load Windows startup preference
       try {
         const startupRes = await getStartWithWindows()
-        if (isMounted && startupRes) {
-          setIsStartupSupported(startupRes.supported !== false)
-          setStartWithWindows(Boolean(startupRes.enabled))
+        if (!isMounted) return
+
+        if (!startupRes || typeof startupRes !== 'object') {
+          throw new Error('Invalid Windows startup response.')
+        }
+
+        if (startupRes.supported === false) {
+          // Situation B – Unsupported platform
+          setIsStartupSupported(false)
+          setIsStartupStatusAvailable(false)
+          setStartupError(null)
+        } else if (
+          startupRes.supported !== true ||
+          typeof startupRes.enabled !== 'boolean' ||
+          startupRes.error
+        ) {
+          // Situation C – Retrieval or invalid response error
+          setIsStartupSupported(true)
+          setIsStartupStatusAvailable(false)
+          setStartupError(startupRes.error || 'Invalid Windows startup response.')
+        } else {
+          // Situation A – Successful response
+          setIsStartupSupported(true)
+          setIsStartupStatusAvailable(true)
+          setStartWithWindows(startupRes.enabled)
           setStartupError(null)
         }
       } catch (err) {
         if (isMounted) {
+          setIsStartupStatusAvailable(false)
           setStartupError(err?.message || 'Unable to retrieve Windows startup setting.')
         }
       } finally {
@@ -126,16 +150,24 @@ export default function SettingsPage() {
   }, [])
 
   const handleToggleStartWithWindows = async (enabled) => {
-    if (isUpdatingStartup || !isStartupSupported) return
+    if (isUpdatingStartup || !isStartupSupported || !isStartupStatusAvailable) return
     setIsUpdatingStartup(true)
     setStartupError(null)
     try {
       const res = await updateStartWithWindows(enabled)
-      if (res && typeof res.enabled === 'boolean') {
-        setStartWithWindows(res.enabled)
-      } else {
-        setStartWithWindows(enabled)
+
+      if (
+        !res ||
+        res.supported !== true ||
+        typeof res.enabled !== 'boolean' ||
+        res.enabled !== enabled ||
+        res.error
+      ) {
+        throw new Error(res?.error || 'Windows did not confirm the startup setting.')
       }
+
+      setStartWithWindows(res.enabled)
+      setStartupError(null)
     } catch (err) {
       setStartupError(err?.message || 'Failed to update Windows startup setting.')
     } finally {
@@ -274,7 +306,12 @@ export default function SettingsPage() {
                     <ToggleSwitch
                       id="toggle-start-windows"
                       checked={startWithWindows}
-                      disabled={isLoadingStartup || isUpdatingStartup || !isStartupSupported}
+                      disabled={
+                        isLoadingStartup ||
+                        isUpdatingStartup ||
+                        !isStartupSupported ||
+                        !isStartupStatusAvailable
+                      }
                       onChange={handleToggleStartWithWindows}
                     />
                   </div>
