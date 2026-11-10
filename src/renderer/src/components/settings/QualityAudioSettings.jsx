@@ -159,7 +159,7 @@ export default function QualityAudioSettings() {
   return (
     <div className="flex flex-col gap-6">
       {/* ================= CARD 1: DEFAULT VIDEO QUALITY ================= */}
-      <div className="p-5 lg:p-6 rounded-2xl bg-[#07152E]/90 border border-primary/20 shadow-[0_4px_24px_rgba(0,0,0,0.35)] backdrop-blur-md flex flex-col gap-5">
+      <div className="p-5 lg:p-6 rounded-2xl bg-surface/90 border border-primary/20 shadow-[0_4px_24px_rgba(0,0,0,0.35)] backdrop-blur-md flex flex-col gap-5">
         {/* Card Header */}
         <div className="flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
@@ -167,7 +167,7 @@ export default function QualityAudioSettings() {
               <Video className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="text-sm font-extrabold text-white">Default Video Quality</h2>
+              <h2 className="text-sm font-extrabold text-text">Default Video Quality</h2>
               <p className="text-[11px] text-text-muted">MP4 video resolution preference</p>
             </div>
           </div>
@@ -216,8 +216,8 @@ export default function QualityAudioSettings() {
                 onClick={() => handleSelectVideoQuality(opt.value)}
                 className={`flex flex-col items-center justify-center p-3 rounded-xl border text-xs font-bold transition-all duration-200 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed ${
                   isSelected
-                    ? 'bg-[#0B1C38] border-primary text-white shadow-[0_0_14px_rgba(var(--theme-primary-rgb),0.3)]'
-                    : 'bg-[#07152E]/80 border-primary/15 text-text-muted hover:border-primary/30 hover:text-white'
+                    ? 'bg-surface-elevated border-primary text-text shadow-[0_0_14px_rgba(var(--theme-primary-rgb),0.3)]'
+                    : 'bg-surface/80 border-primary/15 text-text-muted hover:border-primary/30 hover:text-text'
                 }`}
               >
                 <span>{opt.label}</span>
@@ -233,7 +233,7 @@ export default function QualityAudioSettings() {
       </div>
 
       {/* ================= CARD 2: DEFAULT AUDIO BITRATE ================= */}
-      <div className="p-5 lg:p-6 rounded-2xl bg-[#07152E]/90 border border-primary/20 shadow-[0_4px_24px_rgba(0,0,0,0.35)] backdrop-blur-md flex flex-col gap-5">
+      <div className="p-5 lg:p-6 rounded-2xl bg-surface/90 border border-primary/20 shadow-[0_4px_24px_rgba(0,0,0,0.35)] backdrop-blur-md flex flex-col gap-5">
         {/* Card Header */}
         <div className="flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
@@ -241,7 +241,7 @@ export default function QualityAudioSettings() {
               <Music className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="text-sm font-extrabold text-white">Default Audio Bitrate</h2>
+              <h2 className="text-sm font-extrabold text-text">Default Audio Bitrate</h2>
               <p className="text-[11px] text-text-muted">MP3 audio quality preference</p>
             </div>
           </div>
@@ -289,8 +289,8 @@ export default function QualityAudioSettings() {
                 onClick={() => handleSelectAudioBitrate(opt.value)}
                 className={`flex flex-col items-center justify-center p-3.5 rounded-xl border text-xs font-bold transition-all duration-200 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed ${
                   isSelected
-                    ? 'bg-[#0B1C38] border-primary text-white shadow-[0_0_14px_rgba(var(--theme-primary-rgb),0.3)]'
-                    : 'bg-[#07152E]/80 border-primary/15 text-text-muted hover:border-primary/30 hover:text-white'
+                    ? 'bg-surface-elevated border-primary text-text shadow-[0_0_14px_rgba(var(--theme-primary-rgb),0.3)]'
+                    : 'bg-surface/80 border-primary/15 text-text-muted hover:border-primary/30 hover:text-text'
                 }`}
               >
                 <span>{opt.label}</span>

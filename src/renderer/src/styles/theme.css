@@ -2,16 +2,22 @@
 
 @theme {
   --color-primary: var(--theme-primary, #18c9f5);
-  --color-secondary: #07152e;
+  --color-secondary: var(--app-surface, #07152e);
   --color-secondary-accent: var(--theme-secondary-accent, #3388ff);
   --color-accent: var(--theme-tertiary, #514bff);
 
-  --color-background: #040b1c;
-  --color-surface: #0b1c38;
-  --color-surface-elevated: #102449;
+  --color-background: var(--app-background, #040b1c);
+  --color-surface: var(--app-surface, #07152e);
+  --color-surface-elevated: var(--app-surface-elevated, #0b1c38);
+  --color-surface-deep: var(--app-surface-deep, #102449);
+  --color-header: var(--app-header, #061226);
+  --color-sidebar: var(--app-sidebar, #07152e);
 
-  --color-text: #f4f8ff;
-  --color-text-muted: #9db4d8;
+  --color-text: var(--app-text, #f4f8ff);
+  --color-text-muted: var(--app-text-muted, #9db4d8);
+
+  --color-border: var(--app-border, rgba(24, 201, 245, 0.18));
+  --color-hover: var(--app-hover, rgba(24, 201, 245, 0.08));
 
   --color-success: #00dea5;
   --color-warning: #ffb547;
@@ -19,32 +25,50 @@
 }
 
 :root {
-  /* Dynamic Global 3-Colour Cyberpunk Theme System */
+  /* Dynamic Global 3-Colour Cyberpunk Accent Theme System */
   --theme-primary: #18c9f5;
   --theme-secondary-accent: #3388ff;
   --theme-tertiary: #514bff;
-
-  --color-primary: var(--theme-primary);
-  --color-accent: var(--theme-tertiary);
 
   --theme-primary-rgb: 24, 201, 245;
   --theme-secondary-rgb: 51, 136, 255;
   --theme-tertiary-rgb: 81, 75, 255;
 
-  --color-secondary: #07152e;
-  --color-background: #040b1c;
-  --color-surface: #0b1c38;
-  --color-surface-elevated: #102449;
-
-  --color-text: #f4f8ff;
-  --color-text-muted: #9db4d8;
-
-  --color-success: #00dea5;
-  --color-warning: #ffb547;
-  --color-danger: #ff4568;
-
   --glow-cyan: 0 0 25px rgba(var(--theme-primary-rgb), 0.45);
   --glow-violet: 0 0 25px rgba(var(--theme-tertiary-rgb), 0.45);
+
+  /* Dynamic Global Background & Semantic Theme System */
+  --app-background: #040b1c;
+  --app-header: #061226;
+  --app-sidebar: #07152e;
+  --app-surface: #07152e;
+  --app-surface-elevated: #0b1c38;
+  --app-surface-deep: #102449;
+  --app-input-background: #040b1c;
+
+  --app-text: #f4f8ff;
+  --app-text-muted: #9db4d8;
+
+  --app-border: rgba(24, 201, 245, 0.18);
+  --app-hover: rgba(24, 201, 245, 0.08);
+
+  --app-color-scheme: dark;
+
+  --app-background-rgb: 4, 11, 28;
+  --app-surface-rgb: 7, 21, 46;
+
+  /* Aliases for legacy component bindings */
+  --color-primary: var(--theme-primary);
+  --color-accent: var(--theme-tertiary);
+  --color-secondary: var(--app-surface);
+  --color-background: var(--app-background);
+  --color-surface: var(--app-surface);
+  --color-surface-elevated: var(--app-surface-elevated);
+  --color-surface-deep: var(--app-surface-deep);
+  --color-text: var(--app-text);
+  --color-text-muted: var(--app-text-muted);
+  --color-border: var(--app-border);
+  --color-hover: var(--app-hover);
 }
 
 html,
@@ -55,46 +79,47 @@ body,
   margin: 0;
   padding: 0;
   overflow: hidden;
-  background-color: var(--color-background);
-  color: var(--color-text);
+  background-color: var(--app-background);
+  color: var(--app-text);
+  color-scheme: var(--app-color-scheme, dark);
   font-family:
     -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
   user-select: none;
   -webkit-font-smoothing: antialiased;
 }
 
-/* Custom subtle scrollbars */
+/* Custom subtle scrollbars responding to theme */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
 }
 
 ::-webkit-scrollbar-track {
-  background: #07152e;
+  background: var(--app-sidebar);
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #102449;
+  background: var(--app-surface-elevated);
   border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #19d8ff;
+  background: var(--theme-primary);
 }
 
-/* Glassmorphism utility classes */
+/* Glassmorphism utility classes responding to theme */
 .glass-panel {
-  background: rgba(11, 28, 56, 0.75);
+  background: rgba(var(--app-surface-rgb, 7, 21, 46), 0.75);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
-  border: 1px solid rgba(var(--theme-primary-rgb), 0.12);
+  border: 1px solid var(--app-border, rgba(var(--theme-primary-rgb), 0.12));
 }
 
 .glass-panel-elevated {
-  background: rgba(16, 36, 73, 0.85);
+  background: rgba(var(--app-surface-rgb, 7, 21, 46), 0.88);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
-  border: 1px solid rgba(var(--theme-primary-rgb), 0.22);
+  border: 1px solid var(--app-border, rgba(var(--theme-primary-rgb), 0.22));
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
 }
 

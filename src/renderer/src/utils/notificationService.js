@@ -4,18 +4,18 @@ import Swal from 'sweetalert2'
  * Common dark-themed SweetAlert2 defaults matching APPLAN2 UI design system.
  */
 const darkThemeSwal = Swal.mixin({
-  background: '#0B1C38',
-  color: '#F4F8FF',
+  background: 'var(--app-surface-elevated, #0B1C38)',
+  color: 'var(--app-text, #F4F8FF)',
   confirmButtonColor: '#514BFF',
-  cancelButtonColor: '#102449',
+  cancelButtonColor: 'var(--app-surface, #102449)',
   customClass: {
     popup: 'border border-primary/20 rounded-2xl shadow-2xl backdrop-blur-md',
-    title: 'text-white font-extrabold text-lg',
+    title: 'text-text font-extrabold text-lg',
     htmlContainer: 'text-text-muted text-xs leading-relaxed',
     confirmButton:
       'px-4 py-2.5 rounded-xl font-bold text-xs uppercase tracking-wider text-white shadow-lg cursor-pointer transition-all',
     cancelButton:
-      'px-4 py-2.5 rounded-xl font-bold text-xs uppercase tracking-wider text-text-muted hover:text-white border border-primary/20 cursor-pointer transition-all'
+      'px-4 py-2.5 rounded-xl font-bold text-xs uppercase tracking-wider text-text-muted hover:text-text border border-primary/20 cursor-pointer transition-all'
   },
   buttonsStyling: true
 })

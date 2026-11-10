@@ -1024,9 +1024,9 @@ export default function DownloaderPage() {
         {/* ================= LEFT COLUMN: DOWNLOAD OPTIONS (7 COLS) ================= */}
         <div className="lg:col-span-7 flex flex-col gap-5">
           {/* Section 1: Enter Media Link & Media Preview */}
-          <div className="p-5 lg:p-6 rounded-2xl bg-[#07152E]/90 border border-primary/20 shadow-[0_4px_24px_rgba(0,0,0,0.35)] backdrop-blur-md flex flex-col gap-4">
+          <div className="p-5 lg:p-6 rounded-2xl bg-surface/90 border border-primary/20 shadow-[0_4px_24px_rgba(0,0,0,0.35)] backdrop-blur-md flex flex-col gap-4">
             <div className="flex items-center justify-between">
-              <h2 className="text-sm font-extrabold text-white tracking-wide">
+              <h2 className="text-sm font-extrabold text-text tracking-wide">
                 1. Enter Media Link
               </h2>
             </div>
@@ -1059,7 +1059,7 @@ export default function DownloaderPage() {
                           ? 'media-url-status'
                           : undefined
                   }
-                  className={`w-full bg-[#040B1C] border rounded-xl py-3 pl-10 pr-20 text-xs font-medium text-white placeholder:text-text-muted/50 focus:outline-none transition-all font-mono select-text ${
+                  className={`w-full bg-background border rounded-xl py-3 pl-10 pr-20 text-xs font-medium text-text placeholder:text-text-muted/50 focus:outline-none transition-all font-mono select-text ${
                     urlError || apiError
                       ? 'border-rose-500/60 focus:border-rose-500 focus:ring-1 focus:ring-rose-500/40'
                       : urlStatus || analyzedMedia
@@ -1173,14 +1173,14 @@ export default function DownloaderPage() {
 
             {/* Analyzed Media Preview Card */}
             {isAnalyzing ? (
-              <div className="flex flex-col items-center justify-center p-8 rounded-xl bg-[#040B1C]/80 border border-primary/20 animate-fadeIn min-h-[140px]">
+              <div className="flex flex-col items-center justify-center p-8 rounded-xl bg-background/80 border border-primary/20 animate-fadeIn min-h-[140px]">
                 <LoadingIndicator
                   type="spinner"
                   label="Connecting to media source and retrieving format details..."
                 />
               </div>
             ) : analyzedMedia ? (
-              <div className="flex flex-col sm:flex-row items-center gap-4 p-3.5 rounded-xl bg-[#040B1C]/80 border border-primary/15 animate-fadeIn">
+              <div className="flex flex-col sm:flex-row items-center gap-4 p-3.5 rounded-xl bg-background/80 border border-primary/15 animate-fadeIn">
                 <div className="w-full sm:w-44 flex-shrink-0">
                   <MediaThumbnail
                     src={analyzedMedia.thumbnailUrl}
@@ -1191,7 +1191,7 @@ export default function DownloaderPage() {
                 </div>
 
                 <div className="flex-1 flex flex-col justify-center min-w-0">
-                  <h3 className="text-sm font-bold text-white truncate" title={analyzedMedia.title}>
+                  <h3 className="text-sm font-bold text-text truncate" title={analyzedMedia.title}>
                     {analyzedMedia.title}
                   </h3>
                   <div className="mt-1 flex items-center gap-3">
@@ -1213,14 +1213,14 @@ export default function DownloaderPage() {
                 </div>
               </div>
             ) : isCurrentUrlValidated ? (
-              <div className="flex flex-col sm:flex-row items-center gap-4 p-3.5 rounded-xl bg-[#040B1C]/80 border border-primary/15 animate-fadeIn">
+              <div className="flex flex-col sm:flex-row items-center gap-4 p-3.5 rounded-xl bg-background/80 border border-primary/15 animate-fadeIn">
                 <div className="w-full sm:w-44 aspect-video rounded-lg bg-surface flex flex-col items-center justify-center text-text-muted/60 border border-primary/10 flex-shrink-0">
                   <Video className="w-8 h-8 text-[#19D8FF]/70 mb-1" />
                   <span className="text-[10px] font-mono tracking-wider">READY</span>
                 </div>
 
                 <div className="flex-1 flex flex-col justify-center min-w-0">
-                  <h3 className="text-sm font-bold text-white truncate">Link Ready for Analysis</h3>
+                  <h3 className="text-sm font-bold text-text truncate">Link Ready for Analysis</h3>
                   <div className="mt-1">
                     <PlatformBadge platform={detectedPlatform?.id || 'web'} />
                   </div>
@@ -1260,10 +1260,10 @@ export default function DownloaderPage() {
                 onClick={() => mp4Available && setSelectedFormat('mp4')}
                 className={`flex items-center justify-between p-4 rounded-2xl border transition-all text-left ${
                   !analyzedMedia || !mp4Available
-                    ? 'opacity-40 cursor-not-allowed bg-[#07152E]/40 border-primary/10'
+                    ? 'opacity-40 cursor-not-allowed bg-surface/40 border-primary/10'
                     : selectedFormat === 'mp4'
-                      ? 'bg-[#0B1C38] border-cyan-400 shadow-[0_0_20px_rgba(25,216,255,0.3)] cursor-pointer'
-                      : 'bg-[#07152E]/80 border-primary/15 hover:border-primary/30 cursor-pointer'
+                      ? 'bg-surface-elevated border-primary shadow-[0_0_20px_rgba(var(--theme-primary-rgb),0.3)] cursor-pointer'
+                      : 'bg-surface/80 border-primary/15 hover:border-primary/30 cursor-pointer'
                 }`}
               >
                 <div className="flex items-center gap-3">
@@ -1279,7 +1279,7 @@ export default function DownloaderPage() {
                     <Video className="w-5 h-5" />
                   </div>
                   <div>
-                    <span className="text-sm font-extrabold text-white block">MP4</span>
+                    <span className="text-sm font-extrabold text-text block">MP4</span>
                     <span className="text-[11px] text-text-muted">
                       {!analyzedMedia
                         ? 'Video (Best Quality)'
@@ -1296,7 +1296,7 @@ export default function DownloaderPage() {
                     !analyzedMedia || !mp4Available
                       ? 'border-text-muted/20'
                       : selectedFormat === 'mp4'
-                        ? 'border-[#19D8FF] bg-[#040B1C]'
+                        ? 'border-[#19D8FF] bg-background'
                         : 'border-text-muted/40'
                   }`}
                 >
@@ -1313,10 +1313,10 @@ export default function DownloaderPage() {
                 onClick={() => mp3Available && setSelectedFormat('mp3')}
                 className={`flex items-center justify-between p-4 rounded-2xl border transition-all text-left ${
                   !analyzedMedia || !mp3Available
-                    ? 'opacity-40 cursor-not-allowed bg-[#07152E]/40 border-primary/10'
+                    ? 'opacity-40 cursor-not-allowed bg-surface/40 border-primary/10'
                     : selectedFormat === 'mp3'
-                      ? 'bg-[#0B1C38] border-cyan-400 shadow-[0_0_20px_rgba(25,216,255,0.3)] cursor-pointer'
-                      : 'bg-[#07152E]/80 border-primary/15 hover:border-primary/30 cursor-pointer'
+                      ? 'bg-surface-elevated border-primary shadow-[0_0_20px_rgba(var(--theme-primary-rgb),0.3)] cursor-pointer'
+                      : 'bg-surface/80 border-primary/15 hover:border-primary/30 cursor-pointer'
                 }`}
               >
                 <div className="flex items-center gap-3">
@@ -1332,7 +1332,7 @@ export default function DownloaderPage() {
                     <Music className="w-5 h-5" />
                   </div>
                   <div>
-                    <span className="text-sm font-extrabold text-white block">MP3</span>
+                    <span className="text-sm font-extrabold text-text block">MP3</span>
                     <span className="text-[11px] text-text-muted">
                       {!analyzedMedia
                         ? 'Audio Only'
@@ -1349,7 +1349,7 @@ export default function DownloaderPage() {
                     !analyzedMedia || !mp3Available
                       ? 'border-text-muted/20'
                       : selectedFormat === 'mp3'
-                        ? 'border-[#19D8FF] bg-[#040B1C]'
+                        ? 'border-[#19D8FF] bg-background'
                         : 'border-text-muted/40'
                   }`}
                 >
@@ -1384,7 +1384,7 @@ export default function DownloaderPage() {
 
               <div className="flex flex-wrap gap-2">
                 {!analyzedMedia ? (
-                  <div className="w-full py-3 px-3 rounded-xl border border-dashed border-primary/15 bg-[#040B1C]/50 text-center text-text-muted/50 text-xs">
+                  <div className="w-full py-3 px-3 rounded-xl border border-dashed border-primary/15 bg-background/50 text-center text-text-muted/50 text-xs">
                     Paste and analyze a video link to view available MP4 qualities.
                   </div>
                 ) : mp4Qualities.length === 0 ? (
@@ -1418,10 +1418,10 @@ export default function DownloaderPage() {
                         onClick={() => isMp4Active && setSelectedVideoQuality(q.id)}
                         className={`flex-1 min-w-[76px] py-2 px-2 rounded-xl text-center border transition-all ${
                           !isMp4Active
-                            ? 'opacity-35 cursor-not-allowed bg-[#07152E]/30 border-primary/10 text-text-muted/40 pointer-events-none'
+                            ? 'opacity-35 cursor-not-allowed bg-surface/30 border-primary/10 text-text-muted/40 pointer-events-none'
                             : isSelected
-                              ? 'bg-[#0B1C38] border-cyan-400 text-white shadow-[0_0_14px_rgba(25,216,255,0.3)] cursor-pointer'
-                              : 'bg-[#07152E]/80 border-primary/15 text-text-muted hover:border-primary/30 hover:text-white cursor-pointer'
+                              ? 'bg-surface-elevated border-primary text-text shadow-[0_0_14px_rgba(var(--theme-primary-rgb),0.3)] cursor-pointer'
+                              : 'bg-surface/80 border-primary/15 text-text-muted hover:border-primary/30 hover:text-text cursor-pointer'
                         }`}
                       >
                         <div className="text-xs font-extrabold">{q.title}</div>
@@ -1451,7 +1451,7 @@ export default function DownloaderPage() {
 
               <div className="grid grid-cols-3 gap-2">
                 {!analyzedMedia ? (
-                  <div className="col-span-3 py-3 px-3 rounded-xl border border-dashed border-primary/15 bg-[#040B1C]/50 text-center text-text-muted/50 text-xs">
+                  <div className="col-span-3 py-3 px-3 rounded-xl border border-dashed border-primary/15 bg-background/50 text-center text-text-muted/50 text-xs">
                     Paste and analyze a media link to choose audio bitrate.
                   </div>
                 ) : !mp3Available ? (
@@ -1475,10 +1475,10 @@ export default function DownloaderPage() {
                         onClick={() => isMp3Active && setSelectedAudioBitrate(b.bitrate)}
                         className={`py-2.5 px-2 rounded-xl text-center border transition-all ${
                           !isMp3Active
-                            ? 'opacity-35 cursor-not-allowed bg-[#07152E]/30 border-primary/10 text-text-muted/40 pointer-events-none'
+                            ? 'opacity-35 cursor-not-allowed bg-surface/30 border-primary/10 text-text-muted/40 pointer-events-none'
                             : isSelected
-                              ? 'bg-[#0B1C38] border-cyan-400 text-white shadow-[0_0_14px_rgba(25,216,255,0.3)] cursor-pointer'
-                              : 'bg-[#07152E]/80 border-primary/15 text-text-muted hover:border-primary/30 hover:text-white cursor-pointer'
+                              ? 'bg-surface-elevated border-primary text-text shadow-[0_0_14px_rgba(var(--theme-primary-rgb),0.3)] cursor-pointer'
+                              : 'bg-surface/80 border-primary/15 text-text-muted hover:border-primary/30 hover:text-text cursor-pointer'
                         }`}
                       >
                         <div className="text-xs font-extrabold">{b.label}</div>
@@ -1509,13 +1509,13 @@ export default function DownloaderPage() {
                   readOnly
                   value={isLoadingFolder ? 'Loading saved folder...' : downloadFolder}
                   placeholder="Select download folder..."
-                  className="w-full bg-[#040B1C] border border-primary/20 rounded-xl py-2.5 pl-10 pr-3 text-xs text-text-muted font-mono focus:outline-none focus:border-primary select-text"
+                  className="w-full bg-background border border-primary/20 rounded-xl py-2.5 pl-10 pr-3 text-xs text-text-muted font-mono focus:outline-none focus:border-primary select-text"
                 />
               </div>
               <button
                 type="button"
                 onClick={handleChooseFolder}
-                className="px-4 py-2.5 rounded-xl text-xs font-bold bg-[#07152E] hover:bg-[#0B1C38] border border-primary/25 text-white transition-all cursor-pointer flex-shrink-0"
+                className="px-4 py-2.5 rounded-xl text-xs font-bold bg-surface hover:bg-surface-elevated border border-primary/25 text-text transition-all cursor-pointer flex-shrink-0"
               >
                 Choose...
               </button>
@@ -1610,14 +1610,14 @@ export default function DownloaderPage() {
         {/* ================= RIGHT COLUMN: RECENT DOWNLOADS & DROPZONE (5 COLS) ================= */}
         <div className="lg:col-span-5 flex flex-col gap-4">
           {/* Recent Downloads Card */}
-          <div className="p-5 rounded-2xl bg-[#07152E]/90 border border-primary/20 shadow-[0_4px_24px_rgba(0,0,0,0.35)] backdrop-blur-md flex flex-col gap-4">
+          <div className="p-5 rounded-2xl bg-surface/90 border border-primary/20 shadow-[0_4px_24px_rgba(0,0,0,0.35)] backdrop-blur-md flex flex-col gap-4">
             <div className="flex items-center justify-between pb-2 border-b border-primary/10">
-              <h2 className="text-sm font-extrabold text-white">Recent Downloads</h2>
+              <h2 className="text-sm font-extrabold text-text">Recent Downloads</h2>
               <button
                 type="button"
                 onClick={handleClearRecent}
                 disabled={recentDownloads.length === 0}
-                className="flex items-center gap-1 text-[11px] font-semibold text-text-muted hover:text-white transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                className="flex items-center gap-1 text-[11px] font-semibold text-text-muted hover:text-text transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 <Trash2 className="w-3.5 h-3.5" />
                 <span>Clear All</span>
@@ -1647,7 +1647,7 @@ export default function DownloaderPage() {
                   return (
                     <div
                       key={item.id}
-                      className="flex items-center gap-3 p-2.5 rounded-xl bg-[#040B1C]/70 border border-primary/10 hover:border-primary/25 transition-all"
+                      className="flex items-center gap-3 p-2.5 rounded-xl bg-background/70 border border-primary/10 hover:border-primary/25 transition-all"
                     >
                       {/* Thumbnail */}
                       <div className="w-16 h-11 flex-shrink-0">
@@ -1661,7 +1661,7 @@ export default function DownloaderPage() {
                       {/* Metadata & Progress */}
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center justify-between gap-1">
-                          <span className="text-xs font-bold text-white truncate block">
+                          <span className="text-xs font-bold text-text truncate block">
                             {item.title}
                           </span>
                         </div>
@@ -1692,7 +1692,7 @@ export default function DownloaderPage() {
                               </span>
                               <span className="text-white font-bold">{item.progress}%</span>
                             </div>
-                            <div className="w-full h-1.5 rounded-full bg-[#0B1C38] overflow-hidden">
+                            <div className="w-full h-1.5 rounded-full bg-surface-elevated overflow-hidden">
                               <div
                                 className={`h-full rounded-full transition-all duration-300 ${
                                   isPaused
@@ -1770,7 +1770,7 @@ export default function DownloaderPage() {
                               type="button"
                               onClick={() => handlePauseJob(item.id)}
                               disabled={pausingJobId === item.id || cancellingJobId === item.id}
-                              className="w-8 h-8 rounded-lg bg-[#040B1C]/80 hover:bg-[#102449] border border-primary/20 hover:border-primary/40 text-text-muted hover:text-white flex items-center justify-center transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
+                              className="w-8 h-8 rounded-lg bg-background/80 hover:bg-surface-elevated border border-primary/20 hover:border-primary/40 text-text-muted hover:text-text flex items-center justify-center transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
                               title="Pause download"
                             >
                               {pausingJobId === item.id ? (
@@ -1783,7 +1783,7 @@ export default function DownloaderPage() {
                               type="button"
                               onClick={() => handleCancelJob(item.id)}
                               disabled={cancellingJobId === item.id || pausingJobId === item.id}
-                              className="w-8 h-8 rounded-lg bg-[#040B1C]/80 hover:bg-red-500/20 border border-primary/20 hover:border-red-500/40 text-text-muted hover:text-red-400 flex items-center justify-center transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
+                              className="w-8 h-8 rounded-lg bg-background/80 hover:bg-red-500/20 border border-primary/20 hover:border-red-500/40 text-text-muted hover:text-red-400 flex items-center justify-center transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
                               title="Cancel download"
                             >
                               {cancellingJobId === item.id ? (
@@ -1802,7 +1802,7 @@ export default function DownloaderPage() {
                               type="button"
                               onClick={() => handleResumeJob(item.id)}
                               disabled={resumingJobId === item.id || cancellingJobId === item.id}
-                              className="w-8 h-8 rounded-lg bg-[#040B1C]/80 hover:bg-[#102449] border border-primary/20 hover:border-primary/40 text-text-muted hover:text-white flex items-center justify-center transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
+                              className="w-8 h-8 rounded-lg bg-background/80 hover:bg-surface-elevated border border-primary/20 hover:border-primary/40 text-text-muted hover:text-text flex items-center justify-center transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
                               title="Resume download"
                             >
                               {resumingJobId === item.id ? (
@@ -1815,7 +1815,7 @@ export default function DownloaderPage() {
                               type="button"
                               onClick={() => handleCancelJob(item.id)}
                               disabled={cancellingJobId === item.id || resumingJobId === item.id}
-                              className="w-8 h-8 rounded-lg bg-[#040B1C]/80 hover:bg-red-500/20 border border-primary/20 hover:border-red-500/40 text-text-muted hover:text-red-400 flex items-center justify-center transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
+                              className="w-8 h-8 rounded-lg bg-background/80 hover:bg-red-500/20 border border-primary/20 hover:border-red-500/40 text-text-muted hover:text-red-400 flex items-center justify-center transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
                               title="Cancel download"
                             >
                               {cancellingJobId === item.id ? (
@@ -1834,7 +1834,7 @@ export default function DownloaderPage() {
                               type="button"
                               onClick={() => handlePauseJob(item.id)}
                               disabled={pausingJobId === item.id || cancellingJobId === item.id}
-                              className="w-8 h-8 rounded-lg bg-[#040B1C]/80 hover:bg-[#102449] border border-primary/20 hover:border-primary/40 text-text-muted hover:text-white flex items-center justify-center transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
+                              className="w-8 h-8 rounded-lg bg-background/80 hover:bg-surface-elevated border border-primary/20 hover:border-primary/40 text-text-muted hover:text-text flex items-center justify-center transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
                               title="Pause download (prevent auto-resume)"
                             >
                               {pausingJobId === item.id ? (
@@ -1847,7 +1847,7 @@ export default function DownloaderPage() {
                               type="button"
                               onClick={() => handleCancelJob(item.id)}
                               disabled={cancellingJobId === item.id || pausingJobId === item.id}
-                              className="w-8 h-8 rounded-lg bg-[#040B1C]/80 hover:bg-red-500/20 border border-primary/20 hover:border-red-500/40 text-text-muted hover:text-red-400 flex items-center justify-center transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
+                              className="w-8 h-8 rounded-lg bg-background/80 hover:bg-red-500/20 border border-primary/20 hover:border-red-500/40 text-text-muted hover:text-red-400 flex items-center justify-center transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
                               title="Cancel download"
                             >
                               {cancellingJobId === item.id ? (
@@ -1865,7 +1865,7 @@ export default function DownloaderPage() {
                             type="button"
                             onClick={() => handleCancelJob(item.id)}
                             disabled={cancellingJobId === item.id}
-                            className="w-8 h-8 rounded-lg bg-[#040B1C]/80 hover:bg-red-500/20 border border-primary/20 hover:border-red-500/40 text-text-muted hover:text-red-400 flex items-center justify-center transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
+                            className="w-8 h-8 rounded-lg bg-background/80 hover:bg-red-500/20 border border-primary/20 hover:border-red-500/40 text-text-muted hover:text-red-400 flex items-center justify-center transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
                             title="Cancel queued download"
                           >
                             {cancellingJobId === item.id ? (
@@ -1882,7 +1882,7 @@ export default function DownloaderPage() {
                             <button
                               type="button"
                               onClick={() => handleOpenFile(item.id)}
-                              className="w-8 h-8 rounded-lg bg-[#040B1C]/80 hover:bg-[#102449] border border-primary/20 hover:border-primary/40 text-text-muted hover:text-[#00DEA5] flex items-center justify-center transition-all cursor-pointer shadow-sm"
+                              className="w-8 h-8 rounded-lg bg-background/80 hover:bg-surface-elevated border border-primary/20 hover:border-primary/40 text-text-muted hover:text-[#00DEA5] flex items-center justify-center transition-all cursor-pointer shadow-sm"
                               title="Play / Open file"
                             >
                               <Play className="w-3.5 h-3.5 ml-0.5 fill-current" />
@@ -1890,7 +1890,7 @@ export default function DownloaderPage() {
                             <button
                               type="button"
                               onClick={() => handleOpenFolder(item.id)}
-                              className="w-8 h-8 rounded-lg bg-[#040B1C]/80 hover:bg-[#102449] border border-primary/20 hover:border-primary/40 text-text-muted hover:text-white flex items-center justify-center transition-all cursor-pointer shadow-sm"
+                              className="w-8 h-8 rounded-lg bg-background/80 hover:bg-surface-elevated border border-primary/20 hover:border-primary/40 text-text-muted hover:text-text flex items-center justify-center transition-all cursor-pointer shadow-sm"
                               title="Open containing folder"
                             >
                               <FolderOpen className="w-3.5 h-3.5" />
@@ -1899,7 +1899,7 @@ export default function DownloaderPage() {
                               type="button"
                               onClick={() => handleDeleteRecord(item.id)}
                               disabled={deletingJobId === item.id}
-                              className="w-8 h-8 rounded-lg bg-[#040B1C]/80 hover:bg-red-500/20 border border-primary/20 hover:border-red-500/40 text-text-muted hover:text-red-400 flex items-center justify-center transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
+                              className="w-8 h-8 rounded-lg bg-background/80 hover:bg-red-500/20 border border-primary/20 hover:border-red-500/40 text-text-muted hover:text-red-400 flex items-center justify-center transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
                               title="Delete from history (keeps file on disk)"
                             >
                               {deletingJobId === item.id ? (
@@ -1917,7 +1917,7 @@ export default function DownloaderPage() {
                             type="button"
                             onClick={() => handleRetryJob(item.id)}
                             disabled={retryingJobId === item.id}
-                            className="px-2.5 py-1 rounded-lg bg-[#040B1C]/80 hover:bg-[#102449] border border-primary/20 hover:border-primary/40 text-text-muted hover:text-white flex items-center gap-1.5 transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
+                            className="px-2.5 py-1 rounded-lg bg-background/80 hover:bg-surface-elevated border border-primary/20 hover:border-primary/40 text-text-muted hover:text-text flex items-center gap-1.5 transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
                             title="Retry download"
                           >
                             <RotateCcw
@@ -1943,7 +1943,7 @@ export default function DownloaderPage() {
             className={`p-4 rounded-2xl border-2 border-dashed transition-all flex flex-col items-center justify-center text-center gap-1.5 py-5 cursor-pointer select-none ${
               isDraggingOver
                 ? 'border-[#19D8FF] bg-[#19D8FF]/10 shadow-[0_0_24px_rgba(25,216,255,0.35)] scale-[1.01]'
-                : 'border-primary/30 bg-[#07152E]/50 hover:border-primary/60 hover:bg-[#07152E]/70'
+                : 'border-primary/30 bg-surface/50 hover:border-primary/60 hover:bg-surface/70'
             }`}
             role="region"
             aria-label="Drag and drop media link zone"

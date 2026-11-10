@@ -18,22 +18,22 @@ export default function DownloaderHeroIllustration({ className = '' }) {
 
       <div className="relative w-72 h-48 flex items-center justify-center">
         {/* Floating Glass Tile 1: Video Play (Top Left) */}
-        <div className="absolute -top-1 left-4 z-20 flex items-center justify-center w-11 h-11 rounded-2xl bg-[#0B1C38]/80 border border-primary/30 shadow-[0_0_18px_rgba(var(--theme-primary-rgb),0.3)] backdrop-blur-md animate-bounce [animation-duration:4s]">
+        <div className="absolute -top-1 left-4 z-20 flex items-center justify-center w-11 h-11 rounded-2xl bg-surface-elevated/80 border border-primary/30 shadow-[0_0_18px_rgba(var(--theme-primary-rgb),0.3)] backdrop-blur-md animate-bounce [animation-duration:4s]">
           <Play className="w-5 h-5 text-primary fill-primary/30 ml-0.5" />
         </div>
 
         {/* Floating Glass Tile 2: Music Note (Middle Left) */}
-        <div className="absolute bottom-6 left-0 z-20 flex items-center justify-center w-10 h-10 rounded-2xl bg-[#0B1C38]/80 border border-primary/30 shadow-[0_0_18px_rgba(var(--theme-primary-rgb),0.3)] backdrop-blur-md animate-bounce [animation-duration:5s] [animation-delay:1s]">
+        <div className="absolute bottom-6 left-0 z-20 flex items-center justify-center w-10 h-10 rounded-2xl bg-surface-elevated/80 border border-primary/30 shadow-[0_0_18px_rgba(var(--theme-primary-rgb),0.3)] backdrop-blur-md animate-bounce [animation-duration:5s] [animation-delay:1s]">
           <Music className="w-4 h-4 text-primary" />
         </div>
 
         {/* Floating Glass Tile 3: Film Clapper (Top Right) */}
-        <div className="absolute top-2 right-4 z-20 flex items-center justify-center w-11 h-11 rounded-2xl bg-[#0B1C38]/80 border border-primary/30 shadow-[0_0_18px_rgba(var(--theme-primary-rgb),0.3)] backdrop-blur-md animate-bounce [animation-duration:4.5s] [animation-delay:0.5s]">
+        <div className="absolute top-2 right-4 z-20 flex items-center justify-center w-11 h-11 rounded-2xl bg-surface-elevated/80 border border-primary/30 shadow-[0_0_18px_rgba(var(--theme-primary-rgb),0.3)] backdrop-blur-md animate-bounce [animation-duration:4.5s] [animation-delay:0.5s]">
           <Film className="w-5 h-5 text-primary" />
         </div>
 
         {/* Floating Glass Tile 4: Link (Bottom Right) */}
-        <div className="absolute bottom-4 right-2 z-20 flex items-center justify-center w-10 h-10 rounded-2xl bg-[#0B1C38]/80 border border-primary/30 shadow-[0_0_18px_rgba(var(--theme-primary-rgb),0.3)] backdrop-blur-md animate-bounce [animation-duration:5.5s] [animation-delay:1.5s]">
+        <div className="absolute bottom-4 right-2 z-20 flex items-center justify-center w-10 h-10 rounded-2xl bg-surface-elevated/80 border border-primary/30 shadow-[0_0_18px_rgba(var(--theme-primary-rgb),0.3)] backdrop-blur-md animate-bounce [animation-duration:5.5s] [animation-delay:1.5s]">
           <Link2 className="w-4 h-4 text-primary" />
         </div>
 
@@ -51,9 +51,9 @@ export default function DownloaderHeroIllustration({ className = '' }) {
           <svg viewBox="0 0 240 60" className="w-full h-full overflow-visible">
             <defs>
               <linearGradient id="pedestalGrad" x1="0%" y1="0%" x2="100%" y2="0%">
-                <stop offset="0%" stopColor="#07152E" stopOpacity="0.9" />
-                <stop offset="50%" stopColor="#102449" stopOpacity="0.95" />
-                <stop offset="100%" stopColor="#07152E" stopOpacity="0.9" />
+                <stop offset="0%" stopColor="var(--app-surface, #07152E)" stopOpacity="0.9" />
+                <stop offset="50%" stopColor="var(--app-surface-elevated, #102449)" stopOpacity="0.95" />
+                <stop offset="100%" stopColor="var(--app-surface, #07152E)" stopOpacity="0.9" />
               </linearGradient>
               <linearGradient id="ringGrad" x1="0%" y1="0%" x2="100%" y2="0%">
                 <stop offset="0%" stopColor="var(--theme-primary, #18C9F5)" stopOpacity="0.1" />
@@ -65,7 +65,7 @@ export default function DownloaderHeroIllustration({ className = '' }) {
             {/* Pedestal Base Extrusion */}
             <path
               d="M 20 28 C 20 42 70 52 120 52 C 170 52 220 42 220 28 L 220 38 C 220 50 170 58 120 58 C 70 58 20 50 20 38 Z"
-              fill="#061228"
+              fill="var(--app-surface-deep, #061228)"
               stroke="var(--theme-primary, #18C9F5)"
               strokeWidth="0.8"
               strokeOpacity="0.3"

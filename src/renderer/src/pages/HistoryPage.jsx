@@ -502,7 +502,7 @@ export default function HistoryPage() {
               value={searchQuery}
               onChange={handleSearchChange}
               placeholder="Search history..."
-              className="w-full bg-[#07152E]/90 border border-primary/20 rounded-xl py-2 pl-10 pr-4 text-xs font-medium text-white placeholder:text-text-muted/50 focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/30"
+              className="w-full bg-surface/90 border border-primary/20 rounded-xl py-2 pl-10 pr-4 text-xs font-medium text-text placeholder:text-text-muted/50 focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/30"
             />
           </div>
           <button
@@ -510,8 +510,8 @@ export default function HistoryPage() {
             onClick={() => setShowDateFilter((prev) => !prev)}
             className={`p-2.5 rounded-xl border transition-all cursor-pointer ${
               showDateFilter || appliedFrom || appliedTo
-                ? 'bg-[#0B1C38] border-[#19D8FF]/40 text-[#19D8FF] shadow-sm'
-                : 'bg-[#07152E]/90 hover:bg-[#0B1C38] border-primary/20 text-text-muted hover:text-white'
+                ? 'bg-surface-elevated border-primary/40 text-primary shadow-sm'
+                : 'bg-surface/90 hover:bg-surface-elevated border-primary/20 text-text-muted hover:text-text'
             }`}
             title={showDateFilter ? 'Close date filter' : 'Filter by date range'}
           >
@@ -522,7 +522,7 @@ export default function HistoryPage() {
 
       {/* ----------------- DATE RANGE FILTER PANEL (Step 05.12) ----------------- */}
       {showDateFilter && (
-        <div className="p-4 rounded-2xl bg-[#07152E]/90 border border-primary/20 shadow-lg flex flex-wrap items-center gap-4 transition-all animate-fadeIn">
+        <div className="p-4 rounded-2xl bg-surface/90 border border-primary/20 shadow-lg flex flex-wrap items-center gap-4 transition-all animate-fadeIn">
           <div className="flex items-center gap-2">
             <span className="text-xs font-semibold text-text-muted">From:</span>
             <input
@@ -532,7 +532,7 @@ export default function HistoryPage() {
                 setFromDate(e.target.value)
                 setDateError(null)
               }}
-              className="bg-[#040B1C] border border-primary/20 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-primary [color-scheme:dark]"
+              className="bg-background border border-primary/20 rounded-lg px-3 py-1.5 text-xs text-text focus:outline-none focus:border-primary"
             />
           </div>
           <div className="flex items-center gap-2">
@@ -544,7 +544,7 @@ export default function HistoryPage() {
                 setToDate(e.target.value)
                 setDateError(null)
               }}
-              className="bg-[#040B1C] border border-primary/20 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-primary [color-scheme:dark]"
+              className="bg-background border border-primary/20 rounded-lg px-3 py-1.5 text-xs text-text focus:outline-none focus:border-primary"
             />
           </div>
           <div className="flex items-center gap-2">
@@ -559,7 +559,7 @@ export default function HistoryPage() {
               <button
                 type="button"
                 onClick={handleClearDateFilter}
-                className="px-3.5 py-1.5 rounded-lg bg-[#040B1C] hover:bg-[#102449] border border-primary/20 text-xs font-semibold text-text-muted hover:text-white transition-all cursor-pointer"
+                className="px-3.5 py-1.5 rounded-lg bg-background hover:bg-surface-elevated border border-primary/20 text-xs font-semibold text-text-muted hover:text-text transition-all cursor-pointer"
               >
                 Clear
               </button>
@@ -628,19 +628,19 @@ export default function HistoryPage() {
       />
 
       {/* ----------------- DOWNLOAD HISTORY TABLE ----------------- */}
-      <div className="rounded-2xl bg-[#07152E]/90 border border-primary/15 shadow-[0_4px_24px_rgba(0,0,0,0.35)] backdrop-blur-md overflow-hidden">
+      <div className="rounded-2xl bg-surface/90 border border-primary/15 shadow-[0_4px_24px_rgba(0,0,0,0.35)] backdrop-blur-md overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse min-w-[980px]">
             {/* Table Header */}
             <thead>
-              <tr className="border-b border-primary/15 text-[11px] font-bold text-text-muted uppercase tracking-wider bg-[#040B1C]/60">
+              <tr className="border-b border-primary/15 text-[11px] font-bold text-text-muted uppercase tracking-wider bg-background/60">
                 <th className="py-3.5 px-3 w-10 text-center">
                   <input
                     type="checkbox"
                     checked={isAllSelected}
                     onChange={handleSelectAll}
                     disabled={historyItems.length === 0}
-                    className="rounded border-primary/30 bg-[#040B1C] text-primary focus:ring-primary/40 cursor-pointer"
+                    className="rounded border-primary/30 bg-background text-primary focus:ring-primary/40 cursor-pointer"
                   />
                 </th>
                 <th className="py-3.5 px-3 w-10 text-center">#</th>
@@ -665,8 +665,8 @@ export default function HistoryPage() {
                 return (
                   <tr
                     key={item.id}
-                    className={`hover:bg-[#0B1C38]/40 transition-colors group ${
-                      isSelected ? 'bg-[#0B1C38]/60' : ''
+                    className={`hover:bg-surface-elevated/40 transition-colors group ${
+                      isSelected ? 'bg-surface-elevated/60' : ''
                     }`}
                   >
                     {/* Row Checkbox */}
@@ -675,7 +675,7 @@ export default function HistoryPage() {
                         type="checkbox"
                         checked={isSelected}
                         onChange={() => handleToggleItem(item.id)}
-                        className="rounded border-primary/30 bg-[#040B1C] text-primary focus:ring-primary/40 cursor-pointer"
+                        className="rounded border-primary/30 bg-background text-primary focus:ring-primary/40 cursor-pointer"
                       />
                     </td>
 
@@ -701,7 +701,7 @@ export default function HistoryPage() {
                             className={`font-bold truncate ${
                               isFailed
                                 ? 'text-text-muted line-through'
-                                : 'text-white group-hover:text-[#19D8FF]'
+                                : 'text-text group-hover:text-primary'
                             } transition-colors`}
                           >
                             {item.title}
@@ -728,7 +728,7 @@ export default function HistoryPage() {
 
                     {/* Quality / Bitrate */}
                     <td className="py-3 px-4">
-                      <span className="inline-block px-2.5 py-0.5 rounded text-[11px] font-bold bg-[#102449] text-text-muted border border-primary/20">
+                      <span className="inline-block px-2.5 py-0.5 rounded text-[11px] font-bold bg-surface-elevated text-text-muted border border-primary/20">
                         {item.quality}
                       </span>
                     </td>
@@ -768,11 +768,11 @@ export default function HistoryPage() {
                             type="button"
                             onClick={() => handleRetryRecord(item.id)}
                             disabled={retryButtonState.disabled}
-                            className="w-7 h-7 rounded-lg bg-[#040B1C] hover:bg-[#102449] border border-primary/20 flex items-center justify-center text-text-muted hover:text-[#19D8FF] transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
+                            className="w-7 h-7 rounded-lg bg-background hover:bg-surface-elevated border border-primary/20 flex items-center justify-center text-text-muted hover:text-primary transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
                             title="Retry download"
                           >
                             <RotateCcw
-                              className={`w-3.5 h-3.5 ${retryButtonState.isSpinning ? 'animate-spin text-[#19D8FF]' : ''}`}
+                              className={`w-3.5 h-3.5 ${retryButtonState.isSpinning ? 'animate-spin text-primary' : ''}`}
                             />
                           </button>
                         ) : (
@@ -782,8 +782,8 @@ export default function HistoryPage() {
                             disabled={!item.filePath || item.filePath === '—'}
                             className={`w-7 h-7 rounded-lg border flex items-center justify-center transition-all ${
                               item.filePath && item.filePath !== '—'
-                                ? 'bg-[#040B1C] hover:bg-[#102449] border-primary/20 text-text-muted hover:text-[#19D8FF] cursor-pointer shadow-sm'
-                                : 'bg-[#040B1C]/50 border-primary/10 text-text-muted/40 cursor-not-allowed'
+                                ? 'bg-background hover:bg-surface-elevated border-primary/20 text-text-muted hover:text-primary cursor-pointer shadow-sm'
+                                : 'bg-background/50 border-primary/10 text-text-muted/40 cursor-not-allowed'
                             }`}
                             title={
                               item.filePath && item.filePath !== '—'
@@ -802,8 +802,8 @@ export default function HistoryPage() {
                           disabled={!item.filePath || item.filePath === '—'}
                           className={`w-7 h-7 rounded-lg border flex items-center justify-center transition-all ${
                             item.filePath && item.filePath !== '—'
-                              ? 'bg-[#040B1C] hover:bg-[#102449] border-primary/20 text-text-muted hover:text-[#19D8FF] cursor-pointer shadow-sm'
-                              : 'bg-[#040B1C]/50 border-primary/10 text-text-muted/40 cursor-not-allowed'
+                              ? 'bg-background hover:bg-surface-elevated border-primary/20 text-text-muted hover:text-primary cursor-pointer shadow-sm'
+                              : 'bg-background/50 border-primary/10 text-text-muted/40 cursor-not-allowed'
                           }`}
                           title={
                             item.filePath && item.filePath !== '—'
@@ -818,7 +818,7 @@ export default function HistoryPage() {
                         <button
                           type="button"
                           onClick={() => handleDeleteRecord(item.id)}
-                          className="w-7 h-7 rounded-lg bg-[#040B1C] hover:bg-[#102449] border border-primary/20 flex items-center justify-center text-text-muted hover:text-red-400 transition-all cursor-pointer"
+                          className="w-7 h-7 rounded-lg bg-background hover:bg-surface-elevated border border-primary/20 flex items-center justify-center text-text-muted hover:text-red-400 transition-all cursor-pointer"
                           title="Delete record from history"
                         >
                           <Trash2 className="w-3.5 h-3.5" />

@@ -37,9 +37,9 @@ export default function MainLayout({ onOpenSplashPreview = null }) {
   ]
 
   return (
-    <div className="flex flex-col h-screen w-screen overflow-hidden bg-[#040B1C] text-text font-sans select-none">
+    <div className="flex flex-col h-screen w-screen overflow-hidden bg-background text-text font-sans select-none">
       {/* ----------------- TOP SLIM TITLE BAR ----------------- */}
-      <header className="h-9 w-full bg-[#061226]/90 border-b border-primary/10 flex items-center justify-between px-3 select-none z-30 flex-shrink-0">
+      <header className="h-9 w-full bg-[var(--app-header)]/90 border-b border-primary/10 flex items-center justify-between px-3 select-none z-30 flex-shrink-0">
         <div className="flex items-center gap-2">
           <img
             src={officialLogo}
@@ -70,7 +70,7 @@ export default function MainLayout({ onOpenSplashPreview = null }) {
       {/* ----------------- BODY: SIDEBAR + MAIN VIEW ----------------- */}
       <div className="flex flex-1 overflow-hidden">
         {/* ----------------- LEFT SIDEBAR ----------------- */}
-        <aside className="w-64 flex flex-col justify-between border-r border-primary/10 bg-[#07152E]/95 backdrop-blur-xl p-4 select-none relative z-20 flex-shrink-0">
+        <aside className="w-64 flex flex-col justify-between border-r border-primary/10 bg-[var(--app-sidebar)]/95 backdrop-blur-xl p-4 select-none relative z-20 flex-shrink-0">
           <div>
             {/* Official Branding Header */}
             <div className="flex flex-col items-center text-center pb-5 pt-1">
@@ -81,7 +81,7 @@ export default function MainLayout({ onOpenSplashPreview = null }) {
                   className="w-16 h-16 object-contain drop-shadow-[0_0_14px_rgba(var(--theme-primary-rgb),0.8)]"
                 />
               </div>
-              <h1 className="text-sm font-extrabold tracking-wider text-white uppercase mt-1 leading-tight">
+              <h1 className="text-sm font-extrabold tracking-wider text-text uppercase mt-1 leading-tight">
                 Multi Media
               </h1>
               <span className="text-[11px] font-bold tracking-widest text-primary uppercase">
@@ -105,7 +105,7 @@ export default function MainLayout({ onOpenSplashPreview = null }) {
                     className={`flex items-center justify-between px-4 py-3 rounded-xl text-sm font-bold transition-all duration-200 ${
                       isActive
                         ? 'theme-accent-gradient theme-accent-glow text-white'
-                        : 'text-text-muted hover:text-white hover:bg-[#102449]/60'
+                        : 'text-text-muted hover:text-text hover:bg-surface-elevated/60'
                     }`}
                   >
                     <div className="flex items-center gap-3">
@@ -141,7 +141,7 @@ export default function MainLayout({ onOpenSplashPreview = null }) {
         {/* Step 05.02: min-w-0 prevents flex overflow; ref enables scroll restoration */}
         <main
           ref={mainContentRef}
-          className="flex-1 min-w-0 flex flex-col h-full overflow-y-auto bg-[#040B1C] relative z-10"
+          className="flex-1 min-w-0 flex flex-col h-full overflow-y-auto bg-background relative z-10"
         >
           <Outlet />
         </main>

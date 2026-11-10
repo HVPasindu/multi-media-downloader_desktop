@@ -14,7 +14,7 @@ export default function SidebarDecoration() {
     return (
       <div className="w-full h-36 relative overflow-hidden pointer-events-none select-none rounded-xl mt-2">
         {/* Sky Ambient Glow */}
-        <div className="absolute inset-0 bg-gradient-to-t from-[#091D42] via-[#040B1C]/80 to-transparent" />
+        <div className="absolute inset-0 bg-gradient-to-t from-[var(--app-surface-elevated)] via-[var(--app-background)]/80 to-transparent" />
         <div className="absolute top-2 left-1/2 -translate-x-1/2 w-32 h-16 bg-primary/15 blur-2xl rounded-full" />
 
         {/* Mountain Range Illustration SVG */}
@@ -27,7 +27,7 @@ export default function SidebarDecoration() {
             <linearGradient id="mntGlow1" x1="0" y1="0" x2="0" y2="1">
               <stop offset="0%" stopColor="var(--theme-primary, #18C9F5)" stopOpacity="0.85" />
               <stop offset="60%" stopColor="#0B2352" stopOpacity="0.95" />
-              <stop offset="100%" stopColor="#040B1C" stopOpacity="1" />
+              <stop offset="100%" stopColor="var(--app-background, #040B1C)" stopOpacity="1" />
             </linearGradient>
             <linearGradient id="mntGlow2" x1="0" y1="0" x2="0" y2="1">
               <stop
@@ -35,7 +35,7 @@ export default function SidebarDecoration() {
                 stopColor="var(--theme-secondary-accent, #3388FF)"
                 stopOpacity="0.6"
               />
-              <stop offset="100%" stopColor="#06132D" stopOpacity="0.9" />
+              <stop offset="100%" stopColor="var(--app-surface-deep, #06132D)" stopOpacity="0.9" />
             </linearGradient>
             <linearGradient id="ridgeLine" x1="0" y1="0" x2="1" y2="0">
               <stop offset="0%" stopColor="var(--theme-primary, #18C9F5)" stopOpacity="0.3" />
@@ -134,17 +134,17 @@ export default function SidebarDecoration() {
 
       {/* Floating 3D Frosted Media Tiles */}
       {/* Tile 1: Video Play */}
-      <div className="absolute top-2 left-6 z-10 w-11 h-11 rounded-2xl bg-[#0F2654]/85 border border-primary/40 shadow-[0_0_16px_rgba(var(--theme-primary-rgb),0.4)] backdrop-blur-md flex items-center justify-center transform -rotate-12">
+      <div className="absolute top-2 left-6 z-10 w-11 h-11 rounded-2xl bg-surface-elevated/85 border border-primary/40 shadow-[0_0_16px_rgba(var(--theme-primary-rgb),0.4)] backdrop-blur-md flex items-center justify-center transform -rotate-12">
         <Play className="w-5 h-5 text-primary fill-primary/30 ml-0.5" />
       </div>
 
       {/* Tile 2: Music Note */}
-      <div className="absolute top-6 right-5 z-20 w-10 h-10 rounded-2xl bg-[#122B60]/90 border border-secondary-accent/40 shadow-[0_0_14px_rgba(var(--theme-secondary-accent-rgb),0.4)] backdrop-blur-md flex items-center justify-center transform rotate-12">
+      <div className="absolute top-6 right-5 z-20 w-10 h-10 rounded-2xl bg-surface-elevated/90 border border-secondary-accent/40 shadow-[0_0_14px_rgba(var(--theme-secondary-accent-rgb),0.4)] backdrop-blur-md flex items-center justify-center transform rotate-12">
         <Music className="w-4 h-4 text-cyan-200" />
       </div>
 
       {/* Tile 3: Film Clapper */}
-      <div className="absolute bottom-2 left-10 z-20 w-10 h-10 rounded-2xl bg-[#15234D]/90 border border-accent/40 shadow-[0_0_14px_rgba(var(--theme-tertiary-rgb),0.4)] backdrop-blur-md flex items-center justify-center transform -rotate-6">
+      <div className="absolute bottom-2 left-10 z-20 w-10 h-10 rounded-2xl bg-surface-elevated/90 border border-accent/40 shadow-[0_0_14px_rgba(var(--theme-tertiary-rgb),0.4)] backdrop-blur-md flex items-center justify-center transform -rotate-6">
         <Film className="w-4 h-4 text-indigo-300" />
       </div>
     </div>

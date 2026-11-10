@@ -1,31 +1,34 @@
-import { useState } from 'react'
+import { useState, useCallback } from 'react'
 import {
   Palette,
-  Pipette,
   Check,
   RotateCcw,
-  Sparkles,
-  AlertCircle,
   Eye,
   Sliders,
-  Download
+  Download,
+  Moon,
+  Sun,
+  Sparkles,
+  Layers,
+  AlertCircle
 } from 'lucide-react'
 import {
   THEME_PRESETS,
   DEFAULT_THEME,
+  BACKGROUND_PRESETS,
   useAppearanceTheme,
-  isValidHex,
-  generateCustomPalette
+  isValidHex
 } from '../../utils/appearanceTheme'
+import CustomColorPicker from './CustomColorPicker'
 
 /**
- * Appearance Settings Component
+ * Complete Appearance Settings Component
  *
- * Implements a dynamic global 3-colour Cyberpunk accent theme system:
- * 1. Six approved 3-colour preset themes
- * 2. Custom colour picker with live HEX input and contrast-safe palette generation
- * 3. Live interactive preview panel demonstrating real-time theme application
- * 4. Reset to Default (Ocean Blue)
+ * Implements:
+ * 1. Live Theme Preview (Active accent + active background showcase)
+ * 2. Background Appearance (Dark, Light, Custom + 8 Cyberpunk Presets + Reset Background)
+ * 3. Cyberpunk Accent Presets (6 curated 3-color presets + Reset to Default)
+ * 4. Application-Controlled Custom Accent Colour Picker
  */
 export default function AppearanceSettings() {
   const {
@@ -33,82 +36,102 @@ export default function AppearanceSettings() {
     presetId,
     customHex: activeCustomHex,
     isCustom,
+    background,
+    bgPalette,
     setPreset,
     setCustomHex,
-    resetToDefault
+    resetToDefault,
+    setBackgroundMode,
+    setBackgroundPreset,
+    setCustomBackgroundHex,
+    resetBackground
   } = useAppearanceTheme()
 
-  const [hexInput, setHexInput] = useState(isCustom ? activeCustomHex : theme.primary)
-  const [hexError, setHexError] = useState(null)
-  const [resetFeedback, setResetFeedback] = useState(false)
   const [saveFeedback, setSaveFeedback] = useState(null)
+  const [resetAccentFeedback, setResetAccentFeedback] = useState(false)
+  const [resetBgFeedback, setResetBgFeedback] = useState(false)
 
-  const handleSelectPreset = (id) => {
-    setHexError(null)
-    const newTheme = setPreset(id)
-    if (newTheme) {
-      setHexInput(newTheme.primary)
-      showSaveNotification(newTheme.name)
+  // Custom background input state
+  const [customBgInput, setCustomBgInput] = useState(
+    background.customHex || (background.mode === 'custom' ? bgPalette.background : '#182536')
+  )
+  const [customBgError, setCustomBgError] = useState(null)
+
+  const showSaveNotification = useCallback((label) => {
+    setSaveFeedback(label)
+    const timer = setTimeout(() => {
+      setSaveFeedback(null)
+    }, 2200)
+    return () => clearTimeout(timer)
+  }, [])
+
+  // Accent handlers
+  const handleSelectAccentPreset = (id) => {
+    const updated = setPreset(id)
+    if (updated) {
+      showSaveNotification(`Accent: ${updated.name}`)
     }
   }
 
-  const handleColorPickerChange = (e) => {
-    const raw = e.target.value
-    setHexInput(raw.toUpperCase())
-    setHexError(null)
-    setCustomHex(raw)
-    showSaveNotification('Custom Colour')
+  const handleCustomAccentChange = (hex) => {
+    setCustomHex(hex)
+    showSaveNotification(`Custom Accent: ${hex}`)
   }
 
-  const handleHexInputChange = (e) => {
-    const val = e.target.value.trim()
-    setHexInput(val)
+  const handleResetAccent = () => {
+    resetToDefault()
+    setResetAccentFeedback(true)
+    showSaveNotification('Accent Reset: Ocean Blue')
+    setTimeout(() => setResetAccentFeedback(false), 2000)
+  }
 
-    if (!val) {
-      setHexError('HEX code cannot be empty')
+  // Background handlers
+  const handleSelectBgMode = (mode) => {
+    setBackgroundMode(mode)
+    showSaveNotification(`Background Mode: ${mode.toUpperCase()}`)
+  }
+
+  const handleSelectBgPreset = (id) => {
+    const preset = BACKGROUND_PRESETS.find((p) => p.id === id)
+    setBackgroundPreset(id)
+    if (preset) {
+      showSaveNotification(`Background: ${preset.name} (Matched: ${preset.matchedAccentId})`)
+    }
+  }
+
+  const handleCustomBgInputChange = (e) => {
+    const raw = e.target.value.trim()
+    setCustomBgInput(raw)
+
+    if (!raw) {
+      setCustomBgError('HEX code cannot be empty')
       return
     }
 
-    const formatted = val.startsWith('#') ? val : `#${val}`
+    const formatted = raw.startsWith('#') ? raw.toUpperCase() : `#${raw.toUpperCase()}`
 
     if (isValidHex(formatted)) {
-      setHexError(null)
-      setCustomHex(formatted)
-      showSaveNotification('Custom Colour')
+      setCustomBgError(null)
+      setCustomBackgroundHex(formatted)
+      showSaveNotification(`Custom Background: ${formatted}`)
     } else {
-      setHexError('Enter a valid 6-digit HEX (e.g. #18C9F5)')
+      setCustomBgError('Enter a valid 6-digit HEX (e.g. #182536)')
     }
   }
 
-  const handleReset = () => {
-    resetToDefault()
-    setHexInput(DEFAULT_THEME.primary)
-    setHexError(null)
-    setResetFeedback(true)
-    showSaveNotification('Default Ocean Blue')
-    setTimeout(() => {
-      setResetFeedback(false)
-    }, 2500)
+  const handleResetBg = () => {
+    resetBackground()
+    setResetBgFeedback(true)
+    showSaveNotification('Background Reset: Midnight Navy')
+    setTimeout(() => setResetBgFeedback(false), 2000)
   }
-
-  const showSaveNotification = (label) => {
-    setSaveFeedback(label)
-    setTimeout(() => {
-      setSaveFeedback(null)
-    }, 2000)
-  }
-
-  // Active custom palette preview if custom mode is enabled or being typed
-  const customPreviewPalette = isCustom
-    ? theme
-    : isValidHex(hexInput.startsWith('#') ? hexInput : `#${hexInput}`)
-      ? generateCustomPalette(hexInput.startsWith('#') ? hexInput : `#${hexInput}`)
-      : null
 
   return (
     <div className="flex flex-col gap-6">
-      {/* ================= CARD 1: LIVE THEME PREVIEW ================= */}
-      <div className="p-5 lg:p-6 rounded-2xl bg-[#07152E]/90 border border-primary/20 shadow-[0_4px_24px_rgba(0,0,0,0.35)] backdrop-blur-md flex flex-col gap-5">
+      {/* =====================================================================
+          CARD 1: LIVE THEME PREVIEW
+      ===================================================================== */}
+      <div className="p-5 lg:p-6 rounded-2xl bg-surface/90 border border-primary/20 shadow-[0_4px_24px_rgba(0,0,0,0.35)] backdrop-blur-md flex flex-col gap-5">
         {/* Card Header */}
         <div className="flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
@@ -122,11 +145,20 @@ export default function AppearanceSettings() {
               <Eye className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="text-sm font-extrabold text-white">Live Theme Preview</h2>
+              <h2 className="text-sm font-extrabold text-text">Live Theme Preview</h2>
               <p className="text-[11px] text-text-muted">
-                Active Theme:{' '}
-                <span className="font-bold text-white uppercase tracking-wider">{theme.name}</span>{' '}
-                {isCustom && <span className="text-primary font-mono">({theme.primary})</span>}
+                Accent:{' '}
+                <span className="font-bold text-text uppercase tracking-wider">
+                  {theme.name}
+                </span>{' '}
+                {isCustom && <span className="text-primary font-mono">({theme.primary})</span>} •
+                Background:{' '}
+                <span className="font-bold text-text capitalize">
+                  {background.mode === 'preset'
+                    ? BACKGROUND_PRESETS.find((p) => p.id === background.presetId)?.name || 'Default'
+                    : background.mode}
+                </span>{' '}
+                <span className="text-text-muted font-mono">({bgPalette.background})</span>
               </p>
             </div>
           </div>
@@ -135,48 +167,63 @@ export default function AppearanceSettings() {
           {saveFeedback && (
             <span className="flex items-center gap-1 text-[11px] font-semibold text-emerald-400 bg-emerald-500/10 px-2.5 py-1 rounded-md border border-emerald-500/20 animate-fadeIn">
               <Check className="w-3 h-3" />
-              <span>Applied: {saveFeedback}</span>
+              <span>{saveFeedback}</span>
             </span>
           )}
         </div>
 
         {/* Live Preview Showcase Box */}
-        <div className="p-4 rounded-xl bg-[#040B1C]/90 border border-primary/20 flex flex-col gap-4">
-          {/* Top Row: Coordinated 3-Color Swatches */}
+        <div className="p-4 rounded-xl bg-background/90 border border-primary/20 flex flex-col gap-4 transition-colors duration-300">
+          {/* Top Row: Coordinated Swatches */}
           <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-primary/10">
-            <span className="text-xs font-semibold text-text-muted">3-Colour System:</span>
-            <div className="flex items-center gap-3">
+            <span className="text-xs font-semibold text-text-muted">Active Palette:</span>
+            <div className="flex flex-wrap items-center gap-4">
+              {/* Background swatch */}
+              <div className="flex items-center gap-1.5">
+                <span
+                  className="w-3.5 h-3.5 rounded-full border border-white/20"
+                  style={{ backgroundColor: bgPalette.background }}
+                />
+                <span className="text-[11px] font-mono text-text font-semibold">
+                  {bgPalette.background}
+                </span>
+                <span className="text-[10px] text-text-muted">(Background)</span>
+              </div>
+
+              {/* Accent Primary */}
               <div className="flex items-center gap-1.5">
                 <span
                   className="w-3.5 h-3.5 rounded-full shadow-[0_0_8px_rgba(var(--theme-primary-rgb),0.5)]"
                   style={{ backgroundColor: theme.primary }}
                 />
-                <span className="text-[11px] font-mono text-white font-semibold">
+                <span className="text-[11px] font-mono text-text font-semibold">
                   {theme.primary}
                 </span>
-                <span className="text-[10px] text-text-muted">(Primary)</span>
+                <span className="text-[10px] text-text-muted">(Accent)</span>
               </div>
 
+              {/* Accent Secondary */}
               <div className="flex items-center gap-1.5">
                 <span
                   className="w-3.5 h-3.5 rounded-full"
                   style={{ backgroundColor: theme.secondary }}
                 />
-                <span className="text-[11px] font-mono text-white font-semibold">
+                <span className="text-[11px] font-mono text-text font-semibold">
                   {theme.secondary}
                 </span>
-                <span className="text-[10px] text-text-muted">(Secondary)</span>
+                <span className="text-[10px] text-text-muted">(Gradient)</span>
               </div>
 
+              {/* Accent Tertiary */}
               <div className="flex items-center gap-1.5">
                 <span
                   className="w-3.5 h-3.5 rounded-full shadow-[0_0_8px_rgba(var(--theme-tertiary-rgb),0.5)]"
                   style={{ backgroundColor: theme.tertiary }}
                 />
-                <span className="text-[11px] font-mono text-white font-semibold">
+                <span className="text-[11px] font-mono text-text font-semibold">
                   {theme.tertiary}
                 </span>
-                <span className="text-[10px] text-text-muted">(Tertiary)</span>
+                <span className="text-[10px] text-text-muted">(Glow)</span>
               </div>
             </div>
           </div>
@@ -197,7 +244,7 @@ export default function AppearanceSettings() {
 
             {/* 2. Active Sidebar Item Preview */}
             <div className="flex flex-col gap-1.5">
-              <span className="text-[11px] font-medium text-text-muted">Active Nav Tab</span>
+              <span className="text-[11px] font-medium text-text-muted">Active Nav Item</span>
               <div className="theme-accent-gradient theme-accent-glow text-white px-3.5 py-2.5 rounded-xl text-xs font-bold flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <Sliders className="w-4 h-4" />
@@ -211,9 +258,9 @@ export default function AppearanceSettings() {
             <div className="flex flex-col gap-1.5">
               <div className="flex items-center justify-between text-[11px] text-text-muted">
                 <span>Progress Bar</span>
-                <span className="font-bold text-white">78%</span>
+                <span className="font-bold text-text">78%</span>
               </div>
-              <div className="w-full h-3 rounded-full bg-[#040B1C] overflow-hidden border border-primary/20">
+              <div className="w-full h-3 rounded-full bg-surface-elevated overflow-hidden border border-primary/20">
                 <div
                   className="h-full theme-accent-gradient theme-accent-glow rounded-full transition-all duration-500"
                   style={{ width: '78%' }}
@@ -224,8 +271,183 @@ export default function AppearanceSettings() {
         </div>
       </div>
 
-      {/* ================= CARD 2: ACCENT COLOUR PRESETS ================= */}
-      <div className="p-5 lg:p-6 rounded-2xl bg-[#07152E]/90 border border-primary/20 shadow-[0_4px_24px_rgba(0,0,0,0.35)] backdrop-blur-md flex flex-col gap-5">
+      {/* =====================================================================
+          CARD 2: BACKGROUND APPEARANCE (MODES + 8 PRESETS + CUSTOM)
+      ===================================================================== */}
+      <div className="p-5 lg:p-6 rounded-2xl bg-surface/90 border border-primary/20 shadow-[0_4px_24px_rgba(0,0,0,0.35)] backdrop-blur-md flex flex-col gap-5">
+        {/* Card Header */}
+        <div className="flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <div
+              className="w-9 h-9 rounded-xl flex items-center justify-center transition-colors"
+              style={{
+                backgroundColor: 'rgba(var(--theme-primary-rgb), 0.15)',
+                color: 'var(--theme-primary)'
+              }}
+            >
+              <Layers className="w-5 h-5" />
+            </div>
+            <div>
+              <h2 className="text-sm font-extrabold text-text">Background Appearance</h2>
+              <p className="text-[11px] text-text-muted">
+                Select Dark, Light or Custom background with 8 Cyberpunk presets
+              </p>
+            </div>
+          </div>
+
+          {/* Reset Background Button */}
+          <button
+            type="button"
+            onClick={handleResetBg}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold bg-background hover:bg-surface-elevated text-text-muted hover:text-text border border-primary/20 hover:border-primary/40 transition-all cursor-pointer shadow-sm active:scale-95"
+            title="Reset background to Midnight Navy"
+          >
+            <RotateCcw className={`w-3.5 h-3.5 ${resetBgFeedback ? 'animate-spin' : ''}`} />
+            <span>{resetBgFeedback ? 'Resetting...' : 'Reset Background'}</span>
+          </button>
+        </div>
+
+        {/* Mode Selector Tabs (Dark / Light / Custom) */}
+        <div className="flex items-center gap-2 p-1 rounded-xl bg-background border border-primary/20 w-fit">
+          {/* Dark Mode Tab */}
+          <button
+            type="button"
+            onClick={() => handleSelectBgMode('dark')}
+            className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+              background.mode === 'dark'
+                ? 'theme-accent-gradient text-white shadow-sm'
+                : 'text-text-muted hover:text-text hover:bg-surface'
+            }`}
+          >
+            <Moon className="w-3.5 h-3.5" />
+            <span>Dark</span>
+          </button>
+
+          {/* Light Mode Tab */}
+          <button
+            type="button"
+            onClick={() => handleSelectBgMode('light')}
+            className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+              background.mode === 'light'
+                ? 'theme-accent-gradient text-white shadow-sm'
+                : 'text-text-muted hover:text-text hover:bg-surface'
+            }`}
+          >
+            <Sun className="w-3.5 h-3.5" />
+            <span>Light</span>
+          </button>
+
+          {/* Custom Mode Tab */}
+          <button
+            type="button"
+            onClick={() => handleSelectBgMode('custom')}
+            className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+              background.mode === 'custom'
+                ? 'theme-accent-gradient text-white shadow-sm'
+                : 'text-text-muted hover:text-text hover:bg-surface'
+            }`}
+          >
+            <Sparkles className="w-3.5 h-3.5" />
+            <span>Custom</span>
+          </button>
+        </div>
+
+        {/* 8 Background Presets Grid */}
+        <div className="flex flex-col gap-2">
+          <span className="text-xs font-semibold text-text-muted">
+            Cyberpunk Background Presets:
+          </span>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            {BACKGROUND_PRESETS.map((p) => {
+              const isSelected =
+                background.mode !== 'custom' && background.presetId === p.id
+
+              return (
+                <button
+                  key={p.id}
+                  type="button"
+                  onClick={() => handleSelectBgPreset(p.id)}
+                  className={`flex flex-col gap-2 p-3 rounded-xl border text-left transition-all duration-200 cursor-pointer ${
+                    isSelected
+                      ? 'bg-surface-elevated border-primary shadow-[0_0_14px_rgba(var(--theme-primary-rgb),0.3)] ring-1 ring-primary/40'
+                      : 'bg-surface/80 border-primary/15 hover:border-primary/35 hover:bg-surface-elevated/70'
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+                    {/* Swatch */}
+                    <div
+                      className="w-5 h-5 rounded-md border border-white/20 shadow-sm"
+                      style={{ backgroundColor: p.hex }}
+                    />
+                    {isSelected && (
+                      <span className="w-4 h-4 rounded-full bg-primary flex items-center justify-center">
+                        <Check className="w-2.5 h-2.5 text-black stroke-[3]" />
+                      </span>
+                    )}
+                  </div>
+
+                  <div>
+                    <span className="text-xs font-bold text-text block leading-tight">
+                      {p.name}
+                    </span>
+                    <span className="text-[10px] font-mono text-text-muted">{p.hex}</span>
+                  </div>
+
+                  <span className="text-[9px] px-1.5 py-0.5 rounded bg-primary/10 text-primary border border-primary/20 w-fit">
+                    Auto: {p.matchedAccentId.replace('-', ' ')}
+                  </span>
+                </button>
+              )
+            })}
+          </div>
+        </div>
+
+        {/* Custom Background Input (Shown in Custom Mode or editable) */}
+        {background.mode === 'custom' && (
+          <div className="p-4 rounded-xl bg-background border border-primary/25 flex flex-col sm:flex-row items-stretch sm:items-center gap-4 animate-fadeIn">
+            <div className="flex items-center gap-3">
+              <div
+                className="w-12 h-12 rounded-xl border-2 border-primary/40 shadow-sm flex items-center justify-center"
+                style={{ backgroundColor: bgPalette.background }}
+              >
+                <Layers className="w-5 h-5 text-primary" />
+              </div>
+              <div>
+                <span className="text-xs font-bold text-text block">Custom Background HEX</span>
+                <span className="text-[11px] text-text-muted">
+                  Derives surfaces & automatically matches accent
+                </span>
+              </div>
+            </div>
+
+            <div className="flex-1 flex flex-col gap-1">
+              <input
+                type="text"
+                value={customBgInput}
+                onChange={handleCustomBgInputChange}
+                maxLength={7}
+                placeholder="#182536"
+                className={`bg-surface border rounded-xl py-2 px-3 text-xs font-mono font-bold text-text uppercase placeholder:text-text-muted/40 focus:outline-none transition-all ${
+                  customBgError
+                    ? 'border-rose-500/80 focus:border-rose-500'
+                    : 'border-primary/30 focus:border-primary'
+                }`}
+              />
+              {customBgError && (
+                <span className="text-[11px] text-rose-400 flex items-center gap-1">
+                  <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
+                  <span>{customBgError}</span>
+                </span>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* =====================================================================
+          CARD 3: CYBERPUNK ACCENT PRESETS (6 CURATED PRESETS)
+      ===================================================================== */}
+      <div className="p-5 lg:p-6 rounded-2xl bg-surface/90 border border-primary/20 shadow-[0_4px_24px_rgba(0,0,0,0.35)] backdrop-blur-md flex flex-col gap-5">
         {/* Card Header */}
         <div className="flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
@@ -239,22 +461,22 @@ export default function AppearanceSettings() {
               <Palette className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="text-sm font-extrabold text-white">Cyberpunk Colour Presets</h2>
+              <h2 className="text-sm font-extrabold text-text">Cyberpunk Accent Presets</h2>
               <p className="text-[11px] text-text-muted">
                 Choose from six curated 3-colour neon cyberpunk themes
               </p>
             </div>
           </div>
 
-          {/* Reset Button */}
+          {/* Reset Accent Button */}
           <button
             type="button"
-            onClick={handleReset}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold bg-[#040B1C] hover:bg-[#0B1C38] text-text-muted hover:text-white border border-primary/20 hover:border-primary/40 transition-all cursor-pointer shadow-sm active:scale-95"
+            onClick={handleResetAccent}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold bg-background hover:bg-surface-elevated text-text-muted hover:text-text border border-primary/20 hover:border-primary/40 transition-all cursor-pointer shadow-sm active:scale-95"
             title="Reset theme to Default Ocean Blue"
           >
-            <RotateCcw className={`w-3.5 h-3.5 ${resetFeedback ? 'animate-spin' : ''}`} />
-            <span>{resetFeedback ? 'Resetting...' : 'Reset to Default'}</span>
+            <RotateCcw className={`w-3.5 h-3.5 ${resetAccentFeedback ? 'animate-spin' : ''}`} />
+            <span>{resetAccentFeedback ? 'Resetting...' : 'Reset to Default'}</span>
           </button>
         </div>
 
@@ -267,17 +489,17 @@ export default function AppearanceSettings() {
               <button
                 key={preset.id}
                 type="button"
-                onClick={() => handleSelectPreset(preset.id)}
+                onClick={() => handleSelectAccentPreset(preset.id)}
                 className={`flex flex-col gap-3 p-4 rounded-xl border text-left transition-all duration-200 cursor-pointer ${
                   isSelected
-                    ? 'bg-[#0B1C38] border-primary shadow-[0_0_18px_rgba(var(--theme-primary-rgb),0.35)] ring-1 ring-primary/50'
-                    : 'bg-[#07152E]/80 border-primary/15 hover:border-primary/35 hover:bg-[#0B1C38]/70 hover:shadow-[0_4px_16px_rgba(0,0,0,0.3)]'
+                    ? 'bg-surface-elevated border-primary shadow-[0_0_18px_rgba(var(--theme-primary-rgb),0.35)] ring-1 ring-primary/50'
+                    : 'bg-surface/80 border-primary/15 hover:border-primary/35 hover:bg-surface-elevated/70 hover:shadow-[0_4px_16px_rgba(0,0,0,0.3)]'
                 }`}
               >
                 {/* Preset Title & Active Indicator */}
                 <div className="flex items-center justify-between">
                   <div>
-                    <span className="text-xs font-bold text-white block">{preset.name}</span>
+                    <span className="text-xs font-bold text-text block">{preset.name}</span>
                     <span className="text-[11px] font-mono text-text-muted font-medium">
                       {preset.primary}
                     </span>
@@ -323,8 +545,10 @@ export default function AppearanceSettings() {
         </div>
       </div>
 
-      {/* ================= CARD 3: CUSTOM COLOUR PICKER ================= */}
-      <div className="p-5 lg:p-6 rounded-2xl bg-[#07152E]/90 border border-primary/20 shadow-[0_4px_24px_rgba(0,0,0,0.35)] backdrop-blur-md flex flex-col gap-5">
+      {/* =====================================================================
+          CARD 4: CUSTOM ACCENT COLOUR PICKER
+      ===================================================================== */}
+      <div className="p-5 lg:p-6 rounded-2xl bg-surface/90 border border-primary/20 shadow-[0_4px_24px_rgba(0,0,0,0.35)] backdrop-blur-md flex flex-col gap-5">
         {/* Card Header */}
         <div className="flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
@@ -335,13 +559,12 @@ export default function AppearanceSettings() {
                 color: 'var(--theme-primary)'
               }}
             >
-              <Pipette className="w-5 h-5" />
+              <Palette className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="text-sm font-extrabold text-white">Custom Accent Colour</h2>
+              <h2 className="text-sm font-extrabold text-text">Custom Accent Colour</h2>
               <p className="text-[11px] text-text-muted">
-                Choose any custom neon hue — 2 supporting gradient colors are generated
-                automatically
+                Synchronized 2D selection, Hue slider, HEX, and RGB numeric controls
               </p>
             </div>
           </div>
@@ -354,97 +577,11 @@ export default function AppearanceSettings() {
           )}
         </div>
 
-        {/* Custom Colour Controls */}
-        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-4 pt-1">
-          {/* Native HTML Colour Picker Input */}
-          <div className="flex items-center gap-3">
-            <label className="relative cursor-pointer flex-shrink-0 group">
-              <input
-                type="color"
-                value={
-                  isValidHex(hexInput.startsWith('#') ? hexInput : `#${hexInput}`)
-                    ? hexInput.startsWith('#')
-                      ? hexInput
-                      : `#${hexInput}`
-                    : '#18C9F5'
-                }
-                onChange={handleColorPickerChange}
-                className="sr-only"
-                id="custom-theme-color-picker"
-              />
-              <div
-                className="w-12 h-12 rounded-xl border-2 border-primary/40 group-hover:border-primary shadow-[0_0_14px_rgba(var(--theme-primary-rgb),0.3)] flex items-center justify-center transition-all group-hover:scale-105"
-                style={{
-                  backgroundColor: isValidHex(hexInput.startsWith('#') ? hexInput : `#${hexInput}`)
-                    ? hexInput.startsWith('#')
-                      ? hexInput
-                      : `#${hexInput}`
-                    : '#18C9F5'
-                }}
-              >
-                <Pipette className="w-5 h-5 text-black drop-shadow-[0_1px_2px_rgba(255,255,255,0.8)]" />
-              </div>
-            </label>
-            <div className="flex flex-col">
-              <span className="text-xs font-bold text-white">Palette Picker</span>
-              <span className="text-[11px] text-text-muted">Click to open system colour wheel</span>
-            </div>
-          </div>
-
-          <div className="hidden sm:block w-px h-10 bg-primary/15" />
-
-          {/* Manual HEX Text Input */}
-          <div className="flex-1 flex flex-col gap-1">
-            <label htmlFor="custom-hex-input" className="text-xs font-semibold text-white">
-              HEX Code Input
-            </label>
-            <div className="relative">
-              <input
-                id="custom-hex-input"
-                type="text"
-                value={hexInput}
-                onChange={handleHexInputChange}
-                placeholder="#18C9F5"
-                maxLength={7}
-                className={`w-full bg-[#040B1C] border rounded-xl py-2.5 px-3.5 text-xs font-mono font-bold text-white placeholder:text-text-muted/40 focus:outline-none transition-all ${
-                  hexError
-                    ? 'border-rose-500/60 focus:border-rose-500 focus:ring-1 focus:ring-rose-500/40'
-                    : 'border-primary/20 focus:border-primary focus:ring-1 focus:ring-primary/40'
-                }`}
-              />
-            </div>
-            {hexError && (
-              <span className="text-[11px] text-rose-400 flex items-center gap-1 mt-0.5 animate-fadeIn">
-                <AlertCircle className="w-3 h-3 flex-shrink-0" />
-                <span>{hexError}</span>
-              </span>
-            )}
-          </div>
-
-          {/* Generated Supporting Swatches Preview */}
-          {customPreviewPalette && (
-            <div className="flex flex-col gap-1 sm:pl-2">
-              <span className="text-[11px] font-semibold text-text-muted">Harmonious Palette</span>
-              <div className="flex items-center gap-2 p-2 rounded-xl bg-[#040B1C] border border-primary/20">
-                <div
-                  className="w-6 h-6 rounded-lg shadow-sm"
-                  style={{ backgroundColor: customPreviewPalette.primary }}
-                  title={`Primary: ${customPreviewPalette.primary}`}
-                />
-                <div
-                  className="w-6 h-6 rounded-lg shadow-sm"
-                  style={{ backgroundColor: customPreviewPalette.secondary }}
-                  title={`Secondary (Supporting): ${customPreviewPalette.secondary}`}
-                />
-                <div
-                  className="w-6 h-6 rounded-lg shadow-sm"
-                  style={{ backgroundColor: customPreviewPalette.tertiary }}
-                  title={`Tertiary (Accent Glow): ${customPreviewPalette.tertiary}`}
-                />
-              </div>
-            </div>
-          )}
-        </div>
+        {/* Custom Colour Picker Component */}
+        <CustomColorPicker
+          initialColor={isCustom ? activeCustomHex : theme.primary}
+          onColorChange={handleCustomAccentChange}
+        />
       </div>
     </div>
   )

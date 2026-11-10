@@ -16,31 +16,31 @@ export default function StatCard({
         border: 'border-cyan-500/30 hover:border-cyan-400/50',
         activeBorder: 'border-cyan-400 shadow-[0_0_20px_rgba(25,216,255,0.25)]',
         iconBg: 'bg-cyan-500/15 text-[#19D8FF]',
-        countText: 'text-white'
+        countText: 'text-text'
       },
       blue: {
         border: 'border-blue-500/30 hover:border-blue-400/50',
         activeBorder: 'border-blue-400 shadow-[0_0_20px_rgba(59,130,246,0.25)]',
         iconBg: 'bg-blue-500/15 text-blue-400',
-        countText: 'text-white'
+        countText: 'text-text'
       },
       purple: {
         border: 'border-purple-500/30 hover:border-purple-400/50',
         activeBorder: 'border-purple-400 shadow-[0_0_20px_rgba(168,85,247,0.25)]',
         iconBg: 'bg-purple-500/15 text-purple-400',
-        countText: 'text-white'
+        countText: 'text-text'
       },
       green: {
         border: 'border-emerald-500/30 hover:border-emerald-400/50',
         activeBorder: 'border-emerald-400 shadow-[0_0_20px_rgba(0,222,165,0.25)]',
         iconBg: 'bg-emerald-500/15 text-[#00DEA5]',
-        countText: 'text-white'
+        countText: 'text-text'
       },
       red: {
         border: 'border-rose-500/30 hover:border-rose-400/50',
         activeBorder: 'border-rose-400 shadow-[0_0_20px_rgba(255,69,104,0.25)]',
         iconBg: 'bg-rose-500/15 text-[#FF4568]',
-        countText: 'text-white'
+        countText: 'text-text'
       }
     }[accentColor] || colorStyles.cyan
 
@@ -48,9 +48,9 @@ export default function StatCard({
     <div
       onClick={onClick}
       role={onClick ? 'button' : undefined}
-      className={`relative flex items-center gap-4 px-5 py-4 rounded-2xl bg-[#07152E]/80 backdrop-blur-md border transition-all duration-200 select-none ${
+      className={`relative flex items-center gap-4 px-5 py-4 rounded-2xl bg-surface/80 backdrop-blur-md border transition-all duration-200 select-none ${
         isActive ? colorStyles.activeBorder : colorStyles.border
-      } ${onClick ? 'cursor-pointer hover:bg-[#0B1C38]/90' : ''}`}
+      } ${onClick ? 'cursor-pointer hover:bg-surface-elevated/90' : ''}`}
     >
       {/* Icon Capsule */}
       <div

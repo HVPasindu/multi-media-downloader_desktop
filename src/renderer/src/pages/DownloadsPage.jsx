@@ -356,12 +356,12 @@ export default function DownloadsPage() {
               value={searchQuery}
               onChange={handleSearchChange}
               placeholder="Search downloads..."
-              className="w-full bg-[#07152E]/90 border border-primary/20 rounded-xl py-2 pl-10 pr-4 text-xs font-medium text-white placeholder:text-text-muted/50 focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/30"
+              className="w-full bg-surface/90 border border-primary/20 rounded-xl py-2 pl-10 pr-4 text-xs font-medium text-text placeholder:text-text-muted/50 focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/30"
             />
           </div>
           <button
             type="button"
-            className="p-2.5 rounded-xl bg-[#07152E]/90 hover:bg-[#0B1C38] border border-primary/20 text-text-muted hover:text-white transition-all cursor-pointer"
+            className="p-2.5 rounded-xl bg-surface/90 hover:bg-surface-elevated border border-primary/20 text-text-muted hover:text-text transition-all cursor-pointer"
             title="Filter options"
           >
             <SlidersHorizontal className="w-4 h-4" />
@@ -419,7 +419,7 @@ export default function DownloadsPage() {
               className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold transition-all ${
                 globalCounts.failed > 0
                   ? 'text-rose-400 hover:text-white bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/20 cursor-pointer'
-                  : 'text-text-muted/40 bg-[#07152E]/40 border border-primary/10 cursor-not-allowed'
+                  : 'text-text-muted/40 bg-surface/40 border border-primary/10 cursor-not-allowed'
               }`}
             >
               <Trash2 className="w-3.5 h-3.5" />
@@ -431,8 +431,8 @@ export default function DownloadsPage() {
               disabled={globalCounts.completed === 0}
               className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold transition-all ${
                 globalCounts.completed > 0
-                  ? 'text-text-muted hover:text-white bg-[#07152E]/80 hover:bg-[#0B1C38] border border-primary/15 cursor-pointer'
-                  : 'text-text-muted/40 bg-[#07152E]/40 border border-primary/10 cursor-not-allowed'
+                  ? 'text-text-muted hover:text-text bg-surface/80 hover:bg-surface-elevated border border-primary/15 cursor-pointer'
+                  : 'text-text-muted/40 bg-surface/40 border border-primary/10 cursor-not-allowed'
               }`}
             >
               <Trash2 className="w-3.5 h-3.5" />
@@ -443,12 +443,12 @@ export default function DownloadsPage() {
       />
 
       {/* ----------------- DOWNLOADS QUEUE TABLE WITH PAGINATION ----------------- */}
-      <div className="rounded-2xl bg-[#07152E]/90 border border-primary/15 shadow-[0_4px_24px_rgba(0,0,0,0.35)] backdrop-blur-md overflow-hidden flex flex-col">
+      <div className="rounded-2xl bg-surface/90 border border-primary/15 shadow-[0_4px_24px_rgba(0,0,0,0.35)] backdrop-blur-md overflow-hidden flex flex-col">
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse min-w-[840px]">
             {/* Table Header */}
             <thead>
-              <tr className="border-b border-primary/15 text-[11px] font-bold text-text-muted uppercase tracking-wider bg-[#040B1C]/60">
+              <tr className="border-b border-primary/15 text-[11px] font-bold text-text-muted uppercase tracking-wider bg-background/60">
                 <th className="py-3.5 px-4 w-10 text-center">#</th>
                 <th className="py-3.5 px-4">Media</th>
                 <th className="py-3.5 px-4 w-24">Format</th>
@@ -475,7 +475,7 @@ export default function DownloadsPage() {
                 const retryButtonState = getRetryButtonState(retryingJobId, item.id)
 
                 return (
-                  <tr key={item.id} className="hover:bg-[#0B1C38]/40 transition-colors group">
+                  <tr key={item.id} className="hover:bg-surface-elevated/40 transition-colors group">
                     {/* Index */}
                     <td className="py-3.5 px-4 text-center text-text-muted/70 font-mono text-xs">
                       {itemIndex}
@@ -493,7 +493,7 @@ export default function DownloadsPage() {
                         </div>
 
                         <div className="flex flex-col min-w-0 max-w-xs">
-                          <span className="font-bold text-white truncate group-hover:text-[#19D8FF] transition-colors">
+                          <span className="font-bold text-text truncate group-hover:text-primary transition-colors">
                             {item.title}
                           </span>
                           <div className="mt-1">
@@ -518,7 +518,7 @@ export default function DownloadsPage() {
 
                     {/* Quality / Bitrate Badge */}
                     <td className="py-3.5 px-4">
-                      <span className="inline-block px-2.5 py-1 rounded-md text-[11px] font-bold bg-[#102449] text-text-muted border border-primary/20">
+                      <span className="inline-block px-2.5 py-1 rounded-md text-[11px] font-bold bg-surface-elevated text-text-muted border border-primary/20">
                         {item.quality}
                       </span>
                     </td>
@@ -527,14 +527,14 @@ export default function DownloadsPage() {
                     <td className="py-3.5 px-4">
                       <div className="flex flex-col gap-1.5">
                         <div className="flex items-center justify-between text-[11px]">
-                          <span className="font-bold text-white">{item.progress}%</span>
+                          <span className="font-bold text-text">{item.progress}%</span>
                           <span className="text-text-muted text-[10px]">
                             {item.progressText || '0 B'}
                           </span>
                         </div>
 
                         {/* Progress Bar Track */}
-                        <div className="w-full h-2 rounded-full bg-[#040B1C] overflow-hidden border border-primary/10">
+                        <div className="w-full h-2 rounded-full bg-background overflow-hidden border border-primary/10">
                           <div
                             className={`h-full rounded-full transition-all duration-300 ${
                               isPaused
@@ -605,7 +605,7 @@ export default function DownloadsPage() {
                               type="button"
                               onClick={() => handlePauseJob(item.id)}
                               disabled={pausingJobId === item.id || cancellingJobId === item.id}
-                              className="w-8 h-8 rounded-lg bg-[#040B1C]/80 hover:bg-[#102449] border border-primary/20 hover:border-primary/40 text-text-muted hover:text-white flex items-center justify-center transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
+                              className="w-8 h-8 rounded-lg bg-background/80 hover:bg-surface-elevated border border-primary/20 hover:border-primary/40 text-text-muted hover:text-text flex items-center justify-center transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
                               title="Pause download"
                             >
                               {pausingJobId === item.id ? (
@@ -618,7 +618,7 @@ export default function DownloadsPage() {
                               type="button"
                               onClick={() => handleCancelJob(item.id)}
                               disabled={cancellingJobId === item.id || pausingJobId === item.id}
-                              className="w-8 h-8 rounded-lg bg-[#040B1C]/80 hover:bg-red-500/20 border border-primary/20 hover:border-red-500/40 text-text-muted hover:text-red-400 flex items-center justify-center transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
+                              className="w-8 h-8 rounded-lg bg-background/80 hover:bg-red-500/20 border border-primary/20 hover:border-red-500/40 text-text-muted hover:text-red-400 flex items-center justify-center transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
                               title="Cancel download"
                             >
                               {cancellingJobId === item.id ? (
@@ -637,7 +637,7 @@ export default function DownloadsPage() {
                               type="button"
                               onClick={() => handleResumeJob(item.id)}
                               disabled={resumingJobId === item.id || cancellingJobId === item.id}
-                              className="w-8 h-8 rounded-lg bg-[#040B1C]/80 hover:bg-[#102449] border border-primary/20 hover:border-primary/40 text-text-muted hover:text-white flex items-center justify-center transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
+                              className="w-8 h-8 rounded-lg bg-background/80 hover:bg-surface-elevated border border-primary/20 hover:border-primary/40 text-text-muted hover:text-text flex items-center justify-center transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
                               title="Resume download"
                             >
                               {resumingJobId === item.id ? (
@@ -650,7 +650,7 @@ export default function DownloadsPage() {
                               type="button"
                               onClick={() => handleCancelJob(item.id)}
                               disabled={cancellingJobId === item.id || resumingJobId === item.id}
-                              className="w-8 h-8 rounded-lg bg-[#040B1C]/80 hover:bg-red-500/20 border border-primary/20 hover:border-red-500/40 text-text-muted hover:text-red-400 flex items-center justify-center transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
+                              className="w-8 h-8 rounded-lg bg-background/80 hover:bg-red-500/20 border border-primary/20 hover:border-red-500/40 text-text-muted hover:text-red-400 flex items-center justify-center transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
                               title="Cancel download"
                             >
                               {cancellingJobId === item.id ? (
@@ -669,7 +669,7 @@ export default function DownloadsPage() {
                               type="button"
                               onClick={() => handlePauseJob(item.id)}
                               disabled={pausingJobId === item.id || cancellingJobId === item.id}
-                              className="w-8 h-8 rounded-lg bg-[#040B1C]/80 hover:bg-[#102449] border border-primary/20 hover:border-primary/40 text-text-muted hover:text-white flex items-center justify-center transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
+                              className="w-8 h-8 rounded-lg bg-background/80 hover:bg-surface-elevated border border-primary/20 hover:border-primary/40 text-text-muted hover:text-text flex items-center justify-center transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
                               title="Pause download (prevent auto-resume)"
                             >
                               {pausingJobId === item.id ? (
@@ -682,7 +682,7 @@ export default function DownloadsPage() {
                               type="button"
                               onClick={() => handleCancelJob(item.id)}
                               disabled={cancellingJobId === item.id || pausingJobId === item.id}
-                              className="w-8 h-8 rounded-lg bg-[#040B1C]/80 hover:bg-red-500/20 border border-primary/20 hover:border-red-500/40 text-text-muted hover:text-red-400 flex items-center justify-center transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
+                              className="w-8 h-8 rounded-lg bg-background/80 hover:bg-red-500/20 border border-primary/20 hover:border-red-500/40 text-text-muted hover:text-red-400 flex items-center justify-center transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
                               title="Cancel download"
                             >
                               {cancellingJobId === item.id ? (
@@ -700,7 +700,7 @@ export default function DownloadsPage() {
                             type="button"
                             onClick={() => handleCancelJob(item.id)}
                             disabled={cancellingJobId === item.id}
-                            className="w-8 h-8 rounded-lg bg-[#040B1C]/80 hover:bg-red-500/20 border border-primary/20 hover:border-red-500/40 text-text-muted hover:text-red-400 flex items-center justify-center transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
+                            className="w-8 h-8 rounded-lg bg-background/80 hover:bg-red-500/20 border border-primary/20 hover:border-red-500/40 text-text-muted hover:text-red-400 flex items-center justify-center transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
                             title="Cancel queued download"
                           >
                             {cancellingJobId === item.id ? (
@@ -717,7 +717,7 @@ export default function DownloadsPage() {
                             <button
                               type="button"
                               onClick={() => handleOpenFile(item.id)}
-                              className="w-8 h-8 rounded-lg bg-[#040B1C]/80 hover:bg-[#102449] border border-primary/20 hover:border-primary/40 text-text-muted hover:text-[#00DEA5] flex items-center justify-center transition-all cursor-pointer shadow-sm"
+                              className="w-8 h-8 rounded-lg bg-background/80 hover:bg-surface-elevated border border-primary/20 hover:border-primary/40 text-text-muted hover:text-[#00DEA5] flex items-center justify-center transition-all cursor-pointer shadow-sm"
                               title="Play / Open file"
                             >
                               <Play className="w-3.5 h-3.5 ml-0.5 fill-current" />
@@ -725,7 +725,7 @@ export default function DownloadsPage() {
                             <button
                               type="button"
                               onClick={() => handleOpenFolder(item.id)}
-                              className="w-8 h-8 rounded-lg bg-[#040B1C]/80 hover:bg-[#102449] border border-primary/20 hover:border-primary/40 text-text-muted hover:text-white flex items-center justify-center transition-all cursor-pointer shadow-sm"
+                              className="w-8 h-8 rounded-lg bg-background/80 hover:bg-surface-elevated border border-primary/20 hover:border-primary/40 text-text-muted hover:text-text flex items-center justify-center transition-all cursor-pointer shadow-sm"
                               title="Open containing folder"
                             >
                               <FolderOpen className="w-3.5 h-3.5" />
@@ -734,7 +734,7 @@ export default function DownloadsPage() {
                               type="button"
                               onClick={() => handleDeleteRecord(item.id)}
                               disabled={deletingJobId === item.id}
-                              className="w-8 h-8 rounded-lg bg-[#040B1C]/80 hover:bg-red-500/20 border border-primary/20 hover:border-red-500/40 text-text-muted hover:text-red-400 flex items-center justify-center transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
+                              className="w-8 h-8 rounded-lg bg-background/80 hover:bg-red-500/20 border border-primary/20 hover:border-red-500/40 text-text-muted hover:text-red-400 flex items-center justify-center transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
                               title="Delete from history (keeps file on disk)"
                             >
                               {deletingJobId === item.id ? (
@@ -752,7 +752,7 @@ export default function DownloadsPage() {
                             type="button"
                             onClick={() => handleRetryJob(item.id)}
                             disabled={retryButtonState.disabled}
-                            className="px-2.5 py-1 rounded-lg bg-[#040B1C]/80 hover:bg-[#102449] border border-primary/20 hover:border-primary/40 text-text-muted hover:text-white flex items-center gap-1.5 transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
+                            className="px-2.5 py-1 rounded-lg bg-background/80 hover:bg-surface-elevated border border-primary/20 hover:border-primary/40 text-text-muted hover:text-text flex items-center gap-1.5 transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
                             title="Retry download"
                           >
                             <RotateCcw

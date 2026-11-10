@@ -62,7 +62,7 @@ export default function Pagination({
   const isLastDisabled = safePage >= totalPages
 
   return (
-    <div className="flex flex-col sm:flex-row items-center justify-between gap-4 py-3 px-4 bg-[#040B1C]/80 border-t border-primary/15 text-xs text-text-muted select-none">
+    <div className="flex flex-col sm:flex-row items-center justify-between gap-4 py-3 px-4 bg-background/80 border-t border-primary/15 text-xs text-text-muted select-none">
       {/* Left: Summary text */}
       <div className="flex items-center gap-2">
         <span className="font-medium">
@@ -80,10 +80,10 @@ export default function Pagination({
           <select
             value={pageSize}
             onChange={handleSizeChange}
-            className="bg-[#07152E] border border-primary/20 rounded-lg px-2.5 py-1 text-xs font-semibold text-white focus:outline-none focus:border-primary cursor-pointer"
+            className="bg-surface border border-primary/20 rounded-lg px-2.5 py-1 text-xs font-semibold text-text focus:outline-none focus:border-primary cursor-pointer"
           >
             {pageSizeOptions.map((opt) => (
-              <option key={opt} value={opt} className="bg-[#07152E] text-white">
+              <option key={opt} value={opt} className="bg-surface text-text">
                 {opt}
               </option>
             ))}
@@ -100,7 +100,7 @@ export default function Pagination({
             className={`p-1.5 rounded-lg border transition-all ${
               isFirstDisabled
                 ? 'border-primary/10 text-text-muted/30 cursor-not-allowed bg-transparent'
-                : 'border-primary/20 text-text-muted hover:text-white hover:bg-[#0B1C38] cursor-pointer'
+                : 'border-primary/20 text-text-muted hover:text-text hover:bg-surface-elevated cursor-pointer'
             }`}
             title="First page"
           >
@@ -115,7 +115,7 @@ export default function Pagination({
             className={`p-1.5 rounded-lg border transition-all ${
               isFirstDisabled
                 ? 'border-primary/10 text-text-muted/30 cursor-not-allowed bg-transparent'
-                : 'border-primary/20 text-text-muted hover:text-white hover:bg-[#0B1C38] cursor-pointer'
+                : 'border-primary/20 text-text-muted hover:text-text hover:bg-surface-elevated cursor-pointer'
             }`}
             title="Previous page"
           >
@@ -140,8 +140,8 @@ export default function Pagination({
                 onClick={() => handlePageClick(p)}
                 className={`min-w-[28px] h-7 px-2 rounded-lg text-xs font-bold transition-all ${
                   isActive
-                    ? 'bg-[#514BFF] text-white border border-[#19D8FF]/40 shadow-sm'
-                    : 'border border-primary/20 text-text-muted hover:text-white hover:bg-[#0B1C38] cursor-pointer'
+                    ? 'theme-accent-gradient text-white border border-primary/40 shadow-sm'
+                    : 'border border-primary/20 text-text-muted hover:text-text hover:bg-surface-elevated cursor-pointer'
                 }`}
               >
                 {p}
@@ -157,7 +157,7 @@ export default function Pagination({
             className={`p-1.5 rounded-lg border transition-all ${
               isLastDisabled
                 ? 'border-primary/10 text-text-muted/30 cursor-not-allowed bg-transparent'
-                : 'border-primary/20 text-text-muted hover:text-white hover:bg-[#0B1C38] cursor-pointer'
+                : 'border-primary/20 text-text-muted hover:text-text hover:bg-surface-elevated cursor-pointer'
             }`}
             title="Next page"
           >
@@ -172,7 +172,7 @@ export default function Pagination({
             className={`p-1.5 rounded-lg border transition-all ${
               isLastDisabled
                 ? 'border-primary/10 text-text-muted/30 cursor-not-allowed bg-transparent'
-                : 'border-primary/20 text-text-muted hover:text-white hover:bg-[#0B1C38] cursor-pointer'
+                : 'border-primary/20 text-text-muted hover:text-text hover:bg-surface-elevated cursor-pointer'
             }`}
             title="Last page"
           >

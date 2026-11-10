@@ -19,10 +19,10 @@ export default function ToggleSwitch({
       }}
       className={`relative inline-flex h-6 w-11 flex-shrink-0 rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary/40 ${
         disabled
-          ? 'opacity-40 cursor-not-allowed bg-[#102449]'
+          ? 'opacity-40 cursor-not-allowed bg-surface-elevated'
           : checked
-            ? 'cursor-pointer bg-gradient-to-r from-[#19D8FF] to-[#3388FF] shadow-[0_0_12px_rgba(25,216,255,0.5)]'
-            : 'cursor-pointer bg-[#102449]'
+            ? 'cursor-pointer theme-accent-gradient shadow-[0_0_12px_var(--theme-glow)]'
+            : 'cursor-pointer bg-surface-elevated border border-[var(--app-border)]'
       }`}
     >
       <span
