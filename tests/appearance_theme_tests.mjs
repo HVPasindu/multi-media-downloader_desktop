@@ -560,66 +560,120 @@ assert.strictEqual(mockCssVariables.get('--app-on-danger'), '#000000')
 console.log('✓ Test 20 Passed: Contrast-aware CSS variables set dynamically on root.')
 
 // --------------------------------------------------------------------------
-// 21. Notification Service Options Safety (Phase 07)
+// 21. Notification Service Options Safety (Phase 03 / Phase 04)
 // --------------------------------------------------------------------------
 console.log('\n[Test 21] Testing Notification Service options safety and class merging...')
-const { showSuccess, showConfirm, showToast } = await import('../src/renderer/src/utils/notificationService.js')
+const {
+  showSuccess,
+  showError,
+  showWarning,
+  showInfo,
+  showConfirm,
+  showToast,
+  buildAlertOptions,
+  buildConfirmOptions,
+  buildToastOptions,
+  mergeSwalClasses
+} = await import('../src/renderer/src/utils/notificationService.js')
+
 assert.strictEqual(typeof showSuccess, 'function', 'showSuccess exported')
+assert.strictEqual(typeof showError, 'function', 'showError exported')
+assert.strictEqual(typeof showWarning, 'function', 'showWarning exported')
+assert.strictEqual(typeof showInfo, 'function', 'showInfo exported')
 assert.strictEqual(typeof showConfirm, 'function', 'showConfirm exported')
 assert.strictEqual(typeof showToast, 'function', 'showToast exported')
-console.log('✓ Test 21 Passed: Notification Service methods verified.')
+assert.strictEqual(typeof buildAlertOptions, 'function', 'buildAlertOptions exported')
+assert.strictEqual(typeof buildConfirmOptions, 'function', 'buildConfirmOptions exported')
+assert.strictEqual(typeof buildToastOptions, 'function', 'buildToastOptions exported')
+assert.strictEqual(typeof mergeSwalClasses, 'function', 'mergeSwalClasses exported')
+
+// 1. mergeSwalClasses verifies non-destructive extension of theme classes
+const baseClasses = { popup: 'app-swal-popup', title: 'app-swal-title' }
+const mergedClasses = mergeSwalClasses(baseClasses, { popup: 'custom-popup-extra', customSlot: 'my-slot' })
+assert.strictEqual(mergedClasses.popup, 'app-swal-popup custom-popup-extra')
+assert.strictEqual(mergedClasses.title, 'app-swal-title')
+assert.strictEqual(mergedClasses.customSlot, 'my-slot')
+
+// 2. buildAlertOptions protects theme defaults from malicious caller overrides
+const alertOverrideAttempt = {
+  background: '#FFFFFF',
+  color: '#000000',
+  buttonsStyling: true,
+  customClass: { popup: 'injected-popup-class' }
+}
+const builtAlert = buildAlertOptions(alertOverrideAttempt, 'error', 'Error Title', 'Error Message')
+assert.strictEqual(builtAlert.background, 'var(--app-surface-elevated, #0B1C38)', 'Caller cannot override theme background')
+assert.strictEqual(builtAlert.color, 'var(--app-text, #F4F8FF)', 'Caller cannot override theme text color')
+assert.strictEqual(builtAlert.buttonsStyling, false, 'Caller cannot re-enable default buttonsStyling')
+assert.ok(builtAlert.customClass.popup.includes('app-swal-popup'), 'Mandatory app-swal-popup class preserved')
+assert.ok(builtAlert.customClass.popup.includes('injected-popup-class'), 'Caller customClass merged cleanly')
+assert.strictEqual(builtAlert.icon, 'error')
+assert.strictEqual(builtAlert.iconColor, '#FF4568', 'Semantic error icon color #FF4568 applied')
+
+// 3. buildConfirmOptions protects theme defaults and applies correct danger/normal styles
+const builtConfirmDanger = buildConfirmOptions({ isDanger: true }, 'Confirm Action', 'Are you sure?')
+assert.strictEqual(builtConfirmDanger.showCancelButton, true)
+assert.strictEqual(builtConfirmDanger.confirmButtonColor, '#FF4568', 'Danger confirmation uses #FF4568')
+assert.strictEqual(builtConfirmDanger.buttonsStyling, false)
+assert.ok(builtConfirmDanger.customClass.confirmButton.includes('app-swal-confirm-btn-danger'))
+
+const builtConfirmNormal = buildConfirmOptions({ isDanger: false }, 'Proceed', 'Continue?')
+assert.strictEqual(builtConfirmNormal.confirmButtonColor, 'var(--theme-primary, #18C9F5)')
+assert.ok(builtConfirmNormal.customClass.confirmButton.includes('app-swal-confirm-btn'))
+assert.ok(!builtConfirmNormal.customClass.confirmButton.includes('app-swal-confirm-btn-danger'))
+
+// 4. buildToastOptions protects theme and configures non-intrusive toast
+const builtToast = buildToastOptions({ background: '#FF0000', buttonsStyling: true }, 'info', 'Saved', 2500)
+assert.strictEqual(builtToast.toast, true)
+assert.strictEqual(builtToast.timer, 2500)
+assert.strictEqual(builtToast.buttonsStyling, false, 'Toast buttonsStyling protected')
+assert.strictEqual(builtToast.background, 'var(--app-surface-elevated, #0B1C38)', 'Toast background protected')
+console.log('✓ Test 21 Passed: Notification Service options safety, builders and class merging verified.')
 
 // --------------------------------------------------------------------------
-// 22. StatCard Non-Semantic Accent Mapping Verification (Phase 05)
+// 22. StatCard Non-Semantic Accent Mapping Verification (Phase 04)
 // --------------------------------------------------------------------------
 console.log('\n[Test 22] Testing StatCard dynamic accent and semantic isolation...')
-// Verify the 5 color styles defined in StatCard:
-const statCardStyles = {
-  cyan: {
-    border: 'border-primary/30 hover:border-primary/50',
-    iconBg: 'bg-primary/15 text-primary'
-  },
-  blue: {
-    border: 'border-secondary-accent/30 hover:border-secondary-accent/50',
-    iconBg: 'bg-secondary-accent/15 text-secondary-accent'
-  },
-  purple: {
-    border: 'border-accent/30 hover:border-accent/50',
-    iconBg: 'bg-accent/15 text-accent'
-  },
-  green: {
-    border: 'border-emerald-500/30 hover:border-emerald-400/50',
-    iconBg: 'bg-emerald-500/15 text-[#00DEA5]'
-  },
-  red: {
-    border: 'border-rose-500/30 hover:border-rose-400/50',
-    iconBg: 'bg-rose-500/15 text-[#FF4568]'
-  }
-}
+const { getStatCardColorStyles, STAT_CARD_COLOR_MAP } = await import('../src/renderer/src/utils/statCardTheme.js')
+
+assert.strictEqual(typeof getStatCardColorStyles, 'function', 'getStatCardColorStyles exported')
+assert.ok(STAT_CARD_COLOR_MAP, 'STAT_CARD_COLOR_MAP exported')
 
 // Cyan must map to primary theme token
-assert.ok(statCardStyles.cyan.border.includes('primary'), 'Cyan maps to primary')
-assert.ok(statCardStyles.cyan.iconBg.includes('text-primary'), 'Cyan text is text-primary')
+const cyanStyles = getStatCardColorStyles('cyan')
+assert.ok(cyanStyles.border.includes('primary'), 'Cyan maps to primary border')
+assert.ok(cyanStyles.iconBg.includes('text-primary'), 'Cyan text is text-primary')
+assert.ok(cyanStyles.activeBorder.includes('var(--theme-primary-rgb)'), 'Cyan activeBorder uses primary rgb variable')
 
 // Blue must map to secondary-accent theme token
-assert.ok(statCardStyles.blue.border.includes('secondary-accent'), 'Blue maps to secondary-accent')
-assert.ok(statCardStyles.blue.iconBg.includes('text-secondary-accent'), 'Blue text is text-secondary-accent')
+const blueStyles = getStatCardColorStyles('blue')
+assert.ok(blueStyles.border.includes('secondary-accent'), 'Blue maps to secondary-accent border')
+assert.ok(blueStyles.iconBg.includes('text-secondary-accent'), 'Blue text is text-secondary-accent')
+assert.ok(blueStyles.activeBorder.includes('var(--theme-secondary-rgb)'), 'Blue activeBorder uses secondary rgb variable')
 
 // Purple must map to accent (tertiary) theme token
-assert.ok(statCardStyles.purple.border.includes('border-accent'), 'Purple maps to border-accent')
-assert.ok(statCardStyles.purple.iconBg.includes('text-accent'), 'Purple text is text-accent')
+const purpleStyles = getStatCardColorStyles('purple')
+assert.ok(purpleStyles.border.includes('border-accent'), 'Purple maps to border-accent')
+assert.ok(purpleStyles.iconBg.includes('text-accent'), 'Purple text is text-accent')
+assert.ok(purpleStyles.activeBorder.includes('var(--theme-tertiary-rgb)'), 'Purple activeBorder uses tertiary rgb variable')
 
-// Green must remain semantic emerald / #00DEA5
-assert.ok(statCardStyles.green.border.includes('emerald'), 'Green remains emerald')
-assert.ok(statCardStyles.green.iconBg.includes('#00DEA5'), 'Green retains semantic hex')
+// Green must remain semantic emerald / #00DEA5 (never overwritten by accent theme)
+const greenStyles = getStatCardColorStyles('green')
+assert.ok(greenStyles.border.includes('emerald'), 'Green remains emerald')
+assert.ok(greenStyles.iconBg.includes('#00DEA5'), 'Green retains semantic hex #00DEA5')
 
-// Red must remain semantic rose / #FF4568
-assert.ok(statCardStyles.red.border.includes('rose'), 'Red remains rose')
-assert.ok(statCardStyles.red.iconBg.includes('#FF4568'), 'Red retains semantic hex')
+// Red must remain semantic rose / #FF4568 (never overwritten by accent theme)
+const redStyles = getStatCardColorStyles('red')
+assert.ok(redStyles.border.includes('rose'), 'Red remains rose')
+assert.ok(redStyles.iconBg.includes('#FF4568'), 'Red retains semantic hex #FF4568')
+
+// Fallback safety for unknown accents
+const fallbackStyles = getStatCardColorStyles('unknown-accent')
+assert.strictEqual(fallbackStyles, STAT_CARD_COLOR_MAP.cyan, 'Unknown accent safely falls back to cyan')
 console.log('✓ Test 22 Passed: StatCard accent mapping and semantic isolation verified.')
 
 // --------------------------------------------------------------------------
-// 23. Color Picker Input Synchronization & Pure State Updates (Phase 01)
+// 23. Color Picker Input Synchronization & Pure State Updates (Phase 04)
 // --------------------------------------------------------------------------
 console.log('\n[Test 23] Testing Color Picker pure state update logic...')
 // From pure black #000000:
@@ -628,7 +682,7 @@ const blackHsv = rgbToHsv(blackRgb.r, blackRgb.g, blackRgb.b)
 assert.strictEqual(blackHsv.s, 0)
 assert.strictEqual(blackHsv.v, 0)
 
-// Moving hue slider on black:
+// Moving hue slider on black triggers automatic recovery (Example 3):
 const hueShiftRecovered = adjustHueWithBlackRecovery(240, blackHsv.s, blackHsv.v)
 assert.strictEqual(hueShiftRecovered.h, 240)
 assert.strictEqual(hueShiftRecovered.s, 85, 'Restores vibrant saturation 85')
@@ -639,6 +693,28 @@ const recoveredHex = hsvToHex(hueShiftRecovered.h, hueShiftRecovered.s, hueShift
 assert.notStrictEqual(recoveredHex, '#000000', 'Recovered color is no longer stuck on black')
 assert.ok(isValidHex(recoveredHex), 'Recovered color is valid hex')
 
+// 2D Saturation / Value coordinate conversion calculation:
+// Given rect width 200, height 200:
+const computeSvFromCoords = (x, y, width = 200, height = 200) => {
+  const clampedX = Math.max(0, Math.min(width, x))
+  const clampedY = Math.max(0, Math.min(height, y))
+  return {
+    s: Math.round((clampedX / width) * 100),
+    v: Math.round((1 - clampedY / height) * 100)
+  }
+}
+const svTopLeft = computeSvFromCoords(0, 0)
+assert.strictEqual(svTopLeft.s, 0, 'Top-left saturation is 0 (white)')
+assert.strictEqual(svTopLeft.v, 100, 'Top-left value is 100 (white)')
+
+const svBottomLeft = computeSvFromCoords(0, 200)
+assert.strictEqual(svBottomLeft.s, 0, 'Bottom-left saturation is 0')
+assert.strictEqual(svBottomLeft.v, 0, 'Bottom-left value is 0 (black)')
+
+const svTopRight = computeSvFromCoords(200, 0)
+assert.strictEqual(svTopRight.s, 100, 'Top-right saturation is 100 (pure hue)')
+assert.strictEqual(svTopRight.v, 100, 'Top-right value is 100 (pure hue)')
+
 // Typing RGB 0, 0, 0 gives pure black:
 const typedBlackHex = rgbToHex(0, 0, 0)
 assert.strictEqual(typedBlackHex, '#000000')
@@ -646,6 +722,15 @@ const typedBlackHsv = rgbToHsv(0, 0, 0)
 const recoveredAgain = adjustHueWithBlackRecovery(60, typedBlackHsv.s, typedBlackHsv.v)
 assert.strictEqual(recoveredAgain.s, 85)
 assert.strictEqual(recoveredAgain.v, 95)
+
+// Bidirectional RGB <-> HEX consistency across spectrum
+const testHexes = ['#18C9F5', '#00DEA5', '#FF4568', '#A855F7', '#FFFFFF', '#000000']
+for (const hex of testHexes) {
+  const rgb = hexToRgb(hex)
+  assert.ok(rgb, `RGB extracted for ${hex}`)
+  const roundtripHex = rgbToHex(rgb.r, rgb.g, rgb.b)
+  assert.strictEqual(roundtripHex.toUpperCase(), hex.toUpperCase(), `Roundtrip matches for ${hex}`)
+}
 console.log('✓ Test 23 Passed: Color picker input synchronization and recovery verified.')
 
 console.log('\n======================================================')

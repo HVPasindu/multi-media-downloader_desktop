@@ -41,6 +41,7 @@
   /* Dynamic Contrast-Aware Foreground Variables (WCAG AA) */
   --theme-on-primary: #000000;
   --theme-on-gradient: #000000;
+  --theme-gradient-overlay: linear-gradient(transparent, transparent);
   --app-on-danger: #ffffff;
 
   --glow-cyan: 0 0 25px rgba(var(--theme-primary-rgb), 0.45);
@@ -142,16 +143,24 @@ body,
 
 /* Dynamic Three-Colour Gradient & Glow Classes */
 .theme-accent-gradient {
-  background: linear-gradient(
-    90deg,
-    var(--theme-primary),
-    var(--theme-secondary-accent),
-    var(--theme-tertiary)
-  );
+  background-image: var(
+      --theme-gradient-overlay,
+      linear-gradient(transparent, transparent)
+    ),
+    linear-gradient(
+      90deg,
+      var(--theme-primary),
+      var(--theme-secondary-accent),
+      var(--theme-tertiary)
+    );
 }
 
 .theme-accent-gradient-2 {
-  background: linear-gradient(90deg, var(--theme-primary), var(--theme-secondary-accent));
+  background-image: var(
+      --theme-gradient-overlay,
+      linear-gradient(transparent, transparent)
+    ),
+    linear-gradient(90deg, var(--theme-primary), var(--theme-secondary-accent));
 }
 
 .theme-accent-glow {
@@ -176,6 +185,13 @@ body,
 
 .text-on-primary {
   color: var(--theme-on-primary) !important;
+}
+
+.contrast-label-surface {
+  background: rgba(0, 0, 0, 0.2);
+  backdrop-filter: blur(4px);
+  border-radius: 0.375rem;
+  padding: 0.125rem 0.375rem;
 }
 
 .theme-border {

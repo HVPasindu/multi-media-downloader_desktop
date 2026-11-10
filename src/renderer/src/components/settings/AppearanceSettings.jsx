@@ -207,7 +207,7 @@ export default function AppearanceSettings() {
               <span className="text-[11px] font-medium text-text-muted">Primary Button</span>
               <button
                 type="button"
-                className="theme-accent-gradient theme-accent-glow text-white px-4 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 cursor-pointer transition-all hover:brightness-110 active:scale-95"
+                className="theme-accent-gradient theme-accent-glow text-on-gradient px-4 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 cursor-pointer transition-all hover:brightness-110 active:scale-95"
               >
                 <Download className="w-3.5 h-3.5" />
                 <span>Start Download</span>
@@ -217,12 +217,12 @@ export default function AppearanceSettings() {
             {/* 2. Active Sidebar Item Preview */}
             <div className="flex flex-col gap-1.5">
               <span className="text-[11px] font-medium text-text-muted">Active Nav Item</span>
-              <div className="theme-accent-gradient theme-accent-glow text-white px-3.5 py-2.5 rounded-xl text-xs font-bold flex items-center justify-between">
+              <div className="theme-accent-gradient theme-accent-glow text-on-gradient px-3.5 py-2.5 rounded-xl text-xs font-bold flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <Sliders className="w-4 h-4" />
                   <span>Quality & Audio</span>
                 </div>
-                <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-white/20">Active</span>
+                <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-black/15 text-on-gradient">Active</span>
               </div>
             </div>
 
@@ -287,7 +287,7 @@ export default function AppearanceSettings() {
             onClick={() => handleSelectBgMode('dark')}
             className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
               background.mode === 'dark'
-                ? 'theme-accent-gradient text-white shadow-sm'
+                ? 'theme-accent-gradient text-on-gradient shadow-sm'
                 : 'text-text-muted hover:text-text hover:bg-surface'
             }`}
           >
@@ -301,7 +301,7 @@ export default function AppearanceSettings() {
             onClick={() => handleSelectBgMode('light')}
             className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
               background.mode === 'light'
-                ? 'theme-accent-gradient text-white shadow-sm'
+                ? 'theme-accent-gradient text-on-gradient shadow-sm'
                 : 'text-text-muted hover:text-text hover:bg-surface'
             }`}
           >
@@ -315,7 +315,7 @@ export default function AppearanceSettings() {
             onClick={() => handleSelectBgMode('custom')}
             className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
               background.mode === 'custom'
-                ? 'theme-accent-gradient text-white shadow-sm'
+                ? 'theme-accent-gradient text-on-gradient shadow-sm'
                 : 'text-text-muted hover:text-text hover:bg-surface'
             }`}
           >

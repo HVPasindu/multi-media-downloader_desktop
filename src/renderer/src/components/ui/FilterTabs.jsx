@@ -19,14 +19,14 @@ export default function FilterTabs({
               onClick={() => onSelectTab(tab.id)}
               className={`flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold transition-all duration-200 select-none ${
                 isActive
-                  ? 'theme-accent-gradient-2 text-white theme-accent-glow-sm'
+                  ? 'theme-accent-gradient-2 text-on-gradient theme-accent-glow-sm'
                   : 'bg-surface/90 text-text-muted hover:text-text hover:bg-surface-elevated border border-primary/10'
               }`}
             >
               <span>{tab.label}</span>
               {tab.count !== undefined && (
                 <span
-                  className={`text-[11px] ${isActive ? 'text-white/90' : 'text-text-muted/70'}`}
+                  className={`text-[11px] ${isActive ? 'text-on-gradient/90' : 'text-text-muted/70'}`}
                 >
                   ({tab.count})
                 </span>

@@ -140,7 +140,7 @@ export default function Pagination({
                 onClick={() => handlePageClick(p)}
                 className={`min-w-[28px] h-7 px-2 rounded-lg text-xs font-bold transition-all ${
                   isActive
-                    ? 'theme-accent-gradient text-white border border-primary/40 shadow-sm'
+                    ? 'theme-accent-gradient text-on-gradient border border-primary/40 shadow-sm'
                     : 'border border-primary/20 text-text-muted hover:text-text hover:bg-surface-elevated cursor-pointer'
                 }`}
               >
