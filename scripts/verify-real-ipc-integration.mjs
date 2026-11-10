@@ -4,12 +4,24 @@ import path from 'node:path'
 import os from 'node:os'
 import fs from 'node:fs'
 import { initializeDatabase, closeDatabase } from '../src/main/backend/config/database.js'
-import { setStartupWindow, getStartupWindow } from '../src/main/ui/startupManager.js'
+import {
+  setStartupWindow,
+  getStartupWindow,
+  getStartupStatus
+} from '../src/main/ui/startupManager.js'
 import {
   registerSettingsIpcHandlers,
   isTrustedSettingsIpcSender
 } from '../src/main/ipc/settingsHandlers.js'
 import { getWindowsLoginItemOptions } from '../src/main/loginItemHelper.js'
+
+// Prevent Electron from auto-quitting prematurely when all test windows are closed,
+// which would trigger node::FreeEnvironment before async database and file cleanup finish.
+app.on('window-all-closed', (e) => {
+  if (e && typeof e.preventDefault === 'function') {
+    e.preventDefault()
+  }
+})
 
 async function run() {
   console.log('================================================================')
@@ -67,7 +79,12 @@ async function run() {
     )
     console.log('[Artifacts] Verified compiled preload and renderer files exist.')
 
-    // 3. Create real BrowserWindow with compiled preload script and production renderer file
+    // 3. Register production startup status IPC handler so the renderer's App/Splash mounts cleanly
+    ipcMain.handle('startup:get-status', () => {
+      return getStartupStatus()
+    })
+
+    // 4. Create real BrowserWindow with compiled preload script and production renderer file
     mainWindow = new BrowserWindow({
       width: 800,
       height: 600,
@@ -88,7 +105,7 @@ async function run() {
     // Set trusted startup window before registering IPC handlers and loading renderer
     setStartupWindow(mainWindow)
 
-    // 4. Register production IPC handlers using shared production module with full security config
+    // 5. Register production IPC handlers using shared production module with full security config
     registerSettingsIpcHandlers({
       ipcMain,
       app,
@@ -103,7 +120,7 @@ async function run() {
       '[Setup] Registered production IPC handlers with production origin & file path security.'
     )
 
-    // 5. Load production renderer index.html
+    // 6. Load production renderer index.html
     await mainWindow.loadFile(rendererFilePath)
     console.log('[Setup] Real BrowserWindow loaded production renderer file successfully.\n')
 
@@ -423,7 +440,21 @@ async function run() {
       }
     }
 
-    // 2. Destroy test windows safely
+    // 2. Remove all registered IPC handlers to stop receiving renderer requests
+    try {
+      ipcMain.removeHandler('startup:get-status')
+      ipcMain.removeHandler('downloads:choose-folder')
+      ipcMain.removeHandler('downloads:get-folder')
+      ipcMain.removeHandler('app-settings:get-start-with-windows')
+      ipcMain.removeHandler('app-settings:set-start-with-windows')
+      ipcMain.removeHandler('downloads:get-storage-info')
+      console.log('[Cleanup] Removed all registered IPC handlers.')
+    } catch (ipcRemoveErr) {
+      cleanupErrors.push(ipcRemoveErr)
+      console.error('Failed to remove IPC handlers:', ipcRemoveErr)
+    }
+
+    // 3. Destroy test windows safely and clear startup window reference
     try {
       if (unauthorizedOriginWindow && !unauthorizedOriginWindow.isDestroyed()) {
         unauthorizedOriginWindow.destroy()
@@ -434,12 +465,14 @@ async function run() {
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.destroy()
       }
+      setStartupWindow(null)
+      console.log('[Cleanup] All test BrowserWindows destroyed.')
     } catch (winErr) {
       cleanupErrors.push(winErr)
       console.error('Failed to destroy test windows:', winErr)
     }
 
-    // 3. Close isolated database
+    // 4. Close isolated database
     if (databaseInitialized) {
       try {
         console.log('[Cleanup] Closing isolated database connection...')
@@ -451,7 +484,7 @@ async function run() {
       }
     }
 
-    // 4. Remove temporary test directory with bounded retries
+    // 5. Remove temporary test directory with bounded retries
     if (tempRoot && fs.existsSync(tempRoot)) {
       try {
         console.log(`[Cleanup] Removing temporary test directory: ${tempRoot}`)
@@ -473,7 +506,7 @@ async function run() {
       }
     }
 
-    // 5. Quit electron
+    // 6. Explicitly quit Electron
     app.quit()
   }
 
