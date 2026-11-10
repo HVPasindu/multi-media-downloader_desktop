@@ -221,7 +221,7 @@ export default function SettingsPage() {
       {/* ----------------- TOP HEADER ----------------- */}
       <div>
         <div className="flex items-center gap-3">
-          <h1 className="text-3xl lg:text-4xl font-extrabold text-white tracking-tight">
+          <h1 className="text-3xl lg:text-4xl font-extrabold text-text tracking-tight">
             Settings
           </h1>
           <span className="text-[10px] font-bold tracking-wider px-2 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20 uppercase">
@@ -248,7 +248,7 @@ export default function SettingsPage() {
                 onClick={() => setActiveSection(sec.id)}
                 className={`flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs font-bold transition-all duration-200 text-left cursor-pointer ${
                   isActive
-                    ? 'theme-accent-gradient-2 theme-accent-glow text-white'
+                    ? 'theme-accent-gradient-2 theme-accent-glow text-on-gradient'
                     : 'text-text-muted hover:text-text hover:bg-surface-elevated'
                 }`}
               >
@@ -341,7 +341,7 @@ export default function SettingsPage() {
                       type="button"
                       onClick={handleChooseFolder}
                       title="Choose destination directory"
-                      className="px-4 py-2 rounded-xl text-xs font-bold theme-accent-gradient-2 theme-accent-glow-sm text-white hover:opacity-95 transition-all cursor-pointer flex-shrink-0"
+                      className="px-4 py-2 rounded-xl text-xs font-bold theme-accent-gradient-2 theme-accent-glow-sm text-on-gradient hover:opacity-95 transition-all cursor-pointer flex-shrink-0"
                     >
                       Change
                     </button>

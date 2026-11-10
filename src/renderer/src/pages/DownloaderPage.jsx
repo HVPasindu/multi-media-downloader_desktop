@@ -991,7 +991,7 @@ export default function DownloaderPage() {
       {/* ----------------- TOP HEADER & HERO ILLUSTRATION ----------------- */}
       <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
         <div>
-          <h1 className="text-3xl lg:text-4xl font-extrabold text-white tracking-tight">
+          <h1 className="text-3xl lg:text-4xl font-extrabold text-text tracking-tight">
             Downloader
           </h1>
           <p className="text-sm text-text-muted mt-1 font-medium">
@@ -1063,7 +1063,7 @@ export default function DownloaderPage() {
                     urlError || apiError
                       ? 'border-rose-500/60 focus:border-rose-500 focus:ring-1 focus:ring-rose-500/40'
                       : urlStatus || analyzedMedia
-                        ? 'border-cyan-400/50 focus:border-cyan-400 focus:ring-1 focus:ring-cyan-400/40'
+                        ? 'border-primary/50 focus:border-primary focus:ring-1 focus:ring-primary/40'
                         : 'border-primary/20 focus:border-primary focus:ring-1 focus:ring-primary/40'
                   }`}
                 />
@@ -1074,7 +1074,7 @@ export default function DownloaderPage() {
                     <button
                       type="button"
                       onClick={handleClearUrl}
-                      className="p-1 text-text-muted/60 hover:text-white transition-colors cursor-pointer"
+                      className="p-1 text-text-muted/60 hover:text-text transition-colors cursor-pointer"
                       title="Clear link"
                       aria-label="Clear link"
                     >
@@ -1107,7 +1107,7 @@ export default function DownloaderPage() {
                       ? `Rate limit cooldown: ${cooldownRemaining}s remaining`
                       : 'Analyze media URL'
                 }
-                className="flex items-center gap-2 px-5 py-3 rounded-xl font-bold text-xs theme-accent-gradient-2 text-white theme-accent-glow-sm hover:theme-accent-glow-lg transition-all cursor-pointer flex-shrink-0 disabled:opacity-60 disabled:cursor-not-allowed"
+                className="flex items-center gap-2 px-5 py-3 rounded-xl font-bold text-xs theme-accent-gradient-2 text-on-gradient theme-accent-glow-sm theme-accent-hover-glow transition-all cursor-pointer flex-shrink-0 disabled:opacity-60 disabled:cursor-not-allowed"
               >
                 {isAnalyzing ? (
                   <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -1378,7 +1378,7 @@ export default function DownloaderPage() {
                   3. Video Quality
                 </h2>
                 {isMp4Active && (
-                  <span className="text-[10px] text-cyan-400 font-semibold">Active</span>
+                  <span className="text-[10px] text-primary font-semibold">Active</span>
                 )}
               </div>
 
@@ -1427,7 +1427,7 @@ export default function DownloaderPage() {
                         <div className="text-xs font-extrabold">{q.title}</div>
                         <div className="text-[10px] text-text-muted/80">{q.sub}</div>
                         {q.size && (
-                          <div className="text-[10px] text-cyan-400/90 font-medium mt-0.5">
+                          <div className="text-[10px] text-primary/90 font-medium mt-0.5">
                             {q.size}
                           </div>
                         )}
@@ -1445,7 +1445,7 @@ export default function DownloaderPage() {
                   4. Audio Bitrate (for MP3)
                 </h2>
                 {isMp3Active && (
-                  <span className="text-[10px] text-cyan-400 font-semibold">Active</span>
+                  <span className="text-[10px] text-primary font-semibold">Active</span>
                 )}
               </div>
 
@@ -1484,7 +1484,7 @@ export default function DownloaderPage() {
                         <div className="text-xs font-extrabold">{b.label}</div>
                         <div className="text-[10px] text-text-muted/80">{b.unit}</div>
                         {sizeLabel && (
-                          <div className="text-[10px] text-cyan-400/90 font-medium mt-0.5">
+                          <div className="text-[10px] text-primary/90 font-medium mt-0.5">
                             {sizeLabel}
                           </div>
                         )}
@@ -1544,7 +1544,7 @@ export default function DownloaderPage() {
               (selectedFormat === 'mp4' && !mp4Available) ||
               (selectedFormat === 'mp3' && !mp3Available)
             }
-            className="w-full py-4 rounded-2xl font-black text-sm lg:text-base tracking-wide theme-accent-gradient text-white theme-accent-glow hover:theme-accent-glow-lg hover:scale-[1.01] active:scale-[0.99] transition-all flex items-center justify-center gap-2.5 cursor-pointer mt-1 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100 disabled:shadow-none"
+            className="w-full py-4 rounded-2xl font-black text-sm lg:text-base tracking-wide theme-accent-gradient text-on-gradient theme-accent-glow theme-accent-hover-glow hover:scale-[1.01] active:scale-[0.99] transition-all flex items-center justify-center gap-2.5 cursor-pointer mt-1 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100 disabled:shadow-none"
           >
             {isSubmittingDownload ? (
               <>
@@ -1591,14 +1591,14 @@ export default function DownloaderPage() {
                 downloadSubmitFeedback.type === 'success'
                   ? 'text-[#00DEA5] bg-emerald-500/10 border-emerald-500/25'
                   : downloadSubmitFeedback.type === 'info'
-                    ? 'text-cyan-300 bg-cyan-500/10 border-cyan-500/25'
+                    ? 'text-primary bg-primary/10 border-primary/25'
                     : 'text-rose-400 bg-rose-500/10 border-rose-500/25'
               }`}
             >
               {downloadSubmitFeedback.type === 'success' ? (
                 <CheckCircle2 className="w-4 h-4 flex-shrink-0 text-[#00DEA5]" />
               ) : downloadSubmitFeedback.type === 'info' ? (
-                <CheckCircle2 className="w-4 h-4 flex-shrink-0 text-cyan-400" />
+                <CheckCircle2 className="w-4 h-4 flex-shrink-0 text-primary" />
               ) : (
                 <AlertCircle className="w-4 h-4 flex-shrink-0 text-rose-400" />
               )}
@@ -1671,7 +1671,7 @@ export default function DownloaderPage() {
                             {item.format} • {item.quality}
                           </span>
                           {isDownloading && item.speedText && item.speedText !== '—' && (
-                            <span className="text-cyan-400 font-semibold">{item.speedText}</span>
+                            <span className="text-primary font-semibold">{item.speedText}</span>
                           )}
                           {isInterrupted && (
                             <span className="text-amber-400 font-semibold">0 KB/s</span>
@@ -1690,7 +1690,7 @@ export default function DownloaderPage() {
                                   ? item.progressText
                                   : item.fileSize || item.size}
                               </span>
-                              <span className="text-white font-bold">{item.progress}%</span>
+                              <span className="text-text font-bold">{item.progress}%</span>
                             </div>
                             <div className="w-full h-1.5 rounded-full bg-surface-elevated overflow-hidden">
                               <div
@@ -1722,7 +1722,7 @@ export default function DownloaderPage() {
                             ) : item.etaDisplay ? (
                               <div className="text-[10px] text-text-muted/80">
                                 Estimated time remaining:{' '}
-                                <span className="text-white font-medium">{item.etaDisplay}</span>
+                                <span className="text-text font-medium">{item.etaDisplay}</span>
                               </div>
                             ) : null}
                           </div>
@@ -1953,7 +1953,7 @@ export default function DownloaderPage() {
                 isDraggingOver ? 'text-white scale-110' : 'text-primary'
               }`}
             />
-            <span className="text-xs font-bold text-white tracking-wide">
+            <span className="text-xs font-bold text-text tracking-wide">
               {isDraggingOver ? 'Drop Link Here' : 'Drag & drop a link here'}
             </span>
             <span className="text-[10px] text-text-muted">

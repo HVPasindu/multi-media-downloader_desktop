@@ -25,6 +25,21 @@ const darkThemeSwal = Swal.mixin({
 const notifiedFailureJobIds = new Set()
 
 /**
+ * Merges mandatory internal theme classes with optional caller-provided classes.
+ */
+function mergeSwalClasses(defaultClasses, callerClasses = {}) {
+  const merged = { ...defaultClasses }
+  for (const [key, val] of Object.entries(callerClasses)) {
+    if (merged[key]) {
+      merged[key] = `${merged[key]} ${val}`.trim()
+    } else {
+      merged[key] = val
+    }
+  }
+  return merged
+}
+
+/**
  * Pre-seeds known failed/cancelled job IDs on initial load so they never trigger popups when viewing pages.
  *
  * @param {Array<number|string>} jobIds
@@ -48,13 +63,29 @@ export function seedKnownFailures(jobIds = []) {
  * @returns {Promise<import('sweetalert2').SweetAlertResult>}
  */
 export function showSuccess(title, message = '', options = {}) {
+  const {
+    confirmButtonText = 'OK',
+    customClass: callerClass = {},
+    ...safeOptions
+  } = options
+
   return darkThemeSwal.fire({
     icon: 'success',
     iconColor: '#00DEA5',
     title,
     text: message,
-    confirmButtonText: options.confirmButtonText || 'OK',
-    ...options
+    confirmButtonText,
+    ...safeOptions,
+    customClass: mergeSwalClasses(
+      {
+        popup: 'app-swal-popup',
+        title: 'app-swal-title',
+        htmlContainer: 'app-swal-html',
+        confirmButton: 'app-swal-confirm-btn'
+      },
+      callerClass
+    ),
+    buttonsStyling: false
   })
 }
 
@@ -67,13 +98,29 @@ export function showSuccess(title, message = '', options = {}) {
  * @returns {Promise<import('sweetalert2').SweetAlertResult>}
  */
 export function showError(title, message = '', options = {}) {
+  const {
+    confirmButtonText = 'OK',
+    customClass: callerClass = {},
+    ...safeOptions
+  } = options
+
   return darkThemeSwal.fire({
     icon: 'error',
     iconColor: '#FF4568',
     title,
     text: message,
-    confirmButtonText: options.confirmButtonText || 'OK',
-    ...options
+    confirmButtonText,
+    ...safeOptions,
+    customClass: mergeSwalClasses(
+      {
+        popup: 'app-swal-popup',
+        title: 'app-swal-title',
+        htmlContainer: 'app-swal-html',
+        confirmButton: 'app-swal-confirm-btn'
+      },
+      callerClass
+    ),
+    buttonsStyling: false
   })
 }
 
@@ -86,13 +133,29 @@ export function showError(title, message = '', options = {}) {
  * @returns {Promise<import('sweetalert2').SweetAlertResult>}
  */
 export function showWarning(title, message = '', options = {}) {
+  const {
+    confirmButtonText = 'OK',
+    customClass: callerClass = {},
+    ...safeOptions
+  } = options
+
   return darkThemeSwal.fire({
     icon: 'warning',
     iconColor: '#FFB547',
     title,
     text: message,
-    confirmButtonText: options.confirmButtonText || 'OK',
-    ...options
+    confirmButtonText,
+    ...safeOptions,
+    customClass: mergeSwalClasses(
+      {
+        popup: 'app-swal-popup',
+        title: 'app-swal-title',
+        htmlContainer: 'app-swal-html',
+        confirmButton: 'app-swal-confirm-btn'
+      },
+      callerClass
+    ),
+    buttonsStyling: false
   })
 }
 
@@ -105,33 +168,41 @@ export function showWarning(title, message = '', options = {}) {
  * @returns {Promise<boolean>} Resolves to true if confirmed, false otherwise
  */
 export async function showConfirm(title, message = '', options = {}) {
-  const isDanger = Boolean(options.isDanger)
-  const customClasses = {
+  const {
+    isDanger = false,
+    icon,
+    iconColor,
+    confirmButtonText = 'Confirm',
+    cancelButtonText = 'Cancel',
+    customClass: callerClass = {},
+    ...safeOptions
+  } = options
+
+  const defaultClasses = {
     popup: 'app-swal-popup',
     title: 'app-swal-title',
     htmlContainer: 'app-swal-html',
     confirmButton: isDanger
       ? 'app-swal-confirm-btn app-swal-confirm-btn-danger'
       : 'app-swal-confirm-btn',
-    cancelButton: 'app-swal-cancel-btn',
-    ...(options.customClass || {})
+    cancelButton: 'app-swal-cancel-btn'
   }
 
   const result = await darkThemeSwal.fire({
-    icon: options.icon || (isDanger ? 'warning' : 'question'),
-    iconColor: options.iconColor || (isDanger ? '#FF4568' : '#FFB547'),
+    icon: icon || (isDanger ? 'warning' : 'question'),
+    iconColor: iconColor || (isDanger ? '#FF4568' : '#FFB547'),
     title,
     text: message,
     showCancelButton: true,
-    confirmButtonText: options.confirmButtonText || 'Confirm',
-    cancelButtonText: options.cancelButtonText || 'Cancel',
+    confirmButtonText,
+    cancelButtonText,
     confirmButtonColor: isDanger ? '#FF4568' : 'var(--theme-primary, #18C9F5)',
     cancelButtonColor: 'var(--app-surface, #07152E)',
-    customClass: customClasses,
-    buttonsStyling: false,
     reverseButtons: true,
     focusCancel: true,
-    ...options
+    ...safeOptions,
+    customClass: mergeSwalClasses(defaultClasses, callerClass),
+    buttonsStyling: false
   })
 
   return Boolean(result.isConfirmed)
@@ -143,13 +214,24 @@ export async function showConfirm(title, message = '', options = {}) {
  * @param {string} title
  * @param {'success'|'error'|'warning'|'info'} [icon='success']
  * @param {number} [timer=3000]
+ * @param {object} [options={}]
  */
-export function showToast(title, icon = 'success', timer = 3000) {
+export function showToast(title, icon = 'success', timer = 3000, options = {}) {
   const iconColors = {
     success: '#00DEA5',
     error: '#FF4568',
     warning: '#FFB547',
     info: 'var(--theme-primary, #18C9F5)'
+  }
+
+  const {
+    customClass: callerClass = {},
+    ...safeOptions
+  } = options
+
+  const defaultClasses = {
+    popup: 'app-swal-popup',
+    title: 'app-swal-title'
   }
 
   return darkThemeSwal.fire({
@@ -160,7 +242,9 @@ export function showToast(title, icon = 'success', timer = 3000) {
     title,
     showConfirmButton: false,
     timer,
-    timerProgressBar: true
+    timerProgressBar: true,
+    ...safeOptions,
+    customClass: mergeSwalClasses(defaultClasses, callerClass)
   })
 }
 

@@ -104,7 +104,7 @@ export default function MainLayout({ onOpenSplashPreview = null }) {
                     to={item.to}
                     className={`flex items-center justify-between px-4 py-3 rounded-xl text-sm font-bold transition-all duration-200 ${
                       isActive
-                        ? 'theme-accent-gradient theme-accent-glow text-white'
+                        ? 'theme-accent-gradient theme-accent-glow text-on-gradient'
                         : 'text-text-muted hover:text-text hover:bg-surface-elevated/60'
                     }`}
                   >
@@ -118,7 +118,7 @@ export default function MainLayout({ onOpenSplashPreview = null }) {
                       <span
                         className={`text-xs px-2 py-0.5 rounded-full font-bold ${
                           isActive
-                            ? 'bg-white/20 text-white'
+                            ? 'bg-black/15 text-on-gradient'
                             : 'bg-primary/20 text-primary border border-primary/30'
                         }`}
                       >

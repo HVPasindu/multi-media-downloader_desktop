@@ -13,21 +13,21 @@ export default function StatCard({
   const colorStyles =
     {
       cyan: {
-        border: 'border-cyan-500/30 hover:border-cyan-400/50',
-        activeBorder: 'border-cyan-400 shadow-[0_0_20px_rgba(25,216,255,0.25)]',
-        iconBg: 'bg-cyan-500/15 text-[#19D8FF]',
+        border: 'border-primary/30 hover:border-primary/50',
+        activeBorder: 'border-primary shadow-[0_0_20px_rgba(var(--theme-primary-rgb),0.25)]',
+        iconBg: 'bg-primary/15 text-primary',
         countText: 'text-text'
       },
       blue: {
-        border: 'border-blue-500/30 hover:border-blue-400/50',
-        activeBorder: 'border-blue-400 shadow-[0_0_20px_rgba(59,130,246,0.25)]',
-        iconBg: 'bg-blue-500/15 text-blue-400',
+        border: 'border-secondary-accent/30 hover:border-secondary-accent/50',
+        activeBorder: 'border-secondary-accent shadow-[0_0_20px_rgba(var(--theme-secondary-rgb),0.25)]',
+        iconBg: 'bg-secondary-accent/15 text-secondary-accent',
         countText: 'text-text'
       },
       purple: {
-        border: 'border-purple-500/30 hover:border-purple-400/50',
-        activeBorder: 'border-purple-400 shadow-[0_0_20px_rgba(168,85,247,0.25)]',
-        iconBg: 'bg-purple-500/15 text-purple-400',
+        border: 'border-accent/30 hover:border-accent/50',
+        activeBorder: 'border-accent shadow-[0_0_20px_rgba(var(--theme-tertiary-rgb),0.25)]',
+        iconBg: 'bg-accent/15 text-accent',
         countText: 'text-text'
       },
       green: {

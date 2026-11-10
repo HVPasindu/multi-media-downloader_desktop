@@ -376,12 +376,63 @@ export function getLuminance(r, g, b) {
 }
 
 /**
- * Determines whether a color is perceptually light.
+ * Calculates WCAG 2.1 contrast ratio between two colors (hex string or { r, g, b } object).
+ * Formula: (L1 + 0.05) / (L2 + 0.05) where L1 >= L2.
+ */
+export function getContrastRatio(colorA, colorB) {
+  const rgbA = typeof colorA === 'string' ? hexToRgb(colorA) : colorA
+  const rgbB = typeof colorB === 'string' ? hexToRgb(colorB) : colorB
+  if (!rgbA || !rgbB) return 1
+
+  const lumA = getLuminance(rgbA.r, rgbA.g, rgbA.b)
+  const lumB = getLuminance(rgbB.r, rgbB.g, rgbB.b)
+
+  const lighter = Math.max(lumA, lumB)
+  const darker = Math.min(lumA, lumB)
+
+  return (lighter + 0.05) / (darker + 0.05)
+}
+
+/**
+ * Returns the higher-contrast text color ('#000000' or '#FFFFFF') for a given background hex.
+ * Target WCAG AA: 4.5:1 for normal text, 3:1 for large text.
+ */
+export function getReadableTextColor(backgroundHex, darkColor = '#000000', lightColor = '#FFFFFF') {
+  if (!isValidHex(backgroundHex)) return lightColor
+
+  const blackContrast = getContrastRatio(backgroundHex, darkColor)
+  const whiteContrast = getContrastRatio(backgroundHex, lightColor)
+
+  return blackContrast >= whiteContrast ? darkColor : lightColor
+}
+
+/**
+ * Returns the text color ('#000000' or '#FFFFFF') that provides the highest worst-case (minimum)
+ * contrast ratio across an array of gradient stop colors.
+ */
+export function getGradientReadableTextColor(colors = [], darkColor = '#000000', lightColor = '#FFFFFF') {
+  if (!Array.isArray(colors) || colors.length === 0) return lightColor
+
+  let minDarkContrast = Infinity
+  let minLightContrast = Infinity
+
+  for (const color of colors) {
+    if (!isValidHex(color)) continue
+    const dc = getContrastRatio(color, darkColor)
+    const lc = getContrastRatio(color, lightColor)
+    if (dc < minDarkContrast) minDarkContrast = dc
+    if (lc < minLightContrast) minLightContrast = lc
+  }
+
+  return minDarkContrast >= minLightContrast ? darkColor : lightColor
+}
+
+/**
+ * Determines whether a color is perceptually light based on WCAG contrast ratio.
  */
 export function isLightColor(hex) {
-  const rgb = hexToRgb(hex)
-  if (!rgb) return false
-  return getLuminance(rgb.r, rgb.g, rgb.b) > 0.4
+  if (!isValidHex(hex)) return false
+  return getReadableTextColor(hex) === '#000000'
 }
 
 // ============================================================================
@@ -655,6 +706,15 @@ export function applyThemeVariables(themeState) {
     )
   }
 
+  // Contrast-calculated readable foreground colors (WCAG AA)
+  const onPrimary = getReadableTextColor(primary)
+  const onGradient = getGradientReadableTextColor([primary, secondary, tertiary])
+  const onDanger = getReadableTextColor('#FF4568')
+
+  root.style.setProperty('--theme-on-primary', onPrimary)
+  root.style.setProperty('--theme-on-gradient', onGradient)
+  root.style.setProperty('--app-on-danger', onDanger)
+
   // 2. Background Theme Semantic Variables
   const bg = themeState.background || { mode: 'dark', presetId: 'midnight-navy' }
   const bgPalette =
@@ -755,19 +815,41 @@ export function loadSavedTheme() {
       }
     }
 
-    // 2. Resolve Background Theme (Backward-Compatible Migration)
+    // 2. Resolve Background Theme (Strict Validation & Backward-Compatible Migration)
     let background = { ...fallbackBackground }
-    if (parsed.background && typeof parsed.background === 'object') {
-      const bgMode = parsed.background.mode || 'dark'
-      const bgPresetId = parsed.background.presetId || (bgMode === 'light' ? 'arctic-white' : 'midnight-navy')
-      const bgCustomHex = isValidHex(parsed.background.customHex)
-        ? parsed.background.customHex.toUpperCase()
-        : null
+    if (parsed && typeof parsed.background === 'object' && parsed.background !== null) {
+      const rawMode = parsed.background.mode
+      const rawPresetId = parsed.background.presetId
+      const rawCustomHex = parsed.background.customHex
 
-      background = {
-        mode: bgMode,
-        presetId: bgPresetId,
-        customHex: bgCustomHex
+      if (rawMode === 'dark') {
+        const found = BACKGROUND_PRESETS.find((p) => p.id === rawPresetId && p.isDark)
+        background = {
+          mode: 'dark',
+          presetId: found ? found.id : 'midnight-navy',
+          customHex: null
+        }
+      } else if (rawMode === 'light') {
+        const found = BACKGROUND_PRESETS.find((p) => p.id === rawPresetId && !p.isDark)
+        background = {
+          mode: 'light',
+          presetId: found ? found.id : 'arctic-white',
+          customHex: null
+        }
+      } else if (rawMode === 'custom') {
+        if (isValidHex(rawCustomHex)) {
+          background = {
+            mode: 'custom',
+            presetId: null,
+            customHex: rawCustomHex.toUpperCase()
+          }
+        } else {
+          // Custom mode requires a valid 6-digit hex; fallback safely to default background
+          background = { ...fallbackBackground }
+        }
+      } else {
+        // Unknown or invalid mode fallback to default dark background
+        background = { ...fallbackBackground }
       }
     }
 

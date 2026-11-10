@@ -41,6 +41,7 @@ export default function CustomColorPicker({
   const [hexError, setHexError] = useState(null)
   const [rgbState, setRgbState] = useState(() => hexToRgb(safeInitial) || { r: 24, g: 201, b: 245 })
 
+  const hsvRef = useRef(initialHsv)
   const svAreaRef = useRef(null)
   const isDraggingSv = useRef(false)
 
@@ -50,10 +51,12 @@ export default function CustomColorPicker({
       const formatted = initialColor.toUpperCase()
       const rgb = hexToRgb(formatted)
       if (rgb) {
+        const nextHsv = rgbToHsv(rgb.r, rgb.g, rgb.b)
+        hsvRef.current = nextHsv
         setHexInput(formatted)
         setHexError(null)
         setRgbState(rgb)
-        setHsv(rgbToHsv(rgb.r, rgb.g, rgb.b))
+        setHsv(nextHsv)
       }
     }
   }, [initialColor])
@@ -86,16 +89,17 @@ export default function CustomColorPicker({
       const s = Math.round((x / rect.width) * 100)
       const v = Math.round((1 - y / rect.height) * 100)
 
-      setHsv((prev) => {
-        const next = { ...prev, s, v }
-        const hex = hsvToHex(next.h, next.s, next.v)
-        const rgb = hsvToRgb(next.h, next.s, next.v)
-        setHexInput(hex)
-        setHexError(null)
-        setRgbState(rgb)
-        emitColorChange(hex)
-        return next
-      })
+      const currentHsv = hsvRef.current
+      const nextHsv = { ...currentHsv, s, v }
+      const nextHex = hsvToHex(nextHsv.h, nextHsv.s, nextHsv.v)
+      const nextRgb = hsvToRgb(nextHsv.h, nextHsv.s, nextHsv.v)
+
+      hsvRef.current = nextHsv
+      setHsv(nextHsv)
+      setHexInput(nextHex)
+      setHexError(null)
+      setRgbState(nextRgb)
+      emitColorChange(nextHex)
     },
     [emitColorChange]
   )
@@ -125,21 +129,18 @@ export default function CustomColorPicker({
   // --------------------------------------------------------------------------
   const handleHueChange = (e) => {
     const newHue = Number.parseInt(e.target.value, 10)
+    const currentHsv = hsvRef.current
+    const recovered = adjustHueWithBlackRecovery(newHue, currentHsv.s, currentHsv.v)
+    const nextHsv = { h: recovered.h, s: recovered.s, v: recovered.v }
+    const nextHex = hsvToHex(nextHsv.h, nextHsv.s, nextHsv.v)
+    const nextRgb = hsvToRgb(nextHsv.h, nextHsv.s, nextHsv.v)
 
-    setHsv((prev) => {
-      // Example 3: If color is pure black or near-black (V < 15 or S < 10),
-      // restore sensible vibrant defaults (S = 85, V = 95) via adjustHueWithBlackRecovery
-      const recovered = adjustHueWithBlackRecovery(newHue, prev.s, prev.v)
-      const next = { h: recovered.h, s: recovered.s, v: recovered.v }
-      const hex = hsvToHex(next.h, next.s, next.v)
-      const rgb = hsvToRgb(next.h, next.s, next.v)
-
-      setHexInput(hex)
-      setHexError(null)
-      setRgbState(rgb)
-      emitColorChange(hex)
-      return next
-    })
+    hsvRef.current = nextHsv
+    setHsv(nextHsv)
+    setHexInput(nextHex)
+    setHexError(null)
+    setRgbState(nextRgb)
+    emitColorChange(nextHex)
   }
 
   // --------------------------------------------------------------------------
@@ -162,6 +163,7 @@ export default function CustomColorPicker({
       if (rgb) {
         setRgbState(rgb)
         const nextHsv = rgbToHsv(rgb.r, rgb.g, rgb.b)
+        hsvRef.current = nextHsv
         setHsv(nextHsv)
         emitColorChange(formatted)
       }
@@ -187,6 +189,7 @@ export default function CustomColorPicker({
     const hex = rgbToHex(nextRgb.r, nextRgb.g, nextRgb.b)
     const nextHsv = rgbToHsv(nextRgb.r, nextRgb.g, nextRgb.b)
 
+    hsvRef.current = nextHsv
     setHexInput(hex)
     setHexError(null)
     setHsv(nextHsv)

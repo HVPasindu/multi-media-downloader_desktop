@@ -22,6 +22,10 @@
   --color-success: #00dea5;
   --color-warning: #ffb547;
   --color-danger: #ff4568;
+
+  --color-theme-on-primary: var(--theme-on-primary, #000000);
+  --color-theme-on-gradient: var(--theme-on-gradient, #ffffff);
+  --color-app-on-danger: var(--app-on-danger, #ffffff);
 }
 
 :root {
@@ -33,6 +37,11 @@
   --theme-primary-rgb: 24, 201, 245;
   --theme-secondary-rgb: 51, 136, 255;
   --theme-tertiary-rgb: 81, 75, 255;
+
+  /* Dynamic Contrast-Aware Foreground Variables (WCAG AA) */
+  --theme-on-primary: #000000;
+  --theme-on-gradient: #000000;
+  --app-on-danger: #ffffff;
 
   --glow-cyan: 0 0 25px rgba(var(--theme-primary-rgb), 0.45);
   --glow-violet: 0 0 25px rgba(var(--theme-tertiary-rgb), 0.45);
@@ -157,6 +166,18 @@ body,
   box-shadow: 0 0 24px rgba(var(--theme-primary-rgb), 0.5);
 }
 
+.theme-accent-hover-glow:hover {
+  box-shadow: 0 0 24px rgba(var(--theme-primary-rgb), 0.45);
+}
+
+.text-on-gradient {
+  color: var(--theme-on-gradient) !important;
+}
+
+.text-on-primary {
+  color: var(--theme-on-primary) !important;
+}
+
 .theme-border {
   border-color: rgba(var(--theme-primary-rgb), 0.25);
 }
@@ -186,7 +207,7 @@ body,
 
 .app-swal-confirm-btn {
   background-color: var(--theme-primary, #18c9f5) !important;
-  color: #ffffff !important;
+  color: var(--theme-on-primary, #000000) !important;
   padding: 0.625rem 1.25rem !important;
   border-radius: 0.75rem !important;
   font-weight: 700 !important;
@@ -208,7 +229,7 @@ body,
 
 .app-swal-confirm-btn-danger {
   background-color: #ff4568 !important;
-  color: #ffffff !important;
+  color: var(--app-on-danger, #ffffff) !important;
   box-shadow: 0 4px 14px rgba(255, 69, 104, 0.35) !important;
 }
 
@@ -237,6 +258,15 @@ body,
   background-color: var(--app-hover, rgba(var(--theme-primary-rgb), 0.08)) !important;
   color: var(--app-text, #f4f8ff) !important;
   border-color: var(--theme-primary, #18c9f5) !important;
+}
+
+.swal2-timer-progress-bar {
+  background: linear-gradient(
+    90deg,
+    var(--theme-primary),
+    var(--theme-secondary-accent),
+    var(--theme-tertiary)
+  ) !important;
 }
 
 @keyframes indeterminate {

@@ -484,7 +484,7 @@ export default function HistoryPage() {
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <div>
           <div className="flex items-center gap-3">
-            <h1 className="text-3xl lg:text-4xl font-extrabold text-white tracking-tight">
+            <h1 className="text-3xl lg:text-4xl font-extrabold text-text tracking-tight">
               Download History
             </h1>
           </div>
@@ -551,7 +551,7 @@ export default function HistoryPage() {
             <button
               type="button"
               onClick={handleApplyDateFilter}
-              className="px-3.5 py-1.5 rounded-lg bg-primary hover:bg-primary/80 text-xs font-semibold text-white transition-all cursor-pointer shadow-sm"
+              className="px-3.5 py-1.5 rounded-lg bg-primary hover:bg-primary/80 text-xs font-semibold text-on-primary transition-all cursor-pointer shadow-sm"
             >
               Apply Filter
             </button>
@@ -834,7 +834,7 @@ export default function HistoryPage() {
                   <td colSpan={10} className="py-16 text-center text-text-muted">
                     <div className="flex flex-col items-center justify-center gap-3 select-none">
                       <Loader2 className="w-8 h-8 text-primary animate-spin" />
-                      <span className="text-sm font-semibold text-white">Loading history...</span>
+                      <span className="text-sm font-semibold text-text">Loading history...</span>
                       <span className="text-xs text-text-muted">
                         Fetching your download history records...
                       </span>
@@ -845,7 +845,7 @@ export default function HistoryPage() {
                 <tr>
                   <td colSpan={10} className="py-16 text-center text-text-muted">
                     <div className="flex flex-col items-center justify-center gap-3 select-none">
-                      <span className="text-sm font-semibold text-white">
+                      <span className="text-sm font-semibold text-text">
                         Failed to load history
                       </span>
                       <span className="text-xs text-text-muted max-w-md">{error}</span>

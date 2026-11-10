@@ -338,7 +338,7 @@ export default function DownloadsPage() {
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <div>
           <div className="flex items-center gap-3">
-            <h1 className="text-3xl lg:text-4xl font-extrabold text-white tracking-tight">
+            <h1 className="text-3xl lg:text-4xl font-extrabold text-text tracking-tight">
               Downloads Manager
             </h1>
           </div>
@@ -772,7 +772,7 @@ export default function DownloadsPage() {
                   <td colSpan={7} className="py-16 text-center text-text-muted">
                     <div className="flex flex-col items-center justify-center gap-3 select-none">
                       <Loader2 className="w-8 h-8 text-primary animate-spin" />
-                      <span className="text-sm font-semibold text-white">Loading downloads...</span>
+                      <span className="text-sm font-semibold text-text">Loading downloads...</span>
                       <span className="text-xs text-text-muted">
                         Fetching your active and recent downloads...
                       </span>
@@ -784,7 +784,7 @@ export default function DownloadsPage() {
                   <td colSpan={7} className="py-16 text-center text-text-muted">
                     <div className="flex flex-col items-center justify-center gap-3 select-none">
                       <AlertCircle className="w-8 h-8 text-[#FF4568]" />
-                      <span className="text-sm font-semibold text-white">
+                      <span className="text-sm font-semibold text-text">
                         Failed to load downloads
                       </span>
                       <span className="text-xs text-text-muted max-w-md">{error}</span>
@@ -804,7 +804,7 @@ export default function DownloadsPage() {
                   <td colSpan={7} className="py-16 text-center text-text-muted">
                     <div className="flex flex-col items-center justify-center gap-2 select-none">
                       <Download className="w-8 h-8 text-text-muted/40" />
-                      <span className="text-sm font-semibold text-white">No downloads found</span>
+                      <span className="text-sm font-semibold text-text">No downloads found</span>
                       <span className="text-xs text-text-muted">
                         {searchQuery.trim()
                           ? 'No downloads match your search query.'
