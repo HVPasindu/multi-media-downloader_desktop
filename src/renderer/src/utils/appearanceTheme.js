@@ -1206,6 +1206,14 @@ export function resetBackgroundTheme() {
   return setBackgroundPreset('midnight-navy')
 }
 
+// Re-export pure color picker state calculations
+export {
+  calculateSvColor,
+  calculateHueColor,
+  calculateHexColor,
+  calculateRgbColor
+} from './colorPickerState.js'
+
 // ============================================================================
 // 8. REACT HOOK
 // ============================================================================

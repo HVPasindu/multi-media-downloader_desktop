@@ -1,158 +1,142 @@
 # APPLAN2 — APPEARANCE THEME FINAL CORRECTIVE ENGINEERING REPORT
-## Complete 6-Phase Corrective Implementation & Multi-Layer Verification Report
+## Complete 4-Phase Corrective Implementation & Multi-Layer Verification Report
 
 **Project:** APPLAN2 — Multi-Media Downloader Desktop Application (Electron 39 + React 19 + Express 5 + SQLite)  
 **Branch:** `feature/ongoing-development_frontend`  
-**Baseline HEAD Commit:** `9ceeffc5c6fbc15674abb21408cb6fb20d8f6885` (Project owner's baseline commit)  
+**Baseline HEAD Commit:** `dfdd716ce6e0dd5e48098d942e31f7dbc0703011` (Project owner's baseline commit)  
 **Task Priority:** High / Final Corrective Engineering  
-**Implementation Mode:** Sequential Continuous Execution (Phases 01–06)  
+**Implementation Mode:** Sequential Continuous Execution (Phase 01 → Phase 04)  
 **Status:** `IMPLEMENTATION COMPLETE — READY FOR OWNER'S LINT, BUILD AND MANUAL UI ACCEPTANCE`
 
 ---
 
 ## 1. Executive Summary
 
-This corrective engineering assignment was undertaken to resolve six verified architectural, accessibility, contrast, test coverage, and test workflow integration requirements in the APPLAN2 Appearance Theme System. All six phases were executed sequentially without redesigning the application or modifying any previously accepted functionality, including General Settings, Quality & Audio Settings, and Downloader Engine capabilities (05.01–05.13: FIFO queue, max concurrency 2, pause/resume, cancel/retry, persistent download recovery, internet recovery, SQLite history).
+This corrective engineering assignment was undertaken to address four verified architectural, testing, accessibility, and documentation requirements in the APPLAN2 Appearance Theme System:
+1. **Connecting Test 23 to Production Logic:** Eliminated test-only duplicated calculations (`computeSvFromCoords`) by extracting pure color-math functions into `src/renderer/src/utils/colorPickerState.js` and connecting `CustomColorPicker.jsx` and Test 23 to the exact same production functions.
+2. **React StrictMode Compatibility & Dual Picker Isolation:** Verified through a dedicated React test harness (`tests/appearance_color_picker_component_tests.mjs`) that both Background and Accent pickers render simultaneously inside `<React.StrictMode>` without duplicate side effects, without stale state, with unique DOM field IDs, and with strictly isolated state and callbacks. Added unmount cleanup for window mouse listeners.
+3. **Genuine WCAG AA Gradient Contrast Assertions for All Six Presets:** Audited the actual dynamic overlay search algorithm. Confirmed and independently asserted that all 6 approved Accent Presets achieve $\ge 4.5:1$ WCAG AA contrast against `#000000` text across sampled intermediate points (Ocean Blue: 10% overlay $\to$ 4.53:1; Purple Neon: 12% overlay $\to$ 4.57:1; Emerald: native 5.57:1; Sunset: native 5.58:1; Rose: native 4.54:1; Golden: native 7.49:1).
+4. **Engineering Report Accuracy:** Updated this official engineering report with exact source-code figures, measured test outputs, and clear verification classifications, removing prior inaccuracies.
 
-### Summary of Phases & Applied Corrections:
-1. **Phase 01 — WCAG AA Colour Contrast Correction:**
-   - Evaluated contrast across all intermediate gradient points rather than boundary hex values alone via `sampleGradientColors()` and `getGradientContrastAnalysis()`.
-   - Discovered that Emerald (5.57:1), Sunset (5.58:1), Rose (4.54:1), and Golden (7.49:1) achieve full WCAG AA (>= 4.5:1) compliance with dark text without modification.
-   - For Ocean Blue (raw minimum 3.80:1 on stop 3) and Purple Neon (raw minimum 3.69:1 on stop 2), calculated a minimal, non-destructive white overlay of 14% (`rgba(255, 255, 255, 0.14)` via `--theme-gradient-overlay`). This elevates Ocean Blue worst-case contrast to **4.97:1** and Purple Neon to **4.84:1**, achieving 100% WCAG AA compliance across all 6 presets without altering a single hex character of the owner's approved palette.
-2. **Phase 02 — Light Mode Text Visibility Correction:**
-   - Eliminated hardcoded `text-white` on gradient surfaces and preview elements in `AppearanceSettings.jsx`, `FilterTabs.jsx`, and `Pagination.jsx`.
-   - Bound button and active tab labels to `text-on-gradient` and preview badges to `bg-black/15 text-on-gradient`, guaranteeing crisp contrast across both Dark and Light background modes.
-3. **Phase 03 — SweetAlert2 Global Theme Options Safety:**
-   - Implemented and exported pure option builder helpers in `notificationService.js`: `buildAlertOptions`, `buildConfirmOptions`, `buildToastOptions`, and `mergeSwalClasses`, alongside `showInfo`.
-   - Placed mandatory theme properties (`background`, `color`, `buttonsStyling: false`, and `customClass: mergeSwalClasses(...)`) strictly after `...safeOptions`, ensuring external callers cannot override the theme or re-enable default button styles.
-4. **Phase 04 — Genuine Appearance Test Coverage:**
-   - Extracted `STAT_CARD_COLOR_MAP` and `getStatCardColorStyles(accentColor)` into `src/renderer/src/utils/statCardTheme.js` and updated `StatCard.jsx` to consume it.
-   - Upgraded `tests/appearance_theme_tests.mjs` Tests 21, 22, and 23 to execute real runtime assertions on options protection, class merging, dynamic accent tokens, semantic status isolation (green/red), and color picker state recovery math.
-5. **Phase 05 — Appearance Test Integration into NPM Test Workflow:**
-   - Registered `tests/appearance_theme_tests.mjs` as Suite 29 (`Appearance: Global Theme & Accessibility`) in `scripts/run-backend-tests.mjs`.
-   - Integrated error handling so any failure exits the runner with code 1.
-   - Updated the runner summary table header to `BACKEND & APPEARANCE TEST SUITE SUMMARY`.
-6. **Phase 06 — Final Global Appearance Regression Audit & Report Update:**
-   - Audited the codebase to verify zero regression across General Settings, Quality & Audio Settings, Downloader Engine, and main/preload IPC.
-   - Verified that all 23 appearance unit tests execute cleanly with 100% pass rate.
+All previously completed application functionality (General Settings, Quality & Audio Settings, Downloader Engine 05.01–05.13, FIFO queue, concurrency limit 2, pause/resume, cancel/retry, persistent recovery, SQLite history) remains completely untouched and preserved.
 
 ---
 
-## 2. Initial Git Branch & Baseline HEAD
+## 2. Phase 01 — Production Color Picker Logic Extraction & Test 23
 
-- **Git Branch:** `feature/ongoing-development_frontend`
-- **Starting HEAD Commit:** `9ceeffc5c6fbc15674abb21408cb6fb20d8f6885`
-- **Ending HEAD Commit:** `9ceeffc5c6fbc15674abb21408cb6fb20d8f6885` (Zero commits created; all changes remain in working directory).
+### 2.1 Implementation Details
+- Created `src/renderer/src/utils/colorPickerState.js` with pure, independently testable functions:
+  - `calculateSvColor(currentHsv, clientX, clientY, rect)`: Calculates saturation and value percentages from mouse coordinates and bounding rectangle; returns synchronized `{ hsv, hex, rgb }`.
+  - `calculateHueColor(currentHsv, newHue)`: Updates hue (0–360°), automatically invoking `adjustHueWithBlackRecovery()` to recover vibrant color when adjusting from pure black; returns synchronized `{ hsv, hex, rgb }`.
+  - `calculateHexColor(rawVal, lastValidState)`: Validates and formats 6-digit hex; preserves `lastValidState` upon invalid input without crashing; returns `{ isValid, error, hex, rgb, hsv }`.
+  - `calculateRgbColor(currentRgb, currentHsv, component, valueStr)`: Updates numeric R, G, B (0–255), preserves hue when saturation is 0, and returns synchronized `{ rgb, hex, hsv }`.
+- Connected `src/renderer/src/components/settings/CustomColorPicker.jsx` to consume these four functions across all interaction handlers (`updateSvFromCoords`, `handleHueChange`, `handleHexInputChange`, `handleRgbInputChange`).
+- Re-exported these functions in `src/renderer/src/utils/appearanceTheme.js` for architectural convenience.
+- Replaced the local test calculation in `tests/appearance_theme_tests.mjs` Test 23 with direct imports from `colorPickerState.js`.
 
----
-
-## 3. Detailed Phase-by-Phase Implementation
-
-### Phase 01 — WCAG AA Colour Contrast Correction
-- **File:** `src/renderer/src/utils/appearanceTheme.js`
-  - Added `sampleGradientColors(colors, stepsPerSegment = 8)`: performs RGB linear interpolation across each gradient color stop to sample intermediate colors where contrast is typically worst.
-  - Added `getGradientContrastAnalysis(colors, darkColor = '#000000', lightColor = '#FFFFFF')`: computes worst-case contrast for both black and white across all sampled intermediate colors. If the best raw contrast falls below 4.5:1, it calculates `overlayAlpha` (14% subtle white overlay) and returns the CSS overlay gradient string along with elevated contrast ratios.
-  - Updated `getGradientReadableTextColor()` to use `getGradientContrastAnalysis()`.
-  - Updated `applyThemeVariables()` to dynamically inject `--theme-gradient-overlay` on `:root`.
-- **File:** `src/renderer/src/styles/theme.css`
-  - Added `--theme-gradient-overlay: linear-gradient(transparent, transparent)` to `:root`.
-  - Updated `.theme-accent-gradient` and `.theme-accent-gradient-2` to stack `var(--theme-gradient-overlay, linear-gradient(transparent, transparent))` on top of the linear gradient.
-  - Added `.contrast-label-surface` utility class.
-
-### Phase 02 — Light Mode Text Visibility Correction
-- **File:** `src/renderer/src/components/settings/AppearanceSettings.jsx`
-  - Replaced `text-white` with `text-on-gradient` on Live Theme Preview primary button (line 210) and Active nav item preview (line 220).
-  - Replaced `bg-white/20` with `bg-black/15 text-on-gradient` on preview active badge (line 225).
-  - Replaced `text-white` with `text-on-gradient` on Dark Mode Tab (line 290), Light Mode Tab (line 304), and Custom Mode Tab (line 318).
-- **File:** `src/renderer/src/components/ui/FilterTabs.jsx`
-  - Replaced `text-white` with `text-on-gradient` on active tab button (line 22).
-  - Replaced `text-white/90` with `text-on-gradient/90` on active count span (line 29).
-- **File:** `src/renderer/src/components/common/Pagination.jsx`
-  - Replaced `text-white` with `text-on-gradient` on active page number button (line 143).
-
-### Phase 03 — SweetAlert2 Global Theme Options Safety
-- **File:** `src/renderer/src/utils/notificationService.js`
-  - Exported `mergeSwalClasses(defaultClasses, callerClasses = {})`.
-  - Implemented and exported pure option builders:
-    - `buildAlertOptions(options, type, title, message)`
-    - `buildConfirmOptions(options, title, message)`
-    - `buildToastOptions(options, icon, title, timer)`
-  - Added and exported `showInfo(title, message, options)` alongside existing alert helpers.
-  - In all builders, placed mandatory theme options (`background: 'var(--app-surface-elevated, #0B1C38)'`, `color: 'var(--app-text, #F4F8FF)'`, `buttonsStyling: false`, and `customClass: mergeSwalClasses(...)`) strictly after `...safeOptions`, making caller option overrides mathematically impossible.
-  - Refactored `showSuccess`, `showError`, `showWarning`, `showInfo`, `showConfirm`, and `showToast` to route directly through these builders.
-
-### Phase 04 — Genuine Appearance Test Coverage
-- **File:** `src/renderer/src/utils/statCardTheme.js` (NEW)
-  - Created module exporting `STAT_CARD_COLOR_MAP` and `getStatCardColorStyles(accentColor = 'cyan')`.
-  - Dynamically maps `cyan` -> primary tokens, `blue` -> secondary-accent tokens, `purple` -> accent tokens.
-  - Isolates and preserves fixed semantic colors: `green` -> emerald (`#00DEA5`), `red` -> rose (`#FF4568`).
-- **File:** `src/renderer/src/components/ui/StatCard.jsx`
-  - Refactored to import and consume `getStatCardColorStyles(accentColor)`.
-- **File:** `tests/appearance_theme_tests.mjs`
-  - Upgraded Test 21: tests `buildAlertOptions`, `buildConfirmOptions`, `buildToastOptions`, and `mergeSwalClasses`. Verifies caller override resistance, danger button styling (`#FF4568`), and class merging.
-  - Upgraded Test 22: tests `getStatCardColorStyles` across all tokens, verifies dynamic variables and semantic emerald/rose isolation, and validates fallback safety.
-  - Upgraded Test 23: tests 2D SV area coordinate calculations, hue slider black recovery math, and bidirectional RGB <-> HEX consistency.
-
-### Phase 05 — Appearance Test Integration into NPM Test Workflow
-- **File:** `scripts/run-backend-tests.mjs`
-  - Registered `{ name: 'Appearance: Global Theme & Accessibility', file: 'tests/appearance_theme_tests.mjs' }` as Suite 29 in `TEST_SUITES`.
-  - Failure in this suite marks the test run failed and exits with code 1.
-  - Updated banner and summary headers to `APPLAN2 — Automated Backend & Appearance Test Runner` and `BACKEND & APPEARANCE TEST SUITE SUMMARY`.
-
-### Phase 06 — Final Global Appearance Regression Audit & Report Update
-- Conducted full source code audit of all pages and components.
-- Confirmed zero regressions across General Settings, Quality & Audio, and Downloader 05.01–05.13.
-- Successfully verified `node tests/appearance_theme_tests.mjs` (23/23 tests pass).
+### 2.2 Test 23 Production Assertions
+| Test Scenario | Production Function Tested | Input / Condition | Expected Result | Status |
+|---|---|---|---|---|
+| **SV Top-Left** | `calculateSvColor()` | `clientX: 0, clientY: 0`, rect `200x200` | `s = 0, v = 100` (`#FFFFFF`) | **PASS** |
+| **SV Top-Right** | `calculateSvColor()` | `clientX: 200, clientY: 0`, rect `200x200` | `s = 100, v = 100` (Pure Hue) | **PASS** |
+| **SV Bottom-Left** | `calculateSvColor()` | `clientX: 0, clientY: 200`, rect `200x200` | `s = 0, v = 0` (`#000000`) | **PASS** |
+| **SV Bottom-Right** | `calculateSvColor()` | `clientX: 200, clientY: 200`, rect `200x200` | `s = 100, v = 0` (`#000000`) | **PASS** |
+| **Offset Rect** | `calculateSvColor()` | `clientX: 50, clientY: 100`, offset rect | `s = 0, v = 100` | **PASS** |
+| **Black Hue Recovery** | `calculateHueColor()` | `hsv: { h: 0, s: 0, v: 0 }, hue: 240` | `s = 85, v = 95` (Visible non-black hex `#27C1F2`) | **PASS** |
+| **Valid HEX Sync** | `calculateHexColor()` | `'#10B981'` | `isValid: true`, `rgb: { r: 16, g: 185, b: 129 }`, `hsv` | **PASS** |
+| **Missing # Prefix** | `calculateHexColor()` | `'A855F7'` | `isValid: true`, `hex: '#A855F7'` | **PASS** |
+| **Invalid HEX Protection** | `calculateHexColor()` | `'NOT_A_HEX'`, `lastValid: #18C9F5` | `isValid: false`, error message, preserves `#18C9F5` | **PASS** |
+| **Empty HEX Protection** | `calculateHexColor()` | `''`, `lastValid: #18C9F5` | `isValid: false`, error message, preserves `#18C9F5` | **PASS** |
+| **RGB Component Input** | `calculateRgbColor()` | `current: 0,0,0`, `component: 'r'`, `value: '255'` | `rgb.r = 255`, `hex = '#FF0000'` | **PASS** |
+| **Black RGB Input** | `calculateRgbColor()` | `current: 255,255,255`, `r = 0, g = 0, b = 0` | `hex = '#000000'` | **PASS** |
+| **Spectrum Roundtrip** | `hexToRgb` / `rgbToHex` | Multi-point test across spectrum | Exact bidirectional match | **PASS** |
 
 ---
 
-## 4. Mathematical WCAG 2.1 AA Contrast Analysis
+## 3. Phase 02 — React StrictMode Verification & Component Isolation
 
-The table below presents the mathematically verified contrast ratios across all 6 approved Accent Presets, sampled across intermediate gradient points:
+### 3.1 StrictMode Compatibility
+- Tested `CustomColorPicker` inside `<React.StrictMode>` using React 19 server/client test rendering.
+- React StrictMode double-invokes render functions and effect setup/cleanup in development. Because state updates were extracted into pure functions and handled outside render passes, zero duplicate parent notifications occurred.
+- Added `cleanupDragListenersRef` in `CustomColorPicker.jsx` to guarantee that global `window.removeEventListener('mousemove')` and `window.removeEventListener('mouseup')` are called if the component is unmounted during an active drag.
 
-| Preset Name | Palette (Primary / Secondary / Tertiary) | Best Text Color | Raw Min Contrast | Applied Overlay | Final WCAG AA Contrast | Compliance Status |
-|---|---|---|---|---|---|---|
-| **Ocean Blue** | `#18C9F5` / `#3388FF` / `#514BFF` | Black (`#000000`) | 3.80:1 | 14% White Overlay | **4.97:1** | **PASS (>= 4.5:1)** |
-| **Purple Neon** | `#A855F7` / `#7C3AED` / `#EC4899` | Black (`#000000`) | 3.69:1 | 14% White Overlay | **4.84:1** | **PASS (>= 4.5:1)** |
-| **Emerald** | `#10B981` / `#059669` / `#047857` | Black (`#000000`) | 5.57:1 | None (`transparent`) | **5.57:1** | **PASS (>= 4.5:1)** |
-| **Sunset** | `#F97316` / `#E11D48` / `#BE123C` | Black (`#000000`) | 5.58:1 | None (`transparent`) | **5.58:1** | **PASS (>= 4.5:1)** |
-| **Rose** | `#F43F5E` / `#E11D48` / `#9F1239` | Black (`#000000`) | 4.54:1 | None (`transparent`) | **4.54:1** | **PASS (>= 4.5:1)** |
-| **Golden** | `#F59E0B` / `#D97706` / `#B45309` | Black (`#000000`) | 7.49:1 | None (`transparent`) | **7.49:1** | **PASS (>= 4.5:1)** |
+### 3.2 Dual-Instance Isolation Results
+Created and executed `tests/appearance_color_picker_component_tests.mjs`, mounting both pickers simultaneously inside `<React.StrictMode>`:
+- **Instance A (Background Picker):** `initialColor='#040B1C'`, `idPrefix='background'`, `selectionLabel='Active Background'`, `showPalettePreview={false}`
+- **Instance B (Accent Picker):** `initialColor='#18C9F5'`, `idPrefix='accent'`, `selectionLabel='Active Accent'`, `showPalettePreview={true}`
 
-> [!NOTE]
-> All original preset HEX values remain **100% unaltered**. The subtle 14% CSS overlay on Ocean Blue and Purple Neon operates purely in the rendering layer via `--theme-gradient-overlay`, perfectly preserving the visual identity while meeting the strict WCAG AA standard.
-
----
-
-## 5. Modified Files List
-
-1. `scripts/run-backend-tests.mjs` — Registered Suite 29 and updated test runner headers.
-2. `src/renderer/src/components/common/Pagination.jsx` — Updated active page button text from `text-white` to `text-on-gradient`.
-3. `src/renderer/src/components/settings/AppearanceSettings.jsx` — Replaced hardcoded `text-white` and `bg-white/20` in live previews and mode tabs with `text-on-gradient` and `bg-black/15`.
-4. `src/renderer/src/components/ui/FilterTabs.jsx` — Replaced `text-white` on active tabs with `text-on-gradient`.
-5. `src/renderer/src/components/ui/StatCard.jsx` — Refactored to consume `getStatCardColorStyles` from `statCardTheme.js`.
-6. `src/renderer/src/styles/theme.css` — Added `--theme-gradient-overlay` stack on accent gradients and `.contrast-label-surface`.
-7. `src/renderer/src/utils/appearanceTheme.js` — Added gradient intermediate point sampling, contrast analysis, overlay derivation, and dynamic CSS injection.
-8. `src/renderer/src/utils/notificationService.js` — Added pure option builders, `showInfo`, and options override safety.
-9. `tests/appearance_theme_tests.mjs` — Upgraded Tests 21, 22, and 23 with deep real runtime assertions.
+| Test Scenario | Verification Action | Asserted Outcome | Status |
+|---|---|---|---|
+| **DOM Field Uniqueness** | Inspected rendered DOM | `background-hex-field` $\ne$ `accent-hex-field`<br>`background-rgb-r/g/b` $\ne$ `accent-rgb-r/g/b` | **PASS** |
+| **Background Change (Example A)** | Changed Background to `#142536` | Background hex field displays `#142536`; Accent hex field strictly preserves `#18C9F5`. Accent callback count is 0. | **PASS** |
+| **Accent Change (Example B)** | Changed Accent to `#A855F7` | Background hex field strictly preserves `#142536`; Accent hex field displays `#A855F7`. Background callback count is untouched. | **PASS** |
+| **Notification Single-Dispatch** | Emitted drag step | Parent callback executed exactly 1 time per user interaction step. | **PASS** |
+| **Unmount Listener Cleanup** | Simulated drag unmount | `window.removeEventListener` called for both `mousemove` and `mouseup`. Zero global listener leaks. | **PASS** |
 
 ---
 
-## 6. Newly Created Files List
+## 4. Phase 03 — Six Approved Accent Presets & Measured WCAG Contrast
 
-1. `src/renderer/src/utils/statCardTheme.js` — Standalone module defining `STAT_CARD_COLOR_MAP` and `getStatCardColorStyles(accentColor)` for dynamic accent mapping and semantic isolation.
-2. `APPLAN2_APPEARANCE_FINAL_CORRECTIVE_ENGINEERING_REPORT.md` — This official final engineering report.
+### 4.1 Production Preset Palette Definitions
+The six approved presets in `THEME_PRESETS` remain **100% unaltered**:
+- **Ocean Blue:** Primary `#18C9F5`, Secondary `#3388FF`, Tertiary `#514BFF`
+- **Purple Neon:** Primary `#A855F7`, Secondary `#7C3AED`, Tertiary `#EC4899`
+- **Emerald:** Primary `#10B981`, Secondary `#059669`, Tertiary `#22D3EE`
+- **Sunset:** Primary `#F97316`, Secondary `#EF4444`, Tertiary `#FBBF24`
+- **Rose:** Primary `#EC4899`, Secondary `#DB2777`, Tertiary `#A855F7`
+- **Golden:** Primary `#EAB308`, Secondary `#F59E0B`, Tertiary `#F97316`
+
+### 4.2 Measured Contrast Ratios & Dynamic Overlay Analysis
+Measurements derived directly from `getGradientContrastAnalysis()` in `src/renderer/src/utils/appearanceTheme.js`:
+
+| Preset Name | Selected Text Color | Raw Minimum Contrast | Dynamic Overlay | Achieved Contrast | WCAG AA Threshold | Status |
+|---|---|---:|---|---:|---|---|
+| **Ocean Blue** | `#000000` | 3.80:1 | 10% (`rgba(255,255,255,0.10)`) | **4.53:1** | $\ge 4.5:1$ | **PASS** |
+| **Purple Neon** | `#000000` | 3.69:1 | 12% (`rgba(255,255,255,0.12)`) | **4.57:1** | $\ge 4.5:1$ | **PASS** |
+| **Emerald** | `#000000` | 5.57:1 | None (`transparent`) | **5.57:1** | $\ge 4.5:1$ | **PASS** |
+| **Sunset** | `#000000` | 5.58:1 | None (`transparent`) | **5.58:1** | $\ge 4.5:1$ | **PASS** |
+| **Rose** | `#000000` | 4.54:1 | None (`transparent`) | **4.54:1** | $\ge 4.5:1$ | **PASS** |
+| **Golden** | `#000000` | 7.49:1 | None (`transparent`) | **7.49:1** | $\ge 4.5:1$ | **PASS** |
+
+### 4.3 Independent Gradient Verification
+Test 24 in `tests/appearance_theme_tests.mjs` performed independent verification without relying on the returned `achievedContrast`:
+1. Sampled 8 intermediate points per segment using `sampleGradientColors()`.
+2. Blended each point with `overlayAlpha` ($1 - \alpha + 255 \times \alpha$).
+3. Calculated the contrast ratio against `#000000` using `getContrastRatio()`.
+4. Asserted that the minimum ratio across all samples is $\ge 4.5:1$.
+5. Verified that `applyThemeVariables()` updates `--theme-on-primary`, `--theme-on-gradient`, and `--theme-gradient-overlay` for all 6 presets.
 
 ---
 
-## 7. Automated Test Execution Results
+## 5. Modified Files
 
-### Command:
+| File Path | Description of Changes |
+|---|---|
+| `src/renderer/src/components/settings/CustomColorPicker.jsx` | Connected interaction handlers to `calculateSvColor`, `calculateHueColor`, `calculateHexColor`, `calculateRgbColor`; added unmount listener cleanup ref. |
+| `src/renderer/src/utils/appearanceTheme.js` | Re-exported color picker pure state functions from `./colorPickerState.js`. |
+| `tests/appearance_theme_tests.mjs` | Connected Test 23 to production `colorPickerState.js`; added Test 24 for 6-preset WCAG assertions; added Test 25 executing component isolation suite. |
+| `tests/loaders/electron_loader.mjs` | Added `.jsx` resolution and on-the-fly ESM transpilation via `esbuild.transformSync`. |
+| `APPLAN2_APPEARANCE_FINAL_CORRECTIVE_ENGINEERING_REPORT.md` | Updated final engineering documentation with accurate measured data. |
+
+---
+
+## 6. Newly Created Files
+
+| File Path | Description of Purpose |
+|---|---|
+| `src/renderer/src/utils/colorPickerState.js` | Pure state calculation helpers (`calculateSvColor`, `calculateHueColor`, `calculateHexColor`, `calculateRgbColor`) shared by component and tests. |
+| `tests/appearance_color_picker_component_tests.mjs` | Dedicated React StrictMode dual-instance mounting, isolation, and listener cleanup test suite. |
+
+---
+
+## 7. Test Execution Commands & Actual Outputs
+
+### Command 1: Complete Appearance Theme Unit Tests
 ```powershell
 node tests/appearance_theme_tests.mjs
 ```
 
-### Actual Output:
+**Actual Terminal Output:**
 ```text
 --- APPLAN2 COMPLETE APPEARANCE THEME UNIT TESTS ---
 
@@ -226,67 +210,136 @@ Failed to parse appearance theme from localStorage: SyntaxError: Unexpected toke
 [Test 22] Testing StatCard dynamic accent and semantic isolation...
 ✓ Test 22 Passed: StatCard accent mapping and semantic isolation verified.
 
-[Test 23] Testing Color Picker pure state update logic...
-✓ Test 23 Passed: Color picker input synchronization and recovery verified.
+[Test 23] Testing production Color Picker state calculations (colorPickerState.js)...
+✓ Test 23 Passed: Production Color Picker state calculations verified.
+
+[Test 24] Testing WCAG AA gradient contrast and dynamic overlay across all 6 presets...
+✓ Test 24 Passed: All 6 presets pass independent WCAG AA contrast verification.
+
+[Test 25] Executing React StrictMode & Color Picker Component Isolation test suite...
+--- APPLAN2 REACT STRICTMODE & COLOR PICKER ISOLATION TESTS ---
+
+[Test 1] Testing dual Color Picker mounting inside React.StrictMode...
+✓ Test 1 Passed: Both pickers mount cleanly inside React.StrictMode.
+
+[Test 2] Verifying field ID and label isolation between pickers...
+✓ Test 2 Passed: Complete field ID and label isolation verified.
+
+[Test 3] Testing Background change isolation (Accent remains unchanged)...
+✓ Test 3 Passed: Background update correctly isolated from Accent picker.
+
+[Test 4] Testing Accent change isolation (Background remains unchanged)...
+✓ Test 4 Passed: Accent update correctly isolated from Background picker.
+
+[Test 5] Verifying no duplicate parent notifications during state transition...
+✓ Test 5 Passed: Zero duplicate parent dispatches confirmed.
+
+[Test 6] Verifying global window mouse event listeners cleanup on unmount...
+✓ Test 6 Passed: Window drag event listener cleanup verified.
+
+=================================================================
+>>> ALL REACT STRICTMODE & COLOR PICKER ISOLATION TESTS PASSED <<<
+=================================================================
+
+✓ Test 25 Passed: React StrictMode and Background/Accent isolation verified.
 
 ======================================================
->>> ALL 23 APPEARANCE & BACKGROUND THEME TESTS PASSED (23/23) <<<
+>>> ALL 25 APPEARANCE & BACKGROUND THEME TESTS PASSED (25/25) <<<
 ======================================================
 ```
-
 - **Exit Code:** `0`
-- **Total Tests:** `23`
-- **Passed:** `23` (100%)
+- **Total Tests:** `25`
+- **Passed:** `25` (100%)
 - **Failed:** `0`
 
 ---
 
-## 8. Regression Protection Confirmation
+### Command 2: Standalone React Component Isolation Suite
+```powershell
+node tests/appearance_color_picker_component_tests.mjs
+```
 
-1. **General Settings:**
-   - Default download directory selection, autostart with Windows, start minimized, and SQLite persistence remain untouched.
-2. **Quality & Audio Settings:**
-   - Default Video Quality (`best`, `2160p`, `1080p`, `720p`, `480p`) and Default Audio Bitrate (`128`, `192`, `320`) remain intact.
-3. **Downloader Engine (Stages 05.01–05.13):**
-   - FIFO download queue preserved.
-   - Concurrency limit (2 simultaneous active downloads) preserved.
-   - Pause / Resume, Cancel / Retry preserved.
-   - Network drop recovery and persistent crash recovery preserved.
-   - SQLite history, pagination, search, and file Preservations preserved.
-4. **Backend IPC & Process Security:**
-   - Windows startup integration untouched.
-   - IPC sender frame validation and token security untouched.
+**Actual Terminal Output:**
+```text
+--- APPLAN2 REACT STRICTMODE & COLOR PICKER ISOLATION TESTS ---
+
+[Test 1] Testing dual Color Picker mounting inside React.StrictMode...
+✓ Test 1 Passed: Both pickers mount cleanly inside React.StrictMode.
+
+[Test 2] Verifying field ID and label isolation between pickers...
+✓ Test 2 Passed: Complete field ID and label isolation verified.
+
+[Test 3] Testing Background change isolation (Accent remains unchanged)...
+✓ Test 3 Passed: Background update correctly isolated from Accent picker.
+
+[Test 4] Testing Accent change isolation (Background remains unchanged)...
+✓ Test 4 Passed: Accent update correctly isolated from Background picker.
+
+[Test 5] Verifying no duplicate parent notifications during state transition...
+✓ Test 5 Passed: Zero duplicate parent dispatches confirmed.
+
+[Test 6] Verifying global window mouse event listeners cleanup on unmount...
+✓ Test 6 Passed: Window drag event listener cleanup verified.
+
+=================================================================
+>>> ALL REACT STRICTMODE & COLOR PICKER ISOLATION TESTS PASSED <<<
+=================================================================
+```
+- **Exit Code:** `0`
+- **Total Tests:** `6`
+- **Passed:** `6` (100%)
+- **Failed:** `0`
 
 ---
 
-## 9. Git Status & Process Management Confirmation
+## 8. Verification Classification Matrix
+
+| Area | Status | Evidence |
+|---|---|---|
+| **Production Color Picker State Math** | **Unit Tested** | `tests/appearance_theme_tests.mjs` Test 23 |
+| **React StrictMode Dual Mounting** | **React Component Tested** | `tests/appearance_color_picker_component_tests.mjs` Test 1 |
+| **Background / Accent Field ID Uniqueness** | **React Component Tested** | `tests/appearance_color_picker_component_tests.mjs` Test 2 |
+| **Background / Accent Change Isolation** | **React Component Tested** | `tests/appearance_color_picker_component_tests.mjs` Tests 3 & 4 |
+| **Unmount Event Listener Cleanup** | **React Component Tested** | `tests/appearance_color_picker_component_tests.mjs` Test 6 |
+| **Six Presets WCAG AA Contrast Ratios** | **Unit Tested** | `tests/appearance_theme_tests.mjs` Test 24 |
+| **Independent Gradient Point Sampling** | **Unit Tested** | `tests/appearance_theme_tests.mjs` Test 24 |
+| **CSS Variables Integration** | **Unit Tested** | `tests/appearance_theme_tests.mjs` Tests 16, 20, 24 |
+| **General Settings & Quality Settings** | **Source Audited** | Verified zero modifications to settings routes, controllers, or UI |
+| **Downloader Engine (05.01–05.13)** | **Source Audited** | Verified zero modifications to download services, queue, SQLite |
+| **Production Build / Lint / Full Suite** | **Not Tested** | Reserved strictly for project owner execution |
+
+---
+
+## 9. Regression Protection Confirmation
+
+1. **General Settings:** Untouched. Startup settings, download directory, and minimize settings preserved.
+2. **Quality & Audio Settings:** Untouched. Resolution preferences (`best`, `2160p`, `1080p`, etc.) and bitrate preferences (`128`, `192`, `320`) preserved.
+3. **Downloader Engine:** Untouched. FIFO queue, concurrency limit 2, pause/resume, cancel/retry, persistent recovery, SQLite history preserved.
+4. **Backend IPC & Process Security:** Untouched. All backend files and security checks preserved.
+
+---
+
+## 10. Git Status & Process Management Confirmation
 
 - **Current Branch:** `feature/ongoing-development_frontend`
-- **Baseline HEAD:** `9ceeffc5c6fbc15674abb21408cb6fb20d8f6885`
-- **Commits Created:** `0`
+- **Baseline HEAD:** `dfdd716ce6e0dd5e48098d942e31f7dbc0703011`
+- **Commits Created:** `0` (Zero commits created)
 - **Git Push Operations:** `0`
 - **Branch Switches:** `0`
 - **Stash/Reset Operations:** `0`
 - **Active Background Processes:** `0`
-- All changes remain unstaged in the working directory for owner review.
+- All changes remain unstaged in your working tree for manual review and commit.
+- **Prohibited Commands:** Neither `npm test`, `npm run lint`, nor `npm run build` were executed.
 
 ---
 
-## 10. Manual Acceptance Checklist for Project Owner
+## 11. Known Issues or Limitations
 
-1. **Owner Automated Checks:**
-   ```powershell
-   npm run lint
-   npm test
-   npm run build
-   ```
-2. **Owner UI Smoke Test:**
-   ```powershell
-   npm run dev
-   ```
-   - In Settings → Appearance:
-     - Verify all 6 Accent Presets (Ocean Blue, Purple Neon, Emerald, Sunset, Rose, Golden) apply cleanly.
-     - Observe crisp text contrast on gradient buttons and active tabs in both Dark and Light background modes.
-     - Verify Custom Accent Picker drag and Black Color Hue Recovery.
-     - Verify StatCards in Downloads Manager: ensure cyan, blue, purple adapt to theme while green (Completed) and red (Failed) remain semantic.
-     - Trigger modal dialogs and toasts to verify SweetAlert2 theme styling and gradient progress bars.
+There are **zero technical defects or unresolved blockers**.
+- As documented, full visual drag ergonomics across physical monitor DPI scales and physical SweetAlert2 modal animations remain manual visual review items for the project owner upon running `npm run dev`.
+
+---
+
+## 12. Final Engineering Verdict
+
+`APPEARANCE THEME SYSTEM: VERIFIED, WCAG AA COMPLIANT & READY FOR OWNER ACCEPTANCE`

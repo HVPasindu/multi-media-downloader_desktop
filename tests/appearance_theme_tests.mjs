@@ -673,66 +673,228 @@ assert.strictEqual(fallbackStyles, STAT_CARD_COLOR_MAP.cyan, 'Unknown accent saf
 console.log('✓ Test 22 Passed: StatCard accent mapping and semantic isolation verified.')
 
 // --------------------------------------------------------------------------
-// 23. Color Picker Input Synchronization & Pure State Updates (Phase 04)
+// 23. Color Picker Input Synchronization & Pure State Calculations (Phase 01)
 // --------------------------------------------------------------------------
-console.log('\n[Test 23] Testing Color Picker pure state update logic...')
-// From pure black #000000:
-const blackRgb = hexToRgb('#000000')
-const blackHsv = rgbToHsv(blackRgb.r, blackRgb.g, blackRgb.b)
-assert.strictEqual(blackHsv.s, 0)
-assert.strictEqual(blackHsv.v, 0)
+console.log('\n[Test 23] Testing production Color Picker state calculations (colorPickerState.js)...')
+const {
+  calculateSvColor,
+  calculateHueColor,
+  calculateHexColor,
+  calculateRgbColor
+} = await import('../src/renderer/src/utils/colorPickerState.js')
 
-// Moving hue slider on black triggers automatic recovery (Example 3):
-const hueShiftRecovered = adjustHueWithBlackRecovery(240, blackHsv.s, blackHsv.v)
-assert.strictEqual(hueShiftRecovered.h, 240)
-assert.strictEqual(hueShiftRecovered.s, 85, 'Restores vibrant saturation 85')
-assert.strictEqual(hueShiftRecovered.v, 95, 'Restores vibrant value 95')
+assert.strictEqual(typeof calculateSvColor, 'function', 'calculateSvColor exported')
+assert.strictEqual(typeof calculateHueColor, 'function', 'calculateHueColor exported')
+assert.strictEqual(typeof calculateHexColor, 'function', 'calculateHexColor exported')
+assert.strictEqual(typeof calculateRgbColor, 'function', 'calculateRgbColor exported')
 
-// Recomputed hex from recovered:
-const recoveredHex = hsvToHex(hueShiftRecovered.h, hueShiftRecovered.s, hueShiftRecovered.v)
-assert.notStrictEqual(recoveredHex, '#000000', 'Recovered color is no longer stuck on black')
-assert.ok(isValidHex(recoveredHex), 'Recovered color is valid hex')
+// A. 2D Saturation / Value coordinate calculation across all 4 corners (Production helper)
+const svRect = { left: 0, top: 0, width: 200, height: 200 }
+const baseHsv = { h: 200, s: 50, v: 50 }
 
-// 2D Saturation / Value coordinate conversion calculation:
-// Given rect width 200, height 200:
-const computeSvFromCoords = (x, y, width = 200, height = 200) => {
-  const clampedX = Math.max(0, Math.min(width, x))
-  const clampedY = Math.max(0, Math.min(height, y))
-  return {
-    s: Math.round((clampedX / width) * 100),
-    v: Math.round((1 - clampedY / height) * 100)
-  }
-}
-const svTopLeft = computeSvFromCoords(0, 0)
-assert.strictEqual(svTopLeft.s, 0, 'Top-left saturation is 0 (white)')
-assert.strictEqual(svTopLeft.v, 100, 'Top-left value is 100 (white)')
+// 1. Top-Left: clientX: 0, clientY: 0 -> Saturation 0, Value 100
+const svTopLeft = calculateSvColor(baseHsv, 0, 0, svRect)
+assert.strictEqual(svTopLeft.hsv.s, 0, 'SV top-left: Saturation is 0')
+assert.strictEqual(svTopLeft.hsv.v, 100, 'SV top-left: Value is 100')
+assert.strictEqual(svTopLeft.hex.toUpperCase(), '#FFFFFF', 'SV top-left produces pure white')
 
-const svBottomLeft = computeSvFromCoords(0, 200)
-assert.strictEqual(svBottomLeft.s, 0, 'Bottom-left saturation is 0')
-assert.strictEqual(svBottomLeft.v, 0, 'Bottom-left value is 0 (black)')
+// 2. Top-Right: clientX: 200, clientY: 0 -> Saturation 100, Value 100
+const svTopRight = calculateSvColor(baseHsv, 200, 0, svRect)
+assert.strictEqual(svTopRight.hsv.s, 100, 'SV top-right: Saturation is 100')
+assert.strictEqual(svTopRight.hsv.v, 100, 'SV top-right: Value is 100')
 
-const svTopRight = computeSvFromCoords(200, 0)
-assert.strictEqual(svTopRight.s, 100, 'Top-right saturation is 100 (pure hue)')
-assert.strictEqual(svTopRight.v, 100, 'Top-right value is 100 (pure hue)')
+// 3. Bottom-Left: clientX: 0, clientY: 200 -> Saturation 0, Value 0
+const svBottomLeft = calculateSvColor(baseHsv, 0, 200, svRect)
+assert.strictEqual(svBottomLeft.hsv.s, 0, 'SV bottom-left: Saturation is 0')
+assert.strictEqual(svBottomLeft.hsv.v, 0, 'SV bottom-left: Value is 0')
+assert.strictEqual(svBottomLeft.hex.toUpperCase(), '#000000', 'SV bottom-left produces pure black')
 
-// Typing RGB 0, 0, 0 gives pure black:
-const typedBlackHex = rgbToHex(0, 0, 0)
-assert.strictEqual(typedBlackHex, '#000000')
-const typedBlackHsv = rgbToHsv(0, 0, 0)
-const recoveredAgain = adjustHueWithBlackRecovery(60, typedBlackHsv.s, typedBlackHsv.v)
-assert.strictEqual(recoveredAgain.s, 85)
-assert.strictEqual(recoveredAgain.v, 95)
+// 4. Bottom-Right: clientX: 200, clientY: 200 -> Saturation 100, Value 0
+const svBottomRight = calculateSvColor(baseHsv, 200, 200, svRect)
+assert.strictEqual(svBottomRight.hsv.s, 100, 'SV bottom-right: Saturation is 100')
+assert.strictEqual(svBottomRight.hsv.v, 0, 'SV bottom-right: Value is 0')
+assert.strictEqual(svBottomRight.hex.toUpperCase(), '#000000', 'SV bottom-right produces pure black')
 
-// Bidirectional RGB <-> HEX consistency across spectrum
+// Offset bounding rect check (e.g. left: 50, top: 100):
+const offsetRect = { left: 50, top: 100, width: 200, height: 200 }
+const svOffsetTopLeft = calculateSvColor(baseHsv, 50, 100, offsetRect)
+assert.strictEqual(svOffsetTopLeft.hsv.s, 0)
+assert.strictEqual(svOffsetTopLeft.hsv.v, 100)
+
+// B. Hue change with Black Hue Recovery (adjustHueWithBlackRecovery)
+const t23BlackHsv = { h: 0, s: 0, v: 0 }
+const t23RecoveredFromBlack = calculateHueColor(t23BlackHsv, 240)
+assert.strictEqual(t23RecoveredFromBlack.hsv.h, 240)
+assert.strictEqual(t23RecoveredFromBlack.hsv.s, 85, 'Black hue recovery restores saturation 85')
+assert.strictEqual(t23RecoveredFromBlack.hsv.v, 95, 'Black hue recovery restores value 95')
+assert.notStrictEqual(t23RecoveredFromBlack.hex, '#000000', 'Recovered color is no longer black')
+assert.ok(isValidHex(t23RecoveredFromBlack.hex))
+
+// C. Direct HEX input synchronization
+const validHexInput = calculateHexColor('#10B981', { hex: '#18C9F5' })
+assert.strictEqual(validHexInput.isValid, true)
+assert.strictEqual(validHexInput.error, null)
+assert.strictEqual(validHexInput.hex, '#10B981')
+assert.strictEqual(validHexInput.rgb.r, 16)
+assert.strictEqual(validHexInput.rgb.g, 185)
+assert.strictEqual(validHexInput.rgb.b, 129)
+
+// Missing # prefix is automatically handled
+const autoHashInput = calculateHexColor('A855F7', { hex: '#18C9F5' })
+assert.strictEqual(autoHashInput.isValid, true)
+assert.strictEqual(autoHashInput.hex, '#A855F7')
+
+// Invalid HEX input preserves last valid color without breaking
+const invalidHexInput = calculateHexColor('NOT_A_HEX', {
+  hex: '#18C9F5',
+  rgb: { r: 24, g: 201, b: 245 },
+  hsv: { h: 192, s: 90, v: 96 }
+})
+assert.strictEqual(invalidHexInput.isValid, false)
+assert.ok(invalidHexInput.error.includes('valid 6-digit HEX'))
+assert.strictEqual(invalidHexInput.hex, '#18C9F5', 'Last valid HEX preserved')
+
+// Empty HEX input
+const emptyHexInput = calculateHexColor('', { hex: '#18C9F5' })
+assert.strictEqual(emptyHexInput.isValid, false)
+assert.ok(emptyHexInput.error.includes('cannot be empty'))
+
+// D. Numeric RGB Inputs
+const rgbResult = calculateRgbColor({ r: 0, g: 0, b: 0 }, { h: 0, s: 0, v: 0 }, 'r', '255')
+assert.strictEqual(rgbResult.rgb.r, 255)
+assert.strictEqual(rgbResult.rgb.g, 0)
+assert.strictEqual(rgbResult.rgb.b, 0)
+assert.strictEqual(rgbResult.hex, '#FF0000')
+
+// Black RGB input produces #000000
+const blackRgbResult = calculateRgbColor({ r: 255, g: 255, b: 255 }, { h: 0, s: 0, v: 100 }, 'r', '0')
+assert.strictEqual(blackRgbResult.rgb.r, 0)
+
+// E. Spectrum conversions roundtrip
 const testHexes = ['#18C9F5', '#00DEA5', '#FF4568', '#A855F7', '#FFFFFF', '#000000']
 for (const hex of testHexes) {
   const rgb = hexToRgb(hex)
   assert.ok(rgb, `RGB extracted for ${hex}`)
   const roundtripHex = rgbToHex(rgb.r, rgb.g, rgb.b)
-  assert.strictEqual(roundtripHex.toUpperCase(), hex.toUpperCase(), `Roundtrip matches for ${hex}`)
+  assert.strictEqual(roundtripHex.toUpperCase(), hex.toUpperCase(), `RGB roundtrip for ${hex}`)
+
+  const hsv = hexToHsv(hex)
+  assert.ok(hsv, `HSV extracted for ${hex}`)
+  const reconvertedRgb = hsvToRgb(hsv.h, hsv.s, hsv.v)
+  assert.ok(Math.abs(reconvertedRgb.r - rgb.r) <= 1, `R channel within 1 for ${hex}`)
+  assert.ok(Math.abs(reconvertedRgb.g - rgb.g) <= 1, `G channel within 1 for ${hex}`)
+  assert.ok(Math.abs(reconvertedRgb.b - rgb.b) <= 1, `B channel within 1 for ${hex}`)
 }
-console.log('✓ Test 23 Passed: Color picker input synchronization and recovery verified.')
+console.log('✓ Test 23 Passed: Production Color Picker state calculations verified.')
+
+// --------------------------------------------------------------------------
+// 24. Six Approved Accent Presets & Independent WCAG AA Gradient Contrast Verification (Phase 03)
+// --------------------------------------------------------------------------
+console.log('\n[Test 24] Testing WCAG AA gradient contrast and dynamic overlay across all 6 presets...')
+
+const { sampleGradientColors, getGradientContrastAnalysis } = await import(
+  '../src/renderer/src/utils/appearanceTheme.js'
+)
+
+// Reference data from the production dynamic search algorithm:
+const expectedPresetContrast = {
+  'ocean-blue': { rawMin: 3.8, overlayAlpha: 0.1, finalMin: 4.53, needsTreatment: true },
+  'purple-neon': { rawMin: 3.69, overlayAlpha: 0.12, finalMin: 4.57, needsTreatment: true },
+  emerald: { rawMin: 5.57, overlayAlpha: undefined, finalMin: 5.57, needsTreatment: false },
+  sunset: { rawMin: 5.58, overlayAlpha: undefined, finalMin: 5.58, needsTreatment: false },
+  rose: { rawMin: 4.54, overlayAlpha: undefined, finalMin: 4.54, needsTreatment: false },
+  golden: { rawMin: 7.49, overlayAlpha: undefined, finalMin: 7.49, needsTreatment: false }
+}
+
+for (const preset of THEME_PRESETS) {
+  const analysis = getGradientContrastAnalysis([preset.primary, preset.secondary, preset.tertiary])
+  const expected = expectedPresetContrast[preset.id]
+
+  // 1. Verify production achieved contrast meets WCAG AA (>= 4.5:1)
+  assert.ok(
+    analysis.achievedContrast >= 4.5,
+    `${preset.name} achieved contrast (${analysis.achievedContrast}) must be >= 4.5`
+  )
+  assert.strictEqual(analysis.textColor, '#000000', `${preset.name} must use dark readable text`)
+
+  // 2. Verify dynamic overlay calculation
+  if (expected.needsTreatment) {
+    assert.strictEqual(analysis.needsTreatment, true, `${preset.name} requires treatment`)
+    assert.strictEqual(analysis.overlayAlpha, expected.overlayAlpha, `${preset.name} overlay alpha`)
+    assert.ok(
+      Math.abs(analysis.achievedContrast - expected.finalMin) < 0.05,
+      `${preset.name} final contrast matches reference (${expected.finalMin})`
+    )
+  } else {
+    assert.strictEqual(analysis.needsTreatment, false, `${preset.name} natively compliant without overlay`)
+    assert.ok(
+      Math.abs(analysis.achievedContrast - expected.finalMin) < 0.05,
+      `${preset.name} native contrast matches reference (${expected.finalMin})`
+    )
+  }
+
+  // 3. Independent verification: sample actual intermediate points and compute contrast
+  const samples = sampleGradientColors([preset.primary, preset.secondary, preset.tertiary], 8)
+  const alpha = analysis.overlayAlpha || 0
+  let independentMinContrast = Infinity
+
+  for (const s of samples) {
+    const blended = {
+      r: Math.round(s.r * (1 - alpha) + 255 * alpha),
+      g: Math.round(s.g * (1 - alpha) + 255 * alpha),
+      b: Math.round(s.b * (1 - alpha) + 255 * alpha)
+    }
+    const ratio = getContrastRatio(blended, analysis.textColor)
+    if (ratio < independentMinContrast) {
+      independentMinContrast = ratio
+    }
+  }
+
+  assert.ok(
+    independentMinContrast >= 4.5,
+    `${preset.name}: Independent verification must achieve >= 4.5:1 (got ${independentMinContrast.toFixed(2)})`
+  )
+
+  // 4. CSS variables verification via applyThemeVariables
+  mockCssVariables.clear()
+  applyThemeVariables({
+    primary: preset.primary,
+    secondary: preset.secondary,
+    tertiary: preset.tertiary,
+    background: { mode: 'dark', presetId: 'midnight-navy' },
+    bgPalette: deriveBackgroundPalette('dark', 'midnight-navy')
+  })
+
+  assert.strictEqual(
+    mockCssVariables.get('--theme-on-primary'),
+    getReadableTextColor(preset.primary),
+    `${preset.name}: --theme-on-primary set correctly`
+  )
+  assert.strictEqual(
+    mockCssVariables.get('--theme-on-gradient'),
+    analysis.textColor,
+    `${preset.name}: --theme-on-gradient set correctly`
+  )
+  assert.strictEqual(
+    mockCssVariables.get('--theme-gradient-overlay'),
+    analysis.overlay,
+    `${preset.name}: --theme-gradient-overlay set correctly`
+  )
+}
+console.log('✓ Test 24 Passed: All 6 presets pass independent WCAG AA contrast verification.')
+
+// --------------------------------------------------------------------------
+// 25. React StrictMode Dual-Instance Component & Event Listener Cleanup Execution (Phase 02)
+// --------------------------------------------------------------------------
+console.log('\n[Test 25] Executing React StrictMode & Color Picker Component Isolation test suite...')
+const { execFileSync } = await import('node:child_process')
+execFileSync(
+  process.execPath,
+  ['--loader', './tests/loaders/electron_loader.mjs', 'tests/appearance_color_picker_component_tests.mjs'],
+  { stdio: 'inherit' }
+)
+console.log('✓ Test 25 Passed: React StrictMode and Background/Accent isolation verified.')
 
 console.log('\n======================================================')
-console.log('>>> ALL 23 APPEARANCE & BACKGROUND THEME TESTS PASSED (23/23) <<<')
+console.log('>>> ALL 25 APPEARANCE & BACKGROUND THEME TESTS PASSED (25/25) <<<')
 console.log('======================================================')

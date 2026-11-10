@@ -3,14 +3,17 @@ import { AlertCircle, Pipette, Sparkles } from 'lucide-react'
 import {
   isValidHex,
   hexToRgb,
-  rgbToHex,
   rgbToHsv,
-  hsvToRgb,
   hsvToHex,
   generateCustomPalette,
-  isLightColor,
-  adjustHueWithBlackRecovery
+  isLightColor
 } from '../../utils/appearanceTheme'
+import {
+  calculateSvColor,
+  calculateHueColor,
+  calculateHexColor,
+  calculateRgbColor
+} from '../../utils/colorPickerState'
 
 /**
  * Application-Controlled Custom Cyberpunk Colour Picker
@@ -44,6 +47,7 @@ export default function CustomColorPicker({
   const hsvRef = useRef(initialHsv)
   const svAreaRef = useRef(null)
   const isDraggingSv = useRef(false)
+  const cleanupDragListenersRef = useRef(null)
 
   // Keep internal state updated if initialColor prop changes from outside (e.g. preset chosen)
   useEffect(() => {
@@ -60,6 +64,17 @@ export default function CustomColorPicker({
       }
     }
   }, [initialColor])
+
+  // Clean up global drag listeners if component unmounts while dragging
+  useEffect(() => {
+    return () => {
+      isDraggingSv.current = false
+      if (cleanupDragListenersRef.current) {
+        cleanupDragListenersRef.current()
+        cleanupDragListenersRef.current = null
+      }
+    }
+  }, [])
 
   // Current active color hex string
   const currentHex = hsvToHex(hsv.h, hsv.s, hsv.v)
@@ -83,23 +98,14 @@ export default function CustomColorPicker({
     (clientX, clientY) => {
       if (!svAreaRef.current) return
       const rect = svAreaRef.current.getBoundingClientRect()
-      const x = Math.max(0, Math.min(rect.width, clientX - rect.left))
-      const y = Math.max(0, Math.min(rect.height, clientY - rect.top))
+      const nextState = calculateSvColor(hsvRef.current, clientX, clientY, rect)
 
-      const s = Math.round((x / rect.width) * 100)
-      const v = Math.round((1 - y / rect.height) * 100)
-
-      const currentHsv = hsvRef.current
-      const nextHsv = { ...currentHsv, s, v }
-      const nextHex = hsvToHex(nextHsv.h, nextHsv.s, nextHsv.v)
-      const nextRgb = hsvToRgb(nextHsv.h, nextHsv.s, nextHsv.v)
-
-      hsvRef.current = nextHsv
-      setHsv(nextHsv)
-      setHexInput(nextHex)
+      hsvRef.current = nextState.hsv
+      setHsv(nextState.hsv)
+      setHexInput(nextState.hex)
       setHexError(null)
-      setRgbState(nextRgb)
-      emitColorChange(nextHex)
+      setRgbState(nextState.rgb)
+      emitColorChange(nextState.hex)
     },
     [emitColorChange]
   )
@@ -118,6 +124,12 @@ export default function CustomColorPicker({
       isDraggingSv.current = false
       window.removeEventListener('mousemove', handleMouseMove)
       window.removeEventListener('mouseup', handleMouseUp)
+      cleanupDragListenersRef.current = null
+    }
+
+    cleanupDragListenersRef.current = () => {
+      window.removeEventListener('mousemove', handleMouseMove)
+      window.removeEventListener('mouseup', handleMouseUp)
     }
 
     window.addEventListener('mousemove', handleMouseMove)
@@ -128,19 +140,15 @@ export default function CustomColorPicker({
   // 2. Hue Slider (with Black-Colour-Bug Fix: Example 3)
   // --------------------------------------------------------------------------
   const handleHueChange = (e) => {
-    const newHue = Number.parseInt(e.target.value, 10)
-    const currentHsv = hsvRef.current
-    const recovered = adjustHueWithBlackRecovery(newHue, currentHsv.s, currentHsv.v)
-    const nextHsv = { h: recovered.h, s: recovered.s, v: recovered.v }
-    const nextHex = hsvToHex(nextHsv.h, nextHsv.s, nextHsv.v)
-    const nextRgb = hsvToRgb(nextHsv.h, nextHsv.s, nextHsv.v)
+    const newHue = e.target.value
+    const nextState = calculateHueColor(hsvRef.current, newHue)
 
-    hsvRef.current = nextHsv
-    setHsv(nextHsv)
-    setHexInput(nextHex)
+    hsvRef.current = nextState.hsv
+    setHsv(nextState.hsv)
+    setHexInput(nextState.hex)
     setHexError(null)
-    setRgbState(nextRgb)
-    emitColorChange(nextHex)
+    setRgbState(nextState.rgb)
+    emitColorChange(nextState.hex)
   }
 
   // --------------------------------------------------------------------------
@@ -150,26 +158,21 @@ export default function CustomColorPicker({
     const rawVal = e.target.value.trim()
     setHexInput(rawVal)
 
-    if (!rawVal) {
-      setHexError('HEX code cannot be empty')
-      return
-    }
+    const result = calculateHexColor(rawVal, {
+      hex: currentHex,
+      rgb: rgbState,
+      hsv: hsvRef.current
+    })
 
-    const formatted = rawVal.startsWith('#') ? rawVal.toUpperCase() : `#${rawVal.toUpperCase()}`
-
-    if (isValidHex(formatted)) {
+    if (result.isValid) {
       setHexError(null)
-      const rgb = hexToRgb(formatted)
-      if (rgb) {
-        setRgbState(rgb)
-        const nextHsv = rgbToHsv(rgb.r, rgb.g, rgb.b)
-        hsvRef.current = nextHsv
-        setHsv(nextHsv)
-        emitColorChange(formatted)
-      }
+      setRgbState(result.rgb)
+      hsvRef.current = result.hsv
+      setHsv(result.hsv)
+      emitColorChange(result.hex)
     } else {
       // Example 4: Show inline validation without breaking state or overwriting valid color
-      setHexError('Enter a valid 6-digit HEX (e.g. #18C9F5)')
+      setHexError(result.error)
     }
   }
 
@@ -177,23 +180,14 @@ export default function CustomColorPicker({
   // 4. Numeric RGB Inputs (Example 2)
   // --------------------------------------------------------------------------
   const handleRgbInputChange = (component, valueStr) => {
-    const raw = Number.parseInt(valueStr, 10)
-    const clamped = Number.isNaN(raw) ? 0 : Math.max(0, Math.min(255, raw))
+    const nextState = calculateRgbColor(rgbState, hsvRef.current, component, valueStr)
 
-    const nextRgb = {
-      ...rgbState,
-      [component]: clamped
-    }
-    setRgbState(nextRgb)
-
-    const hex = rgbToHex(nextRgb.r, nextRgb.g, nextRgb.b)
-    const nextHsv = rgbToHsv(nextRgb.r, nextRgb.g, nextRgb.b)
-
-    hsvRef.current = nextHsv
-    setHexInput(hex)
+    hsvRef.current = nextState.hsv
+    setRgbState(nextState.rgb)
+    setHexInput(nextState.hex)
     setHexError(null)
-    setHsv(nextHsv)
-    emitColorChange(hex)
+    setHsv(nextState.hsv)
+    emitColorChange(nextState.hex)
   }
 
   return (
