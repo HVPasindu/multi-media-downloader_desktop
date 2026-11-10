@@ -86,6 +86,7 @@ export default function DownloaderPage() {
   const [selectedFormat, setSelectedFormat] = useState('mp4')
   const [selectedVideoQuality, setSelectedVideoQuality] = useState('best')
   const [selectedAudioBitrate, setSelectedAudioBitrate] = useState(192)
+  const [isPreferencesLoading, setIsPreferencesLoading] = useState(true)
 
   // Download folder settings state
   const [downloadFolder, setDownloadFolder] = useState('')
@@ -396,7 +397,7 @@ export default function DownloaderPage() {
    * 5. Handles structured error codes (429, bot verification, PO token, network errors).
    */
   const handleAnalyzeClick = async () => {
-    if (isAnalyzing || cooldownRemaining > 0) return
+    if (isPreferencesLoading || isAnalyzing || cooldownRemaining > 0) return
 
     const trimmed = url.trim()
     if (!trimmed) {
@@ -469,25 +470,17 @@ export default function DownloaderPage() {
 
         // Auto-select valid MP4 quality based on saved user preference and available streams
         if (availableMp4Qualities.length > 0) {
-          setSelectedVideoQuality((prev) => {
-            if (prev !== 'best' && availableMp4Qualities.includes(prev)) {
-              return prev
-            }
-            return resolvePreferredVideoQuality(
+          setSelectedVideoQuality(
+            resolvePreferredVideoQuality(
               savedPreferencesRef.current.preferredMp4Quality,
               availableMp4Qualities
             )
-          })
+          )
         }
 
         // Auto-select valid MP3 bitrate based on saved user preference
         if (availability.mp3Available) {
-          setSelectedAudioBitrate((prev) => {
-            if ([128, 192, 320].includes(Number(prev))) {
-              return Number(prev)
-            }
-            return savedPreferencesRef.current.preferredMp3BitrateKbps || 192
-          })
+          setSelectedAudioBitrate(savedPreferencesRef.current.preferredMp3BitrateKbps || 192)
         }
       } else {
         const status = response.status
@@ -624,11 +617,15 @@ export default function DownloaderPage() {
             preferredMp3BitrateKbps: validBitrate
           }
 
-          setSelectedVideoQuality((prev) => (prev === 'best' ? validQuality : prev))
-          setSelectedAudioBitrate((prev) => (prev === 192 ? validBitrate : prev))
+          setSelectedVideoQuality(validQuality)
+          setSelectedAudioBitrate(validBitrate)
         }
       } catch {
         // Fall back to existing safe defaults ('best' and 192)
+      } finally {
+        if (isMounted) {
+          setIsPreferencesLoading(false)
+        }
       }
     }
 
@@ -1100,11 +1097,15 @@ export default function DownloaderPage() {
               <button
                 type="button"
                 onClick={handleAnalyzeClick}
-                disabled={isAnalyzing || !url.trim() || cooldownRemaining > 0}
+                disabled={
+                  isPreferencesLoading || isAnalyzing || !url.trim() || cooldownRemaining > 0
+                }
                 title={
-                  cooldownRemaining > 0
-                    ? `Rate limit cooldown: ${cooldownRemaining}s remaining`
-                    : 'Analyze media URL'
+                  isPreferencesLoading
+                    ? 'Loading download preferences...'
+                    : cooldownRemaining > 0
+                      ? `Rate limit cooldown: ${cooldownRemaining}s remaining`
+                      : 'Analyze media URL'
                 }
                 className="flex items-center gap-2 px-5 py-3 rounded-xl font-bold text-xs bg-gradient-to-r from-[#19D8FF] to-[#3388FF] text-white shadow-[0_0_16px_rgba(25,216,255,0.35)] hover:shadow-[0_0_24px_rgba(25,216,255,0.55)] transition-all cursor-pointer flex-shrink-0 disabled:opacity-60 disabled:cursor-not-allowed"
               >
@@ -1151,7 +1152,8 @@ export default function DownloaderPage() {
                   <button
                     type="button"
                     onClick={handleAnalyzeClick}
-                    className="px-3 py-1 rounded-lg text-[11px] font-bold bg-rose-500/20 hover:bg-rose-500/30 text-rose-200 transition-colors cursor-pointer flex-shrink-0"
+                    disabled={isPreferencesLoading || isAnalyzing || cooldownRemaining > 0}
+                    className="px-3 py-1 rounded-lg text-[11px] font-bold bg-rose-500/20 hover:bg-rose-500/30 text-rose-200 transition-colors cursor-pointer flex-shrink-0 disabled:opacity-60 disabled:cursor-not-allowed"
                   >
                     Retry
                   </button>

@@ -23,6 +23,33 @@ export const SETTING_KEYS = Object.freeze({
   PREFERRED_MP3_BITRATE: 'preferred_mp3_bitrate_kbps'
 })
 
+// Validate and normalize preferred MP4 quality string ('best' or '1p'–'4320p')
+export function normalizePreferredMp4Quality(value) {
+  if (typeof value !== 'string') {
+    return null
+  }
+
+  const normalized = value.trim().toLowerCase()
+
+  if (normalized === 'best') {
+    return 'best'
+  }
+
+  const match = /^(\d+)p$/.exec(normalized)
+
+  if (!match) {
+    return null
+  }
+
+  const height = Number(match[1])
+
+  if (!Number.isInteger(height) || height < 1 || height > 4320) {
+    return null
+  }
+
+  return `${height}p`
+}
+
 // Validate incoming download preference changes
 export async function validateDownloadPreferences(changes) {
   if (
@@ -75,20 +102,10 @@ export async function validateDownloadPreferences(changes) {
   // 3. Validate preferred MP4 quality
   if ('preferredMp4Quality' in changes) {
     const val = changes.preferredMp4Quality
-    if (typeof val !== 'string') {
+    const normalized = normalizePreferredMp4Quality(val)
+    if (!normalized) {
       errors.preferredMp4Quality =
         'Preferred MP4 quality must be best or a valid resolution such as 1080p'
-    } else {
-      const quality = val.trim().toLowerCase()
-      if (quality !== 'best' && (!/^\d+p$/.test(quality) || quality.length > 10)) {
-        errors.preferredMp4Quality =
-          'Preferred MP4 quality must be best or a valid resolution such as 1080p'
-      } else if (quality !== 'best') {
-        const height = Number.parseInt(quality, 10)
-        if (height <= 0 || height > 4320) {
-          errors.preferredMp4Quality = 'Invalid MP4 video resolution'
-        }
-      }
     }
   }
 
@@ -138,17 +155,9 @@ export async function getDownloadPreferences() {
   }
 
   // 3. Preferred MP4 Quality: from DB or default 'best'
-  let preferredMp4Quality = settingsMap.get(SETTING_KEYS.PREFERRED_MP4_QUALITY)
-  if (typeof preferredMp4Quality === 'string') {
-    const normalized = preferredMp4Quality.trim().toLowerCase()
-    if (normalized === 'best' || /^\d+p$/.test(normalized)) {
-      preferredMp4Quality = normalized
-    } else {
-      preferredMp4Quality = DEFAULT_DOWNLOAD_PREFERENCES.preferredMp4Quality
-    }
-  } else {
-    preferredMp4Quality = DEFAULT_DOWNLOAD_PREFERENCES.preferredMp4Quality
-  }
+  const storedQuality = settingsMap.get(SETTING_KEYS.PREFERRED_MP4_QUALITY)
+  const preferredMp4Quality =
+    normalizePreferredMp4Quality(storedQuality) ?? DEFAULT_DOWNLOAD_PREFERENCES.preferredMp4Quality
 
   // 4. Preferred MP3 Bitrate (Kbps): from DB (converted to number) or default 192
   let preferredMp3BitrateKbps = null
@@ -227,10 +236,11 @@ export async function updateDownloadPreferences(changes) {
     }
 
     if ('preferredMp4Quality' in changes) {
+      const normalizedQuality = normalizePreferredMp4Quality(changes.preferredMp4Quality)
       await AppSetting.upsert(
         {
           key: SETTING_KEYS.PREFERRED_MP4_QUALITY,
-          value: changes.preferredMp4Quality.trim().toLowerCase()
+          value: normalizedQuality
         },
         { transaction }
       )

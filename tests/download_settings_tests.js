@@ -8,7 +8,8 @@ import {
   SETTING_KEYS,
   validateDownloadPreferences,
   getDownloadPreferences,
-  updateDownloadPreferences
+  updateDownloadPreferences,
+  normalizePreferredMp4Quality
 } from '../src/main/backend/services/settingsService.js'
 import { getSavedDownloadPath } from '../src/main/backend/services/downloadSettingsService.js'
 import { createDownloadJob } from '../src/main/backend/services/downloadService.js'
@@ -433,6 +434,86 @@ async function runDownloadSettingsTests() {
     )
 
     console.log('✓ Section 8: Quality preference resolver utility verified.\n')
+
+    // ------------------------------------------------------------------------
+    // 9. Stored Quality Validation & Normalization in SQLite Fallback
+    // ------------------------------------------------------------------------
+    console.log('--- 9. Testing Stored Quality Validation & Normalization ---')
+
+    // 9.1 Helper unit tests
+    assert.equal(normalizePreferredMp4Quality('best'), 'best', '9.1: best is normalized to best')
+    assert.equal(
+      normalizePreferredMp4Quality(' 1080P '),
+      '1080p',
+      '9.2: whitespace and case normalized'
+    )
+    assert.equal(normalizePreferredMp4Quality('2160p'), '2160p', '9.3: 2160p is valid')
+    assert.equal(normalizePreferredMp4Quality('4320p'), '4320p', '9.4: 4320p is valid (max limit)')
+    assert.equal(normalizePreferredMp4Quality('1p'), '1p', '9.5: 1p is valid (min limit)')
+    assert.equal(normalizePreferredMp4Quality('0p'), null, '9.6: 0p returns null')
+    assert.equal(normalizePreferredMp4Quality('5000p'), null, '9.7: 5000p returns null (>4320p)')
+    assert.equal(normalizePreferredMp4Quality('1080'), null, '9.8: missing p suffix returns null')
+    assert.equal(normalizePreferredMp4Quality('super_hd'), null, '9.9: non-numeric returns null')
+    assert.equal(normalizePreferredMp4Quality(null), null, '9.10: null returns null')
+    assert.equal(normalizePreferredMp4Quality(undefined), null, '9.11: undefined returns null')
+    assert.equal(normalizePreferredMp4Quality(1080), null, '9.12: number returns null')
+
+    // 9.2 Direct SQLite injection of invalid stored values
+    await AppSetting.upsert({ key: SETTING_KEYS.PREFERRED_MP4_QUALITY, value: '0p' })
+    const resZero = await getDownloadPreferences()
+    assert.equal(resZero.preferredMp4Quality, 'best', '9.13: stored 0p falls back to best')
+
+    await AppSetting.upsert({ key: SETTING_KEYS.PREFERRED_MP4_QUALITY, value: '5000p' })
+    const resHuge = await getDownloadPreferences()
+    assert.equal(resHuge.preferredMp4Quality, 'best', '9.14: stored 5000p falls back to best')
+
+    await AppSetting.upsert({ key: SETTING_KEYS.PREFERRED_MP4_QUALITY, value: 'super_hd' })
+    const resMalformed = await getDownloadPreferences()
+    assert.equal(
+      resMalformed.preferredMp4Quality,
+      'best',
+      '9.15: stored super_hd falls back to best'
+    )
+
+    await AppSetting.upsert({ key: SETTING_KEYS.PREFERRED_MP4_QUALITY, value: '1080' })
+    const resNoP = await getDownloadPreferences()
+    assert.equal(
+      resNoP.preferredMp4Quality,
+      'best',
+      '9.16: stored 1080 (without p) falls back to best'
+    )
+
+    // 9.3 Direct SQLite injection of valid stored values
+    await AppSetting.upsert({ key: SETTING_KEYS.PREFERRED_MP4_QUALITY, value: ' 2160P ' })
+    const resValid = await getDownloadPreferences()
+    assert.equal(
+      resValid.preferredMp4Quality,
+      '2160p',
+      '9.17: stored whitespace/uppercase 2160P returns 2160p'
+    )
+
+    await AppSetting.upsert({ key: SETTING_KEYS.PREFERRED_MP4_QUALITY, value: '4320p' })
+    const res4k = await getDownloadPreferences()
+    assert.equal(res4k.preferredMp4Quality, '4320p', '9.18: stored 4320p returns 4320p')
+
+    // 9.4 Audio bitrate string conversion from SQLite
+    await AppSetting.upsert({ key: SETTING_KEYS.PREFERRED_MP3_BITRATE, value: '320' })
+    const resBitrate = await getDownloadPreferences()
+    assert.strictEqual(
+      resBitrate.preferredMp3BitrateKbps,
+      320,
+      '9.19: stored string "320" returns numeric 320'
+    )
+
+    await AppSetting.upsert({ key: SETTING_KEYS.PREFERRED_MP3_BITRATE, value: '256' })
+    const resBadBitrate = await getDownloadPreferences()
+    assert.strictEqual(
+      resBadBitrate.preferredMp3BitrateKbps,
+      192,
+      '9.20: stored unsupported bitrate "256" falls back to 192'
+    )
+
+    console.log('✓ Section 9: Stored quality & bitrate validation and SQLite fallbacks verified.\n')
 
     console.log('================================================================')
     console.log(' ALL DOWNLOAD SETTINGS TESTS PASSED SUCCESSFULLY (100% PASS)    ')
