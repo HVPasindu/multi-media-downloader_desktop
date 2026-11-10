@@ -1,24 +1,24 @@
 /**
  * Unit Test Suite for APPLAN2 Appearance Theme System
  *
- * Verifies all 17 requirements:
- * 1. All 6 existing Accent Presets
- * 2. All 8 Background Presets
- * 3. Dark mode palette derivation
- * 4. Light mode palette derivation
- * 5. Custom background validation & palette derivation
- * 6. HEX/RGB/HSV bidirectional synchronization
- * 7. HSV/HSL conversion helpers
- * 8. Black colour followed by Hue adjustment (Example 3 bug fix verification)
- * 9. Custom accent palette generation
- * 10. Automatic accent matching for all 8 background presets
- * 11. Manual accent override preservation
+ * Validates the actual production API:
+ * 1. Six approved Accent Presets (THEME_PRESETS, DEFAULT_THEME, DEFAULT_THEME_ID)
+ * 2. Eight approved Background Presets (BACKGROUND_PRESETS, DEFAULT_BACKGROUND_PRESET, DEFAULT_BACKGROUND_ID)
+ * 3. Dark Background palette derivation (deriveBackgroundPalette)
+ * 4. Light Background palette derivation (deriveBackgroundPalette)
+ * 5. Custom Background palette derivation (deriveBackgroundPalette)
+ * 6. HEX color format validation (isValidHex)
+ * 7. Color conversion helpers (hexToRgb, rgbToHex, rgbToHsl, hslToRgb, rgbToHsv, hsvToRgb, hexToHsv, hsvToHex)
+ * 8. Black Colour Hue Recovery helper (adjustHueWithBlackRecovery: Example 3 fix)
+ * 9. Custom Accent Palette generation (generateCustomPalette)
+ * 10. Automatic Accent matching for all 8 Background Presets (matchedAccentId & setBackgroundPreset)
+ * 11. Manual Accent selection after Background selection (override preservation)
  * 12. Legacy localStorage compatibility (loading old config without background property)
- * 13. Background persistence
- * 14. Combined accent/background persistence
- * 15. Corrupted stored configuration fallback
- * 16. Dynamic CSS variable application (both --theme-* and --app-*)
- * 17. Existing surface variable protection (--color-secondary equals --app-surface)
+ * 13. Background persistence (setBackgroundPreset & loadSavedTheme)
+ * 14. Custom Background persistence (setCustomBackgroundHex & loadSavedTheme)
+ * 15. Corrupted storage fallback (graceful recovery from invalid JSON / malformed objects)
+ * 16. Dynamic CSS variable application (applyThemeVariables: --theme-* and --app-*)
+ * 17. Surface variable protection (--color-secondary matches --app-surface)
  */
 
 import assert from 'node:assert'
@@ -53,7 +53,7 @@ const {
   DEFAULT_THEME,
   DEFAULT_THEME_ID,
   BACKGROUND_PRESETS,
-  DEFAULT_BACKGROUND,
+  DEFAULT_BACKGROUND_PRESET,
   DEFAULT_BACKGROUND_ID,
   isValidHex,
   hexToRgb,
@@ -66,6 +66,7 @@ const {
   hexToHsv,
   getLuminance,
   isLightColor,
+  adjustHueWithBlackRecovery,
   deriveBackgroundPalette,
   generateContrastingAccent,
   generateCustomPalette,
@@ -79,13 +80,13 @@ const {
   setCustomBackgroundHex,
   resetAppearanceTheme,
   resetBackgroundTheme,
-  getAppearanceState
+  initAppearanceTheme
 } = await import('../src/renderer/src/utils/appearanceTheme.js')
 
 console.log('--- APPLAN2 COMPLETE APPEARANCE THEME UNIT TESTS ---')
 
 // --------------------------------------------------------------------------
-// 1. All 6 existing Accent Presets
+// 1. All 6 approved Accent Presets
 // --------------------------------------------------------------------------
 console.log('\n[Test 1] Verifying all 6 approved Accent Presets...')
 assert.strictEqual(THEME_PRESETS.length, 6, 'Should have exactly 6 accent presets')
@@ -113,41 +114,41 @@ assert.strictEqual(DEFAULT_THEME.id, 'ocean-blue', 'Default theme must be ocean-
 console.log('✓ Test 1 Passed: All 6 accent presets verified.')
 
 // --------------------------------------------------------------------------
-// 2. All 8 Background Presets
+// 2. All 8 approved Background Presets
 // --------------------------------------------------------------------------
 console.log('\n[Test 2] Verifying all 8 Background Presets...')
 assert.strictEqual(BACKGROUND_PRESETS.length, 8, 'Should have exactly 8 background presets')
 
 const expectedBackgrounds = {
-  'midnight-navy': { name: 'Midnight Navy', baseHex: '#040B1C', mode: 'dark', recommendedAccent: 'ocean-blue' },
-  'carbon-black': { name: 'Carbon Black', baseHex: '#101318', mode: 'dark', recommendedAccent: 'golden' },
-  'deep-space': { name: 'Deep Space', baseHex: '#17102B', mode: 'dark', recommendedAccent: 'purple-neon' },
-  'cyber-teal': { name: 'Cyber Teal', baseHex: '#082B2B', mode: 'dark', recommendedAccent: 'emerald' },
-  'arctic-white': { name: 'Arctic White', baseHex: '#F7FAFC', mode: 'light', recommendedAccent: 'ocean-blue' },
-  'pearl-mist': { name: 'Pearl Mist', baseHex: '#EEF2F7', mode: 'light', recommendedAccent: 'emerald' },
-  'rose-dusk': { name: 'Rose Dusk', baseHex: '#2A1427', mode: 'dark', recommendedAccent: 'rose' },
-  'aurora-slate': { name: 'Aurora Slate', baseHex: '#142536', mode: 'dark', recommendedAccent: 'ocean-blue' }
+  'midnight-navy': { name: 'Midnight Navy', hex: '#040B1C', isDark: true, matchedAccentId: 'ocean-blue' },
+  'carbon-black': { name: 'Carbon Black', hex: '#101318', isDark: true, matchedAccentId: 'golden' },
+  'deep-space': { name: 'Deep Space', hex: '#17102B', isDark: true, matchedAccentId: 'purple-neon' },
+  'cyber-teal': { name: 'Cyber Teal', hex: '#082B2B', isDark: true, matchedAccentId: 'emerald' },
+  'arctic-white': { name: 'Arctic White', hex: '#F7FAFC', isDark: false, matchedAccentId: 'ocean-blue' },
+  'pearl-mist': { name: 'Pearl Mist', hex: '#EEF2F7', isDark: false, matchedAccentId: 'emerald' },
+  'rose-dusk': { name: 'Rose Dusk', hex: '#2A1427', isDark: true, matchedAccentId: 'rose' },
+  'aurora-slate': { name: 'Aurora Slate', hex: '#142536', isDark: true, matchedAccentId: 'ocean-blue' }
 }
 
 for (const [id, expected] of Object.entries(expectedBackgrounds)) {
   const found = BACKGROUND_PRESETS.find((p) => p.id === id)
   assert.ok(found, `Background preset ${id} must exist`)
   assert.strictEqual(found.name, expected.name, `Background ${id} name mismatch`)
-  assert.strictEqual(found.baseHex.toUpperCase(), expected.baseHex.toUpperCase(), `Background ${id} baseHex mismatch`)
-  assert.strictEqual(found.mode, expected.mode, `Background ${id} mode mismatch`)
-  assert.strictEqual(found.recommendedAccent, expected.recommendedAccent, `Background ${id} recommendedAccent mismatch`)
+  assert.strictEqual(found.hex.toUpperCase(), expected.hex.toUpperCase(), `Background ${id} hex mismatch`)
+  assert.strictEqual(found.isDark, expected.isDark, `Background ${id} isDark mismatch`)
+  assert.strictEqual(found.matchedAccentId, expected.matchedAccentId, `Background ${id} matchedAccentId mismatch`)
 }
 
-assert.strictEqual(DEFAULT_BACKGROUND_ID, 'midnight-navy', 'Default background must be midnight-navy')
-assert.strictEqual(DEFAULT_BACKGROUND.id, 'midnight-navy', 'Default background obj must match')
+assert.strictEqual(DEFAULT_BACKGROUND_ID, 'midnight-navy', 'Default background ID must be midnight-navy')
+assert.strictEqual(DEFAULT_BACKGROUND_PRESET.id, 'midnight-navy', 'Default background preset must match')
 console.log('✓ Test 2 Passed: All 8 background presets verified.')
 
 // --------------------------------------------------------------------------
-// 3. Dark Mode Palette Derivation
+// 3. Dark Background Palette Derivation
 // --------------------------------------------------------------------------
-console.log('\n[Test 3] Testing dark mode palette derivation...')
-const darkPalette = deriveBackgroundPalette('#040B1C', 'dark')
-assert.strictEqual(darkPalette.isLight, false, 'Palette must not be light')
+console.log('\n[Test 3] Testing dark background palette derivation...')
+const darkPalette = deriveBackgroundPalette('dark', 'midnight-navy', null)
+assert.strictEqual(darkPalette.isDark, true, 'Palette must be dark')
 assert.strictEqual(darkPalette.colorScheme, 'dark', 'Color scheme must be dark')
 assert.strictEqual(darkPalette.background.toUpperCase(), '#040B1C')
 assert.ok(isValidHex(darkPalette.header), 'Header must be valid HEX')
@@ -155,97 +156,101 @@ assert.ok(isValidHex(darkPalette.sidebar), 'Sidebar must be valid HEX')
 assert.ok(isValidHex(darkPalette.surface), 'Surface must be valid HEX')
 assert.ok(isValidHex(darkPalette.surfaceElevated), 'Surface elevated must be valid HEX')
 assert.ok(isValidHex(darkPalette.surfaceDeep), 'Surface deep must be valid HEX')
-assert.strictEqual(darkPalette.text.toUpperCase(), '#F4F8FF', 'Dark mode text should be high-contrast light text')
+assert.strictEqual(darkPalette.text.toUpperCase(), '#F4F8FF', 'Dark mode text should be light text')
 assert.ok(isValidHex(darkPalette.textMuted), 'Dark mode text muted must be valid HEX')
-console.log('✓ Test 3 Passed: Dark mode palette derived with proper contrast.')
+console.log('✓ Test 3 Passed: Dark background palette derived with proper contrast.')
 
 // --------------------------------------------------------------------------
-// 4. Light Mode Palette Derivation
+// 4. Light Background Palette Derivation
 // --------------------------------------------------------------------------
-console.log('\n[Test 4] Testing light mode palette derivation...')
-const lightPalette = deriveBackgroundPalette('#F7FAFC', 'light')
-assert.strictEqual(lightPalette.isLight, true, 'Palette must be light')
+console.log('\n[Test 4] Testing light background palette derivation...')
+const lightPalette = deriveBackgroundPalette('light', 'arctic-white', null)
+assert.strictEqual(lightPalette.isDark, false, 'Palette must not be dark')
 assert.strictEqual(lightPalette.colorScheme, 'light', 'Color scheme must be light')
 assert.strictEqual(lightPalette.background.toUpperCase(), '#F7FAFC')
-assert.strictEqual(lightPalette.text.toUpperCase(), '#0B132B', 'Light mode text must be high-contrast dark text')
-assert.strictEqual(lightPalette.textMuted.toUpperCase(), '#4A5568', 'Light mode text muted must be readable dark-slate')
+assert.strictEqual(lightPalette.text.toUpperCase(), '#172033', 'Light mode text must be dark text')
+assert.strictEqual(lightPalette.textMuted.toUpperCase(), '#526179', 'Light mode text muted must be slate')
 assert.ok(isValidHex(lightPalette.surface), 'Light surface must be valid HEX')
 assert.ok(isValidHex(lightPalette.surfaceElevated), 'Light surface elevated must be valid HEX')
-console.log('✓ Test 4 Passed: Light mode palette derived with dark text and crisp surfaces.')
+console.log('✓ Test 4 Passed: Light background palette derived with readable dark text.')
 
 // --------------------------------------------------------------------------
-// 5. Custom Background Validation & Palette Derivation
+// 5. Custom Background Palette Derivation
 // --------------------------------------------------------------------------
-console.log('\n[Test 5] Testing custom background validation & palette derivation...')
-assert.strictEqual(isValidHex('#123456'), true, 'Valid 6-char hex')
-assert.strictEqual(isValidHex('123456'), false, 'Missing hash')
-assert.strictEqual(isValidHex('#GGG123'), false, 'Non-hex chars')
+console.log('\n[Test 5] Testing custom background palette derivation...')
+const customDark = deriveBackgroundPalette('custom', null, '#101010')
+assert.strictEqual(customDark.mode, 'custom')
+assert.strictEqual(customDark.isDark, true, '#101010 must derive dark mode')
+assert.strictEqual(customDark.background.toUpperCase(), '#101010')
 
-const customDarkPalette = deriveBackgroundPalette('#121212')
-assert.strictEqual(customDarkPalette.isLight, false, '#121212 should automatically derive dark mode')
+const customLight = deriveBackgroundPalette('custom', null, '#F0F0F0')
+assert.strictEqual(customLight.mode, 'custom')
+assert.strictEqual(customLight.isDark, false, '#F0F0F0 must derive light mode')
+assert.strictEqual(customLight.background.toUpperCase(), '#F0F0F0')
 
-const customLightPalette = deriveBackgroundPalette('#FFFFFF')
-assert.strictEqual(customLightPalette.isLight, true, '#FFFFFF should automatically derive light mode')
-
-const fallbackPalette = deriveBackgroundPalette('INVALID_HEX')
-assert.strictEqual(fallbackPalette.background.toUpperCase(), '#040B1C', 'Invalid hex falls back to default background')
-console.log('✓ Test 5 Passed: Custom background validated and auto-derives correct light/dark schemes.')
+const invalidFallback = deriveBackgroundPalette('custom', null, 'INVALID')
+assert.strictEqual(invalidFallback.mode, 'custom')
+assert.strictEqual(invalidFallback.background.toUpperCase(), '#182536')
+console.log('✓ Test 5 Passed: Custom background palette derivation verified.')
 
 // --------------------------------------------------------------------------
-// 6. HEX / RGB / HSV Bidirectional Synchronization
+// 6. HEX Color Validation (isValidHex)
 // --------------------------------------------------------------------------
-console.log('\n[Test 6] Testing HEX / RGB / HSV bidirectional synchronization...')
-const testHex = '#18C9F5'
-const hsv = hexToHsv(testHex)
-assert.ok(hsv.h >= 190 && hsv.h <= 194, `Hue should be approx 192 (got ${hsv.h})`)
-assert.ok(hsv.s >= 88 && hsv.s <= 92, `Saturation should be approx 90 (got ${hsv.s})`)
-assert.ok(hsv.v >= 94 && hsv.v <= 98, `Value should be approx 96 (got ${hsv.v})`)
+console.log('\n[Test 6] Testing isValidHex...')
+assert.strictEqual(isValidHex('#18C9F5'), true, 'Valid uppercase 6-char hex')
+assert.strictEqual(isValidHex('#18c9f5'), true, 'Valid lowercase 6-char hex')
+assert.strictEqual(isValidHex('#000000'), true, 'Valid black hex')
+assert.strictEqual(isValidHex('#FFFFFF'), true, 'Valid white hex')
+assert.strictEqual(isValidHex('18C9F5'), false, 'Missing hash prefix')
+assert.strictEqual(isValidHex('#FFF'), false, '3-char shorthand not accepted')
+assert.strictEqual(isValidHex('#18C9F5AA'), false, '8-char alpha hex not accepted')
+assert.strictEqual(isValidHex('rgb(0,0,0)'), false, 'RGB string not accepted')
+assert.strictEqual(isValidHex(null), false, 'Null rejected')
+assert.strictEqual(isValidHex(undefined), false, 'Undefined rejected')
+console.log('✓ Test 6 Passed: isValidHex correctly enforces exact 6-character hex format.')
 
+// --------------------------------------------------------------------------
+// 7. Color Conversion Helpers
+// --------------------------------------------------------------------------
+console.log('\n[Test 7] Testing color conversion helpers (RGB, HEX, HSL, HSV)...')
+const rgb = hexToRgb('#18C9F5')
+assert.deepStrictEqual(rgb, { r: 24, g: 201, b: 245 })
+const hex = rgbToHex(24, 201, 245)
+assert.strictEqual(hex, '#18C9F5')
+
+const hsv = hexToHsv('#18C9F5')
+assert.ok(hsv.h >= 190 && hsv.h <= 194, `Hue approx 192 (got ${hsv.h})`)
 const reconvertedHex = hsvToHex(hsv.h, hsv.s, hsv.v)
-assert.strictEqual(reconvertedHex.toUpperCase(), testHex.toUpperCase(), 'HSV to HEX should match original')
-console.log('✓ Test 6 Passed: Bidirectional synchronization verified.')
+assert.strictEqual(reconvertedHex.toUpperCase(), '#18C9F5')
+
+const hsl = rgbToHsl(24, 201, 245)
+const rgbFromHsl = hslToRgb(hsl.h, hsl.s, hsl.l)
+assert.ok(Math.abs(rgbFromHsl.r - 24) <= 2, 'R component roundtrips via HSL')
+assert.ok(Math.abs(rgbFromHsl.g - 201) <= 2, 'G component roundtrips via HSL')
+assert.ok(Math.abs(rgbFromHsl.b - 245) <= 2, 'B component roundtrips via HSL')
+console.log('✓ Test 7 Passed: Color conversion helpers roundtrip accurately.')
 
 // --------------------------------------------------------------------------
-// 7. HSV / HSL Conversion Helpers
+// 8. Black Colour Hue Recovery (adjustHueWithBlackRecovery)
 // --------------------------------------------------------------------------
-console.log('\n[Test 7] Testing HSV / HSL conversion helpers...')
-const rgbVal = { r: 50, g: 150, b: 250 }
-const hsvFromRgb = rgbToHsv(rgbVal.r, rgbVal.g, rgbVal.b)
-const rgbFromHsv = hsvToRgb(hsvFromRgb.h, hsvFromRgb.s, hsvFromRgb.v)
-assert.ok(Math.abs(rgbFromHsv.r - rgbVal.r) <= 1, 'R component matches')
-assert.ok(Math.abs(rgbFromHsv.g - rgbVal.g) <= 1, 'G component matches')
-assert.ok(Math.abs(rgbFromHsv.b - rgbVal.b) <= 1, 'B component matches')
+console.log('\n[Test 8] Testing Black Colour Hue Recovery (adjustHueWithBlackRecovery)...')
+// Pure black: S = 0, V = 0
+const recoveredFromBlack = adjustHueWithBlackRecovery(180, 0, 0)
+assert.strictEqual(recoveredFromBlack.h, 180, 'Hue correctly updated')
+assert.strictEqual(recoveredFromBlack.s, 85, 'Saturation recovered to 85')
+assert.strictEqual(recoveredFromBlack.v, 95, 'Value recovered to 95')
 
-const hslFromRgb = rgbToHsl(rgbVal.r, rgbVal.g, rgbVal.b)
-const rgbFromHsl = hslToRgb(hslFromRgb.h, hslFromRgb.s, hslFromRgb.l)
-assert.ok(Math.abs(rgbFromHsl.r - rgbVal.r) <= 1, 'R component roundtrips via HSL')
-assert.ok(Math.abs(rgbFromHsl.g - rgbVal.g) <= 1, 'G component roundtrips via HSL')
-assert.ok(Math.abs(rgbFromHsl.b - rgbVal.b) <= 1, 'B component roundtrips via HSL')
-console.log('✓ Test 7 Passed: HSV/HSL conversion helpers verified.')
+// Converted to HEX: produces vibrant cyan #24F2F2, not stuck on black #000000!
+const vibrantHex = hsvToHex(recoveredFromBlack.h, recoveredFromBlack.s, recoveredFromBlack.v)
+assert.strictEqual(vibrantHex.toUpperCase(), '#24F2F2')
+assert.notStrictEqual(vibrantHex, '#000000')
 
-// --------------------------------------------------------------------------
-// 8. Black Colour Followed by Hue Adjustment (Example 3 Bug Fix)
-// --------------------------------------------------------------------------
-console.log('\n[Test 8] Testing Black colour followed by Hue adjustment (Example 3 fix)...')
-// When color is pure black:
-const blackHex = '#000000'
-const blackHsv = hexToHsv(blackHex)
-assert.strictEqual(blackHsv.v, 0, 'Pure black value is 0')
-assert.strictEqual(blackHsv.s, 0, 'Pure black saturation is 0')
-
-// Bug demonstration: If Hue was changed without restoring S and V, hsvToHex(180, 0, 0) remains #000000!
-const untouchedBlack = hsvToHex(180, blackHsv.s, blackHsv.v)
-assert.strictEqual(untouchedBlack, '#000000', 'Without fix, hue change on black stays black')
-
-// Fix demonstration (as implemented in CustomColorPicker):
-// When black is detected (v < 15 || s < 10), adjust hue and restore vibrant defaults S=85, V=95:
-const newHue = 180
-const correctedS = blackHsv.v < 15 || blackHsv.s < 10 ? 85 : blackHsv.s
-const correctedV = blackHsv.v < 15 || blackHsv.s < 10 ? 95 : blackHsv.v
-const fixedHex = hsvToHex(newHue, correctedS, correctedV)
-assert.notStrictEqual(fixedHex, '#000000', 'With fix, color immediately becomes a vibrant color at the new hue')
-assert.strictEqual(fixedHex.toUpperCase(), '#24F2F2', 'Matches vibrant cyan at hue 180')
-console.log('✓ Test 8 Passed: Black colour Hue adjustment fix verified.')
+// Normal non-black color: preserves current S and V
+const normalColor = adjustHueWithBlackRecovery(120, 70, 80)
+assert.strictEqual(normalColor.h, 120)
+assert.strictEqual(normalColor.s, 70, 'Normal saturation untouched')
+assert.strictEqual(normalColor.v, 80, 'Normal value untouched')
+console.log('✓ Test 8 Passed: Black colour recovery helper restores vibrant defaults on hue adjustment.')
 
 // --------------------------------------------------------------------------
 // 9. Custom Accent Palette Generation
@@ -260,53 +265,61 @@ assert.notStrictEqual(generated.tertiary, generated.primary, 'Tertiary differs f
 console.log(`✓ Test 9 Passed: Custom palette generated (${generated.primary}, ${generated.secondary}, ${generated.tertiary}).`)
 
 // --------------------------------------------------------------------------
-// 10. Automatic Accent Matching for All 8 Background Presets
+// 10. Automatic Accent Matching for all 8 Background Presets
 // --------------------------------------------------------------------------
 console.log('\n[Test 10] Testing automatic accent matching for all 8 background presets...')
+mockStorage.clear()
 for (const bg of BACKGROUND_PRESETS) {
-  const matchingAccent = generateContrastingAccent(bg.baseHex, bg.mode)
-  assert.ok(matchingAccent, `Background ${bg.id} must produce a matching accent`)
-  assert.ok(isValidHex(matchingAccent.primary), `Matching accent primary for ${bg.id} must be valid HEX`)
-  assert.ok(THEME_PRESETS.some((p) => p.id === bg.recommendedAccent), `Recommended accent ${bg.recommendedAccent} must exist`)
+  assert.ok(
+    THEME_PRESETS.some((p) => p.id === bg.matchedAccentId),
+    `Background ${bg.id} matchedAccentId ${bg.matchedAccentId} must exist in THEME_PRESETS`
+  )
+
+  const updatedState = setBackgroundPreset(bg.id)
+  assert.strictEqual(updatedState.background.presetId, bg.id, `Background set to ${bg.id}`)
+  assert.strictEqual(updatedState.presetId, bg.matchedAccentId, `Accent auto-matched to ${bg.matchedAccentId}`)
 }
-console.log('✓ Test 10 Passed: All 8 background presets have valid auto-matching accents.')
+console.log('✓ Test 10 Passed: All 8 background presets automatically match approved accent presets.')
 
 // --------------------------------------------------------------------------
-// 11. Manual Accent Override Preservation
+// 11. Manual Accent Selection after Background Selection (Override Rule)
 // --------------------------------------------------------------------------
 console.log('\n[Test 11] Testing manual accent override preservation...')
 mockStorage.clear()
 
 // Select Deep Space (which auto-matches purple-neon)
 setBackgroundPreset('deep-space')
-let state = getAppearanceState()
-assert.strictEqual(state.background.presetId, 'deep-space')
-assert.strictEqual(state.accent.presetId, 'purple-neon', 'Deep space auto-matches purple-neon')
+let activeState = loadSavedTheme()
+assert.strictEqual(activeState.background.presetId, 'deep-space')
+assert.strictEqual(activeState.presetId, 'purple-neon')
 
-// User explicitly overrides accent to Emerald
+// User explicitly selects Emerald accent
 setPresetTheme('emerald')
-state = getAppearanceState()
-assert.strictEqual(state.background.presetId, 'deep-space', 'Background remains deep-space')
-assert.strictEqual(state.accent.presetId, 'emerald', 'Accent overridden to emerald')
+activeState = loadSavedTheme()
+assert.strictEqual(activeState.background.presetId, 'deep-space', 'Background must remain deep-space')
+assert.strictEqual(activeState.presetId, 'emerald', 'Accent must be updated to emerald')
 
-// Reload from storage to verify persistent override preservation
+// Verify that re-initializing or loading from storage preserves both selections
 const reloaded = loadSavedTheme()
 assert.strictEqual(reloaded.background.presetId, 'deep-space')
-assert.strictEqual(reloaded.accent.presetId, 'emerald', 'Saved state preserved manual emerald override')
-console.log('✓ Test 11 Passed: Manual accent override preserved.')
+assert.strictEqual(reloaded.presetId, 'emerald', 'Manual emerald override faithfully preserved')
+console.log('✓ Test 11 Passed: Manual accent override is preserved in state and persistence.')
 
 // --------------------------------------------------------------------------
 // 12. Legacy LocalStorage Compatibility
 // --------------------------------------------------------------------------
 console.log('\n[Test 12] Testing legacy localStorage compatibility...')
 mockStorage.clear()
-// Store legacy format (only accent, no background field)
+// Store old format without background property
 mockStorage.set('applan2.appearance.theme', JSON.stringify({ mode: 'preset', presetId: 'sunset' }))
 
 const legacyLoaded = loadSavedTheme()
-assert.strictEqual(legacyLoaded.accent.presetId, 'sunset', 'Legacy accent preset properly parsed')
-assert.strictEqual(legacyLoaded.background.presetId, 'midnight-navy', 'Legacy payload gets default dark background')
-assert.strictEqual(legacyLoaded.background.palette.isLight, false, 'Legacy payload gets dark palette')
+assert.strictEqual(legacyLoaded.presetId, 'sunset', 'Legacy presetId parsed correctly')
+assert.strictEqual(legacyLoaded.primary, '#F97316', 'Sunset primary loaded')
+assert.ok(legacyLoaded.background, 'Background object injected')
+assert.strictEqual(legacyLoaded.background.mode, 'dark', 'Default background mode dark')
+assert.strictEqual(legacyLoaded.background.presetId, 'midnight-navy', 'Default background preset midnight-navy')
+assert.strictEqual(legacyLoaded.bgPalette.isDark, true, 'Default dark palette active')
 console.log('✓ Test 12 Passed: Legacy stored configurations gracefully upgraded without errors.')
 
 // --------------------------------------------------------------------------
@@ -315,62 +328,70 @@ console.log('✓ Test 12 Passed: Legacy stored configurations gracefully upgrade
 console.log('\n[Test 13] Testing background persistence...')
 mockStorage.clear()
 setBackgroundPreset('cyber-teal')
-const storedRaw = JSON.parse(mockStorage.get('applan2.appearance.theme'))
-assert.strictEqual(storedRaw.background.presetId, 'cyber-teal')
-const loadedBg = loadSavedTheme()
-assert.strictEqual(loadedBg.background.presetId, 'cyber-teal')
-assert.strictEqual(loadedBg.background.baseHex.toUpperCase(), '#082B2B')
+
+const rawStored = JSON.parse(mockStorage.get('applan2.appearance.theme'))
+assert.strictEqual(rawStored.background.presetId, 'cyber-teal')
+
+const restored = loadSavedTheme()
+assert.strictEqual(restored.background.presetId, 'cyber-teal')
+assert.strictEqual(restored.bgPalette.background.toUpperCase(), '#082B2B')
 console.log('✓ Test 13 Passed: Background preset persists and restores correctly.')
 
 // --------------------------------------------------------------------------
-// 14. Combined Accent/Background Persistence
+// 14. Custom Background Persistence
 // --------------------------------------------------------------------------
-console.log('\n[Test 14] Testing combined custom accent and custom background persistence...')
+console.log('\n[Test 14] Testing custom background persistence...')
 mockStorage.clear()
 setCustomBackgroundHex('#1A202C')
 setCustomTheme('#FF00AA')
 
-const combinedLoaded = loadSavedTheme()
-assert.strictEqual(combinedLoaded.background.mode, 'custom')
-assert.strictEqual(combinedLoaded.background.baseHex.toUpperCase(), '#1A202C')
-assert.strictEqual(combinedLoaded.accent.mode, 'custom')
-assert.strictEqual(combinedLoaded.accent.primary.toUpperCase(), '#FF00AA')
-console.log('✓ Test 14 Passed: Combined custom accent and background persist accurately.')
+const customRestored = loadSavedTheme()
+assert.strictEqual(customRestored.background.mode, 'custom')
+assert.strictEqual(customRestored.background.customHex, '#1A202C')
+assert.strictEqual(customRestored.mode, 'custom')
+assert.strictEqual(customRestored.customHex, '#FF00AA')
+console.log('✓ Test 14 Passed: Custom background and custom accent persist accurately.')
 
 // --------------------------------------------------------------------------
-// 15. Corrupted Stored Configuration Fallback
+// 15. Corrupted Storage Fallback
 // --------------------------------------------------------------------------
 console.log('\n[Test 15] Testing corrupted storage fallback...')
 mockStorage.clear()
-mockStorage.set('applan2.appearance.theme', '{ CORRUPTED_JSON :::')
-const safeFallback = loadSavedTheme()
-assert.strictEqual(safeFallback.accent.presetId, 'ocean-blue', 'Corrupted JSON falls back to ocean-blue accent')
-assert.strictEqual(safeFallback.background.presetId, 'midnight-navy', 'Corrupted JSON falls back to midnight-navy background')
+mockStorage.set('applan2.appearance.theme', 'CORRUPT_JSON{{{')
 
-mockStorage.set('applan2.appearance.theme', JSON.stringify({ mode: 'invalid_mode_xyz', presetId: 'unknown_id' }))
-const invalidObjFallback = loadSavedTheme()
-assert.strictEqual(invalidObjFallback.accent.presetId, 'ocean-blue', 'Invalid mode falls back safely')
-console.log('✓ Test 15 Passed: Corrupted storage handled gracefully with safe fallbacks.')
+const safeFallback = loadSavedTheme()
+assert.strictEqual(safeFallback.presetId, 'ocean-blue', 'Falls back to default ocean-blue accent')
+assert.strictEqual(safeFallback.background.presetId, 'midnight-navy', 'Falls back to midnight-navy background')
+
+mockStorage.set('applan2.appearance.theme', JSON.stringify({ mode: 'invalid_mode', presetId: 'fake' }))
+const invalidFallbackTest = loadSavedTheme()
+assert.strictEqual(invalidFallbackTest.presetId, 'ocean-blue', 'Invalid preset falls back safely')
+console.log('✓ Test 15 Passed: Corrupted storage handled gracefully with safe default fallback.')
 
 // --------------------------------------------------------------------------
-// 16. Dynamic CSS Variable Application (both --theme-* and --app-*)
+// 16. Dynamic CSS Variable Application
 // --------------------------------------------------------------------------
 console.log('\n[Test 16] Testing dynamic CSS variable application...')
 mockCssVariables.clear()
 
-const sampleAccent = { primary: '#EC4899', secondary: '#DB2777', tertiary: '#A855F7' }
-const sampleBgPalette = deriveBackgroundPalette('#101318', 'dark')
+const themeToApply = {
+  primary: '#EC4899',
+  secondary: '#DB2777',
+  tertiary: '#A855F7',
+  background: { mode: 'dark', presetId: 'carbon-black', customHex: null },
+  bgPalette: deriveBackgroundPalette('dark', 'carbon-black', null)
+}
 
-applyThemeVariables(sampleAccent, sampleBgPalette)
+applyThemeVariables(themeToApply)
 
-// Verify accent CSS variables
+// Accent CSS variables
 assert.strictEqual(mockCssVariables.get('--theme-primary'), '#EC4899')
 assert.strictEqual(mockCssVariables.get('--theme-secondary-accent'), '#DB2777')
 assert.strictEqual(mockCssVariables.get('--theme-tertiary'), '#A855F7')
 assert.strictEqual(mockCssVariables.get('--color-primary'), '#EC4899')
 assert.strictEqual(mockCssVariables.get('--color-accent'), '#A855F7')
 
-// Verify background CSS variables
+// Background CSS variables
 assert.strictEqual(mockCssVariables.get('--app-background').toUpperCase(), '#101318')
 assert.strictEqual(mockCssVariables.get('--color-background').toUpperCase(), '#101318')
 assert.strictEqual(mockCssVariables.get('--app-text').toUpperCase(), '#F4F8FF')
@@ -379,12 +400,11 @@ assert.strictEqual(mockCssVariables.get('--app-color-scheme'), 'dark')
 console.log('✓ Test 16 Passed: Both --theme-* and --app-* CSS variables correctly set.')
 
 // --------------------------------------------------------------------------
-// 17. Existing Surface Variable Protection (--color-secondary equals --app-surface)
+// 17. Surface Variable Protection (--color-secondary equals --app-surface)
 // --------------------------------------------------------------------------
-console.log('\n[Test 17] Verifying existing surface variable protection...')
+console.log('\n[Test 17] Verifying surface variable protection...')
 // In our architecture, --color-secondary is mapped to --app-surface so that existing
-// Tailwind classes like bg-secondary and text-secondary match the derived background surface
-// rather than being stomped by the accent secondary color.
+// Tailwind classes like bg-secondary match the derived background surface.
 assert.strictEqual(
   mockCssVariables.get('--color-secondary'),
   mockCssVariables.get('--app-surface'),

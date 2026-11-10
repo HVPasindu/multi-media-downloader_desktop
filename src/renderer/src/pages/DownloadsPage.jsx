@@ -508,7 +508,7 @@ export default function DownloadsPage() {
                       <span
                         className={`inline-block px-2.5 py-1 rounded-md text-[11px] font-black uppercase tracking-wider ${
                           item.format === 'MP4'
-                            ? 'bg-cyan-500/15 text-[#19D8FF] border border-cyan-500/30'
+                            ? 'bg-primary/15 text-primary border border-primary/30'
                             : 'bg-emerald-500/15 text-[#00DEA5] border border-emerald-500/30'
                         }`}
                       >
@@ -542,7 +542,7 @@ export default function DownloadsPage() {
                                 : isInterrupted
                                   ? 'bg-amber-400/80'
                                   : isDownloading || isResuming
-                                    ? 'bg-gradient-to-r from-[#19D8FF] to-[#3388FF]'
+                                    ? 'theme-accent-gradient-2'
                                     : 'bg-primary/20'
                             }`}
                             style={{ width: `${item.progress}%` }}
@@ -566,12 +566,12 @@ export default function DownloadsPage() {
                               </>
                             ) : isResuming ? (
                               <>
-                                <span className="text-cyan-400 font-semibold">—</span>
-                                <span className="text-cyan-400 font-medium">Resuming...</span>
+                                <span className="text-primary font-semibold">—</span>
+                                <span className="text-primary font-medium">Resuming...</span>
                               </>
                             ) : (
                               <>
-                                <span className="text-cyan-400 font-semibold">
+                                <span className="text-primary font-semibold">
                                   {item.speedText || '—'}
                                 </span>
                                 <span className="text-text-muted/80">
@@ -609,7 +609,7 @@ export default function DownloadsPage() {
                               title="Pause download"
                             >
                               {pausingJobId === item.id ? (
-                                <Loader2 className="w-3.5 h-3.5 animate-spin text-[#19D8FF]" />
+                                <Loader2 className="w-3.5 h-3.5 animate-spin text-primary" />
                               ) : (
                                 <Pause className="w-3.5 h-3.5" />
                               )}
@@ -641,9 +641,9 @@ export default function DownloadsPage() {
                               title="Resume download"
                             >
                               {resumingJobId === item.id ? (
-                                <Loader2 className="w-3.5 h-3.5 animate-spin text-[#19D8FF]" />
+                                <Loader2 className="w-3.5 h-3.5 animate-spin text-primary" />
                               ) : (
-                                <Play className="w-3.5 h-3.5 ml-0.5 text-[#19D8FF]" />
+                                <Play className="w-3.5 h-3.5 ml-0.5 text-primary" />
                               )}
                             </button>
                             <button
@@ -673,7 +673,7 @@ export default function DownloadsPage() {
                               title="Pause download (prevent auto-resume)"
                             >
                               {pausingJobId === item.id ? (
-                                <Loader2 className="w-3.5 h-3.5 animate-spin text-[#19D8FF]" />
+                                <Loader2 className="w-3.5 h-3.5 animate-spin text-primary" />
                               ) : (
                                 <Pause className="w-3.5 h-3.5" />
                               )}
@@ -756,7 +756,7 @@ export default function DownloadsPage() {
                             title="Retry download"
                           >
                             <RotateCcw
-                              className={`w-3.5 h-3.5 text-[#19D8FF] ${retryButtonState.isSpinning ? 'animate-spin' : ''}`}
+                              className={`w-3.5 h-3.5 text-primary ${retryButtonState.isSpinning ? 'animate-spin' : ''}`}
                             />
                             <span className="text-[11px] font-bold">Retry</span>
                           </button>
@@ -771,7 +771,7 @@ export default function DownloadsPage() {
                 <tr>
                   <td colSpan={7} className="py-16 text-center text-text-muted">
                     <div className="flex flex-col items-center justify-center gap-3 select-none">
-                      <Loader2 className="w-8 h-8 text-[#19D8FF] animate-spin" />
+                      <Loader2 className="w-8 h-8 text-primary animate-spin" />
                       <span className="text-sm font-semibold text-white">Loading downloads...</span>
                       <span className="text-xs text-text-muted">
                         Fetching your active and recent downloads...
@@ -791,9 +791,9 @@ export default function DownloadsPage() {
                       <button
                         type="button"
                         onClick={retry}
-                        className="mt-2 inline-flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold text-white bg-[#07152E] hover:bg-[#0B1C38] border border-primary/20 hover:border-[#19D8FF]/40 transition-all cursor-pointer shadow-md"
+                        className="mt-2 inline-flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold text-text bg-surface hover:bg-surface-elevated border border-primary/20 hover:border-primary/40 transition-all cursor-pointer shadow-md"
                       >
-                        <RefreshCw className="w-3.5 h-3.5 text-[#19D8FF]" />
+                        <RefreshCw className="w-3.5 h-3.5 text-primary" />
                         <span>Retry</span>
                       </button>
                     </div>

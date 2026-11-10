@@ -161,6 +161,84 @@ body,
   border-color: rgba(var(--theme-primary-rgb), 0.25);
 }
 
+/* SweetAlert2 Dynamic Theme Classes */
+.app-swal-popup {
+  background-color: var(--app-surface-elevated) !important;
+  color: var(--app-text) !important;
+  border: 1px solid var(--app-border, rgba(var(--theme-primary-rgb), 0.2)) !important;
+  border-radius: 1rem !important;
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.45) !important;
+  backdrop-filter: blur(16px) !important;
+  -webkit-backdrop-filter: blur(16px) !important;
+}
+
+.app-swal-title {
+  color: var(--app-text) !important;
+  font-weight: 800 !important;
+  font-size: 1.125rem !important;
+}
+
+.app-swal-html {
+  color: var(--app-text-muted) !important;
+  font-size: 0.8125rem !important;
+  line-height: 1.6 !important;
+}
+
+.app-swal-confirm-btn {
+  background-color: var(--theme-primary, #18c9f5) !important;
+  color: #ffffff !important;
+  padding: 0.625rem 1.25rem !important;
+  border-radius: 0.75rem !important;
+  font-weight: 700 !important;
+  font-size: 0.75rem !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.05em !important;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25) !important;
+  border: none !important;
+  cursor: pointer !important;
+  transition: all 0.2s ease !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+}
+
+.app-swal-confirm-btn:hover {
+  filter: brightness(1.1) !important;
+}
+
+.app-swal-confirm-btn-danger {
+  background-color: #ff4568 !important;
+  color: #ffffff !important;
+  box-shadow: 0 4px 14px rgba(255, 69, 104, 0.35) !important;
+}
+
+.app-swal-confirm-btn-danger:hover {
+  filter: brightness(1.1) !important;
+}
+
+.app-swal-cancel-btn {
+  background-color: var(--app-surface, #07152e) !important;
+  color: var(--app-text, #f4f8ff) !important;
+  padding: 0.625rem 1.25rem !important;
+  border-radius: 0.75rem !important;
+  font-weight: 700 !important;
+  font-size: 0.75rem !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.05em !important;
+  border: 1px solid var(--app-border, rgba(var(--theme-primary-rgb), 0.2)) !important;
+  cursor: pointer !important;
+  transition: all 0.2s ease !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+}
+
+.app-swal-cancel-btn:hover {
+  background-color: var(--app-hover, rgba(var(--theme-primary-rgb), 0.08)) !important;
+  color: var(--app-text, #f4f8ff) !important;
+  border-color: var(--theme-primary, #18c9f5) !important;
+}
+
 @keyframes indeterminate {
   0% {
     left: -35%;

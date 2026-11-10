@@ -8,7 +8,8 @@ import {
   hsvToRgb,
   hsvToHex,
   generateCustomPalette,
-  isLightColor
+  isLightColor,
+  adjustHueWithBlackRecovery
 } from '../../utils/appearanceTheme'
 
 /**
@@ -19,11 +20,15 @@ import {
  * 2. 0-360° Hue slider with Black-Colour-Bug automatic restoration (Example 3)
  * 3. Live synchronized HEX input with inline validation (Example 4)
  * 4. Numeric RGB inputs (0-255) synchronized bidirectionally (Example 2)
- * 5. Live colour swatch & 3-color harmonious cyberpunk palette preview
+ * 5. Reusable across Accent and Background custom selections with isolated IDs & states
+ * 6. Optional live colour swatch & 3-color harmonious cyberpunk palette preview
  */
 export default function CustomColorPicker({
   initialColor = '#18C9F5',
   onColorChange,
+  idPrefix = 'color',
+  selectionLabel = 'Active Selection',
+  showPalettePreview = true,
   className = ''
 }) {
   // Normalize initial color
@@ -55,7 +60,7 @@ export default function CustomColorPicker({
 
   // Current active color hex string
   const currentHex = hsvToHex(hsv.h, hsv.s, hsv.v)
-  const currentPalette = generateCustomPalette(currentHex)
+  const currentPalette = showPalettePreview ? generateCustomPalette(currentHex) : null
   const isLight = isLightColor(currentHex)
 
   // Notify parent of valid color changes
@@ -122,16 +127,10 @@ export default function CustomColorPicker({
     const newHue = Number.parseInt(e.target.value, 10)
 
     setHsv((prev) => {
-      let { s, v } = prev
-
       // Example 3: If color is pure black or near-black (V < 15 or S < 10),
-      // restore sensible vibrant defaults (S = 85, V = 95) so moving Hue is visually effective
-      if (v < 15 || s < 10) {
-        s = 85
-        v = 95
-      }
-
-      const next = { h: newHue, s, v }
+      // restore sensible vibrant defaults (S = 85, V = 95) via adjustHueWithBlackRecovery
+      const recovered = adjustHueWithBlackRecovery(newHue, prev.s, prev.v)
+      const next = { h: recovered.h, s: recovered.s, v: recovered.v }
       const hex = hsvToHex(next.h, next.s, next.v)
       const rgb = hsvToRgb(next.h, next.s, next.v)
 
@@ -239,7 +238,7 @@ export default function CustomColorPicker({
           <div className="flex flex-col gap-1">
             <div className="flex items-center justify-between text-[11px] text-text-muted font-medium">
               <span>Hue Slider (0° - 360°)</span>
-              <span className="font-mono text-white font-bold">{hsv.h}°</span>
+              <span className="font-mono text-text font-bold">{hsv.h}°</span>
             </div>
             <div className="relative flex items-center h-5">
               <input
@@ -253,7 +252,7 @@ export default function CustomColorPicker({
                   background:
                     'linear-gradient(to right, #ff0000 0%, #ffff00 17%, #00ff00 33%, #00ffff 50%, #0000ff 67%, #ff00ff 83%, #ff0000 100%)'
                 }}
-                aria-label="Hue Color Slider"
+                aria-label={`${selectionLabel} Hue Slider`}
               />
             </div>
           </div>
@@ -263,7 +262,7 @@ export default function CustomColorPicker({
         <div className="md:col-span-4 flex flex-col justify-between gap-3 p-3.5 rounded-xl bg-background/80 border border-primary/20">
           <div>
             <span className="text-[11px] font-semibold text-text-muted block mb-1.5">
-              Active Selection
+              {selectionLabel}
             </span>
             {/* Live Colour Swatch */}
             <div
@@ -291,19 +290,19 @@ export default function CustomColorPicker({
       <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 items-end pt-1">
         {/* HEX Input (5 cols) */}
         <div className="sm:col-span-5 flex flex-col gap-1">
-          <label htmlFor="custom-hex-field" className="text-xs font-semibold text-text flex items-center gap-1.5">
+          <label htmlFor={`${idPrefix}-hex-field`} className="text-xs font-semibold text-text flex items-center gap-1.5">
             <span>HEX Code</span>
             <span className="text-[10px] text-text-muted font-normal">(e.g. #18C9F5)</span>
           </label>
           <div className="relative">
             <input
-              id="custom-hex-field"
+              id={`${idPrefix}-hex-field`}
               type="text"
               value={hexInput}
               onChange={handleHexInputChange}
               maxLength={7}
               placeholder="#18C9F5"
-              className={`w-full bg-background border rounded-xl py-2 px-3 text-xs font-mono font-bold text-white uppercase placeholder:text-text-muted/40 focus:outline-none transition-all ${
+              className={`w-full bg-background border rounded-xl py-2 px-3 text-xs font-mono font-bold text-text uppercase placeholder:text-text-muted/40 focus:outline-none transition-all ${
                 hexError
                   ? 'border-rose-500/80 focus:border-rose-500 focus:ring-1 focus:ring-rose-500'
                   : 'border-primary/25 focus:border-primary focus:ring-1 focus:ring-primary/40'
@@ -322,56 +321,56 @@ export default function CustomColorPicker({
         <div className="sm:col-span-7 grid grid-cols-3 gap-2">
           {/* R */}
           <div className="flex flex-col gap-1">
-            <label htmlFor="rgb-input-r" className="text-xs font-semibold text-text">
+            <label htmlFor={`${idPrefix}-rgb-r`} className="text-xs font-semibold text-text">
               R <span className="text-[10px] text-text-muted">(Red)</span>
             </label>
             <input
-              id="rgb-input-r"
+              id={`${idPrefix}-rgb-r`}
               type="number"
               min="0"
               max="255"
               value={rgbState.r}
               onChange={(e) => handleRgbInputChange('r', e.target.value)}
-              className="w-full bg-background border border-primary/25 rounded-xl py-2 px-2.5 text-xs font-mono font-bold text-white text-center focus:outline-none focus:border-primary"
+              className="w-full bg-background border border-primary/25 rounded-xl py-2 px-2.5 text-xs font-mono font-bold text-text text-center focus:outline-none focus:border-primary"
             />
           </div>
 
           {/* G */}
           <div className="flex flex-col gap-1">
-            <label htmlFor="rgb-input-g" className="text-xs font-semibold text-text">
+            <label htmlFor={`${idPrefix}-rgb-g`} className="text-xs font-semibold text-text">
               G <span className="text-[10px] text-text-muted">(Green)</span>
             </label>
             <input
-              id="rgb-input-g"
+              id={`${idPrefix}-rgb-g`}
               type="number"
               min="0"
               max="255"
               value={rgbState.g}
               onChange={(e) => handleRgbInputChange('g', e.target.value)}
-              className="w-full bg-background border border-primary/25 rounded-xl py-2 px-2.5 text-xs font-mono font-bold text-white text-center focus:outline-none focus:border-primary"
+              className="w-full bg-background border border-primary/25 rounded-xl py-2 px-2.5 text-xs font-mono font-bold text-text text-center focus:outline-none focus:border-primary"
             />
           </div>
 
           {/* B */}
           <div className="flex flex-col gap-1">
-            <label htmlFor="rgb-input-b" className="text-xs font-semibold text-text">
+            <label htmlFor={`${idPrefix}-rgb-b`} className="text-xs font-semibold text-text">
               B <span className="text-[10px] text-text-muted">(Blue)</span>
             </label>
             <input
-              id="rgb-input-b"
+              id={`${idPrefix}-rgb-b`}
               type="number"
               min="0"
               max="255"
               value={rgbState.b}
               onChange={(e) => handleRgbInputChange('b', e.target.value)}
-              className="w-full bg-background border border-primary/25 rounded-xl py-2 px-2.5 text-xs font-mono font-bold text-white text-center focus:outline-none focus:border-primary"
+              className="w-full bg-background border border-primary/25 rounded-xl py-2 px-2.5 text-xs font-mono font-bold text-text text-center focus:outline-none focus:border-primary"
             />
           </div>
         </div>
       </div>
 
-      {/* Harmonious 3-Colour Palette Preview */}
-      {currentPalette && (
+      {/* Harmonious 3-Colour Palette Preview (Only shown when showPalettePreview is true) */}
+      {showPalettePreview && currentPalette && (
         <div className="p-3 rounded-xl bg-background/80 border border-primary/20 flex flex-col sm:flex-row sm:items-center justify-between gap-3 mt-1">
           <div className="flex items-center gap-2">
             <Sparkles className="w-4 h-4 text-primary flex-shrink-0" />
@@ -387,7 +386,7 @@ export default function CustomColorPicker({
                 className="w-4 h-4 rounded-full shadow-sm"
                 style={{ backgroundColor: currentPalette.primary }}
               />
-              <span className="text-[11px] font-mono font-bold text-white">
+              <span className="text-[11px] font-mono font-bold text-text">
                 {currentPalette.primary}
               </span>
               <span className="text-[10px] text-text-muted">(Primary)</span>
@@ -399,7 +398,7 @@ export default function CustomColorPicker({
                 className="w-4 h-4 rounded-full shadow-sm"
                 style={{ backgroundColor: currentPalette.secondary }}
               />
-              <span className="text-[11px] font-mono font-bold text-white">
+              <span className="text-[11px] font-mono font-bold text-text">
                 {currentPalette.secondary}
               </span>
               <span className="text-[10px] text-text-muted">(Supporting)</span>
@@ -411,7 +410,7 @@ export default function CustomColorPicker({
                 className="w-4 h-4 rounded-full shadow-sm"
                 style={{ backgroundColor: currentPalette.tertiary }}
               />
-              <span className="text-[11px] font-mono font-bold text-white">
+              <span className="text-[11px] font-mono font-bold text-text">
                 {currentPalette.tertiary}
               </span>
               <span className="text-[10px] text-text-muted">(Glow)</span>

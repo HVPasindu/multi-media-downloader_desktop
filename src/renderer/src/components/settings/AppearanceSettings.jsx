@@ -9,15 +9,13 @@ import {
   Moon,
   Sun,
   Sparkles,
-  Layers,
-  AlertCircle
+  Layers
 } from 'lucide-react'
 import {
   THEME_PRESETS,
   DEFAULT_THEME,
   BACKGROUND_PRESETS,
-  useAppearanceTheme,
-  isValidHex
+  useAppearanceTheme
 } from '../../utils/appearanceTheme'
 import CustomColorPicker from './CustomColorPicker'
 
@@ -50,12 +48,6 @@ export default function AppearanceSettings() {
   const [saveFeedback, setSaveFeedback] = useState(null)
   const [resetAccentFeedback, setResetAccentFeedback] = useState(false)
   const [resetBgFeedback, setResetBgFeedback] = useState(false)
-
-  // Custom background input state
-  const [customBgInput, setCustomBgInput] = useState(
-    background.customHex || (background.mode === 'custom' ? bgPalette.background : '#182536')
-  )
-  const [customBgError, setCustomBgError] = useState(null)
 
   const showSaveNotification = useCallback((label) => {
     setSaveFeedback(label)
@@ -96,26 +88,6 @@ export default function AppearanceSettings() {
     setBackgroundPreset(id)
     if (preset) {
       showSaveNotification(`Background: ${preset.name} (Matched: ${preset.matchedAccentId})`)
-    }
-  }
-
-  const handleCustomBgInputChange = (e) => {
-    const raw = e.target.value.trim()
-    setCustomBgInput(raw)
-
-    if (!raw) {
-      setCustomBgError('HEX code cannot be empty')
-      return
-    }
-
-    const formatted = raw.startsWith('#') ? raw.toUpperCase() : `#${raw.toUpperCase()}`
-
-    if (isValidHex(formatted)) {
-      setCustomBgError(null)
-      setCustomBackgroundHex(formatted)
-      showSaveNotification(`Custom Background: ${formatted}`)
-    } else {
-      setCustomBgError('Enter a valid 6-digit HEX (e.g. #182536)')
     }
   }
 
@@ -402,44 +374,34 @@ export default function AppearanceSettings() {
           </div>
         </div>
 
-        {/* Custom Background Input (Shown in Custom Mode or editable) */}
+        {/* Custom Background Colour Picker (Shown in Custom Mode) */}
         {background.mode === 'custom' && (
-          <div className="p-4 rounded-xl bg-background border border-primary/25 flex flex-col sm:flex-row items-stretch sm:items-center gap-4 animate-fadeIn">
+          <div className="p-4 rounded-xl bg-background border border-primary/25 flex flex-col gap-3 animate-fadeIn">
             <div className="flex items-center gap-3">
               <div
-                className="w-12 h-12 rounded-xl border-2 border-primary/40 shadow-sm flex items-center justify-center"
+                className="w-10 h-10 rounded-xl border-2 border-primary/40 shadow-sm flex items-center justify-center flex-shrink-0"
                 style={{ backgroundColor: bgPalette.background }}
               >
                 <Layers className="w-5 h-5 text-primary" />
               </div>
               <div>
-                <span className="text-xs font-bold text-text block">Custom Background HEX</span>
+                <span className="text-xs font-bold text-text block">Custom Background Colour</span>
                 <span className="text-[11px] text-text-muted">
-                  Derives surfaces & automatically matches accent
+                  Interactive 2D picker • Automatically derives surfaces & matches accent
                 </span>
               </div>
             </div>
 
-            <div className="flex-1 flex flex-col gap-1">
-              <input
-                type="text"
-                value={customBgInput}
-                onChange={handleCustomBgInputChange}
-                maxLength={7}
-                placeholder="#182536"
-                className={`bg-surface border rounded-xl py-2 px-3 text-xs font-mono font-bold text-text uppercase placeholder:text-text-muted/40 focus:outline-none transition-all ${
-                  customBgError
-                    ? 'border-rose-500/80 focus:border-rose-500'
-                    : 'border-primary/30 focus:border-primary'
-                }`}
-              />
-              {customBgError && (
-                <span className="text-[11px] text-rose-400 flex items-center gap-1">
-                  <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
-                  <span>{customBgError}</span>
-                </span>
-              )}
-            </div>
+            <CustomColorPicker
+              initialColor={background.customHex || bgPalette.background}
+              onColorChange={(hex) => {
+                setCustomBackgroundHex(hex)
+                showSaveNotification(`Custom Background: ${hex}`)
+              }}
+              idPrefix="background"
+              selectionLabel="Active Background"
+              showPalettePreview={false}
+            />
           </div>
         )}
       </div>
@@ -581,6 +543,9 @@ export default function AppearanceSettings() {
         <CustomColorPicker
           initialColor={isCustom ? activeCustomHex : theme.primary}
           onColorChange={handleCustomAccentChange}
+          idPrefix="accent"
+          selectionLabel="Active Accent"
+          showPalettePreview={true}
         />
       </div>
     </div>

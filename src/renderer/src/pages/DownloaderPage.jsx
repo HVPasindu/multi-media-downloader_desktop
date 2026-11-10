@@ -1000,15 +1000,15 @@ export default function DownloaderPage() {
 
           {/* Feature Badges */}
           <div className="flex flex-wrap items-center gap-4 mt-3">
-            <div className="flex items-center gap-1.5 text-xs font-bold text-[#19D8FF]">
+            <div className="flex items-center gap-1.5 text-xs font-bold text-primary">
               <Zap className="w-3.5 h-3.5 fill-current" />
               <span>Fast & Reliable</span>
             </div>
-            <div className="flex items-center gap-1.5 text-xs font-bold text-[#19D8FF]">
+            <div className="flex items-center gap-1.5 text-xs font-bold text-primary">
               <ShieldCheck className="w-3.5 h-3.5" />
               <span>High Quality</span>
             </div>
-            <div className="flex items-center gap-1.5 text-xs font-bold text-[#19D8FF]">
+            <div className="flex items-center gap-1.5 text-xs font-bold text-primary">
               <Globe2 className="w-3.5 h-3.5" />
               <span>Supports Multiple Platforms</span>
             </div>
@@ -1084,7 +1084,7 @@ export default function DownloaderPage() {
                   <button
                     type="button"
                     onClick={handlePasteFromClipboard}
-                    className="p-1 text-text-muted/70 hover:text-[#19D8FF] transition-colors cursor-pointer"
+                    className="p-1 text-text-muted/70 hover:text-primary transition-colors cursor-pointer"
                     title="Paste link from clipboard"
                     aria-label="Paste link from clipboard"
                   >
@@ -1107,7 +1107,7 @@ export default function DownloaderPage() {
                       ? `Rate limit cooldown: ${cooldownRemaining}s remaining`
                       : 'Analyze media URL'
                 }
-                className="flex items-center gap-2 px-5 py-3 rounded-xl font-bold text-xs bg-gradient-to-r from-[#19D8FF] to-[#3388FF] text-white shadow-[0_0_16px_rgba(25,216,255,0.35)] hover:shadow-[0_0_24px_rgba(25,216,255,0.55)] transition-all cursor-pointer flex-shrink-0 disabled:opacity-60 disabled:cursor-not-allowed"
+                className="flex items-center gap-2 px-5 py-3 rounded-xl font-bold text-xs theme-accent-gradient-2 text-white theme-accent-glow-sm hover:theme-accent-glow-lg transition-all cursor-pointer flex-shrink-0 disabled:opacity-60 disabled:cursor-not-allowed"
               >
                 {isAnalyzing ? (
                   <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -1164,9 +1164,9 @@ export default function DownloaderPage() {
               <div
                 id="media-url-status"
                 role="status"
-                className="flex items-center gap-2 text-xs text-cyan-300 bg-cyan-500/10 border border-cyan-500/20 px-3.5 py-2.5 rounded-xl animate-fadeIn"
+                className="flex items-center gap-2 text-xs text-primary bg-primary/10 border border-primary/20 px-3.5 py-2.5 rounded-xl animate-fadeIn"
               >
-                <CheckCircle2 className="w-4 h-4 flex-shrink-0 text-[#19D8FF]" />
+                <CheckCircle2 className="w-4 h-4 flex-shrink-0 text-primary" />
                 <span>{urlStatus}</span>
               </div>
             )}
@@ -1215,7 +1215,7 @@ export default function DownloaderPage() {
             ) : isCurrentUrlValidated ? (
               <div className="flex flex-col sm:flex-row items-center gap-4 p-3.5 rounded-xl bg-background/80 border border-primary/15 animate-fadeIn">
                 <div className="w-full sm:w-44 aspect-video rounded-lg bg-surface flex flex-col items-center justify-center text-text-muted/60 border border-primary/10 flex-shrink-0">
-                  <Video className="w-8 h-8 text-[#19D8FF]/70 mb-1" />
+                  <Video className="w-8 h-8 text-primary/70 mb-1" />
                   <span className="text-[10px] font-mono tracking-wider">READY</span>
                 </div>
 
@@ -1272,7 +1272,7 @@ export default function DownloaderPage() {
                       !analyzedMedia || !mp4Available
                         ? 'bg-surface text-text-muted/50'
                         : selectedFormat === 'mp4'
-                          ? 'bg-cyan-500/20 text-[#19D8FF]'
+                          ? 'bg-primary/20 text-primary'
                           : 'bg-surface text-text-muted'
                     }`}
                   >
@@ -1296,12 +1296,12 @@ export default function DownloaderPage() {
                     !analyzedMedia || !mp4Available
                       ? 'border-text-muted/20'
                       : selectedFormat === 'mp4'
-                        ? 'border-[#19D8FF] bg-background'
+                        ? 'border-primary bg-background'
                         : 'border-text-muted/40'
                   }`}
                 >
                   {selectedFormat === 'mp4' && analyzedMedia && mp4Available && (
-                    <div className="w-2.5 h-2.5 rounded-full bg-[#19D8FF]" />
+                    <div className="w-2.5 h-2.5 rounded-full bg-primary" />
                   )}
                 </div>
               </button>
@@ -1325,7 +1325,7 @@ export default function DownloaderPage() {
                       !analyzedMedia || !mp3Available
                         ? 'bg-surface text-text-muted/50'
                         : selectedFormat === 'mp3'
-                          ? 'bg-cyan-500/20 text-[#19D8FF]'
+                          ? 'bg-primary/20 text-primary'
                           : 'bg-surface text-text-muted'
                     }`}
                   >
@@ -1349,12 +1349,12 @@ export default function DownloaderPage() {
                     !analyzedMedia || !mp3Available
                       ? 'border-text-muted/20'
                       : selectedFormat === 'mp3'
-                        ? 'border-[#19D8FF] bg-background'
+                        ? 'border-primary bg-background'
                         : 'border-text-muted/40'
                   }`}
                 >
                   {selectedFormat === 'mp3' && analyzedMedia && mp3Available && (
-                    <div className="w-2.5 h-2.5 rounded-full bg-[#19D8FF]" />
+                    <div className="w-2.5 h-2.5 rounded-full bg-primary" />
                   )}
                 </div>
               </button>
@@ -1544,7 +1544,7 @@ export default function DownloaderPage() {
               (selectedFormat === 'mp4' && !mp4Available) ||
               (selectedFormat === 'mp3' && !mp3Available)
             }
-            className="w-full py-4 rounded-2xl font-black text-sm lg:text-base tracking-wide bg-gradient-to-r from-[#19D8FF] via-[#3388FF] to-[#514BFF] text-white shadow-[0_0_28px_rgba(25,216,255,0.45)] hover:shadow-[0_0_36px_rgba(25,216,255,0.65)] hover:scale-[1.01] active:scale-[0.99] transition-all flex items-center justify-center gap-2.5 cursor-pointer mt-1 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100 disabled:shadow-none"
+            className="w-full py-4 rounded-2xl font-black text-sm lg:text-base tracking-wide theme-accent-gradient text-white theme-accent-glow hover:theme-accent-glow-lg hover:scale-[1.01] active:scale-[0.99] transition-all flex items-center justify-center gap-2.5 cursor-pointer mt-1 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100 disabled:shadow-none"
           >
             {isSubmittingDownload ? (
               <>
@@ -1699,7 +1699,7 @@ export default function DownloaderPage() {
                                     ? 'bg-purple-500/80'
                                     : isInterrupted
                                       ? 'bg-amber-400/80'
-                                      : 'bg-gradient-to-r from-[#19D8FF] to-[#3388FF]'
+                                      : 'theme-accent-gradient-2'
                                 }`}
                                 style={{ width: `${item.progress}%` }}
                               />
@@ -1715,8 +1715,8 @@ export default function DownloaderPage() {
                                 Waiting for connection
                               </div>
                             ) : isResuming ? (
-                              <div className="text-[10px] text-cyan-400 font-medium flex items-center gap-1.5">
-                                <span className="inline-block w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
+                              <div className="text-[10px] text-primary font-medium flex items-center gap-1.5">
+                                <span className="inline-block w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />
                                 Resuming...
                               </div>
                             ) : item.etaDisplay ? (
@@ -1774,7 +1774,7 @@ export default function DownloaderPage() {
                               title="Pause download"
                             >
                               {pausingJobId === item.id ? (
-                                <Loader2 className="w-3.5 h-3.5 animate-spin text-[#19D8FF]" />
+                                <Loader2 className="w-3.5 h-3.5 animate-spin text-primary" />
                               ) : (
                                 <Pause className="w-3.5 h-3.5" />
                               )}
@@ -1806,9 +1806,9 @@ export default function DownloaderPage() {
                               title="Resume download"
                             >
                               {resumingJobId === item.id ? (
-                                <Loader2 className="w-3.5 h-3.5 animate-spin text-[#19D8FF]" />
+                                <Loader2 className="w-3.5 h-3.5 animate-spin text-primary" />
                               ) : (
-                                <Play className="w-3.5 h-3.5 ml-0.5 text-[#19D8FF]" />
+                                <Play className="w-3.5 h-3.5 ml-0.5 text-primary" />
                               )}
                             </button>
                             <button
@@ -1838,7 +1838,7 @@ export default function DownloaderPage() {
                               title="Pause download (prevent auto-resume)"
                             >
                               {pausingJobId === item.id ? (
-                                <Loader2 className="w-3.5 h-3.5 animate-spin text-[#19D8FF]" />
+                                <Loader2 className="w-3.5 h-3.5 animate-spin text-primary" />
                               ) : (
                                 <Pause className="w-3.5 h-3.5" />
                               )}
@@ -1921,7 +1921,7 @@ export default function DownloaderPage() {
                             title="Retry download"
                           >
                             <RotateCcw
-                              className={`w-3.5 h-3.5 text-[#19D8FF] ${retryingJobId === item.id ? 'animate-spin' : ''}`}
+                              className={`w-3.5 h-3.5 text-primary ${retryingJobId === item.id ? 'animate-spin' : ''}`}
                             />
                             <span className="text-[11px] font-bold">Retry</span>
                           </button>
@@ -1942,7 +1942,7 @@ export default function DownloaderPage() {
             onClick={handleDropzoneClick}
             className={`p-4 rounded-2xl border-2 border-dashed transition-all flex flex-col items-center justify-center text-center gap-1.5 py-5 cursor-pointer select-none ${
               isDraggingOver
-                ? 'border-[#19D8FF] bg-[#19D8FF]/10 shadow-[0_0_24px_rgba(25,216,255,0.35)] scale-[1.01]'
+                ? 'border-primary bg-primary/10 shadow-[0_0_24px_rgba(var(--theme-primary-rgb),0.35)] scale-[1.01]'
                 : 'border-primary/30 bg-surface/50 hover:border-primary/60 hover:bg-surface/70'
             }`}
             role="region"
@@ -1950,7 +1950,7 @@ export default function DownloaderPage() {
           >
             <CloudUpload
               className={`w-7 h-7 transition-colors ${
-                isDraggingOver ? 'text-white scale-110' : 'text-[#19D8FF]'
+                isDraggingOver ? 'text-white scale-110' : 'text-primary'
               }`}
             />
             <span className="text-xs font-bold text-white tracking-wide">

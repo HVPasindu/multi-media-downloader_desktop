@@ -267,7 +267,7 @@ export default function SettingsPage() {
               <div className="p-5 lg:p-6 rounded-2xl bg-surface/90 border border-primary/20 shadow-[0_4px_24px_rgba(0,0,0,0.35)] backdrop-blur-md flex flex-col gap-5">
                 {/* Card Header */}
                 <div className="flex items-center gap-3">
-                  <div className="w-9 h-9 rounded-xl bg-cyan-500/15 text-[#19D8FF] flex items-center justify-center">
+                  <div className="w-9 h-9 rounded-xl bg-primary/15 text-primary flex items-center justify-center">
                     <SettingsIcon className="w-5 h-5" />
                   </div>
                   <div>
@@ -363,7 +363,7 @@ export default function SettingsPage() {
               <div className="p-5 lg:p-6 rounded-2xl bg-surface/90 border border-primary/20 shadow-[0_4px_24px_rgba(0,0,0,0.35)] backdrop-blur-md flex flex-col gap-4">
                 {/* Header */}
                 <div className="flex items-center gap-3">
-                  <div className="w-9 h-9 rounded-xl bg-cyan-500/15 text-[#19D8FF] flex items-center justify-center">
+                  <div className="w-9 h-9 rounded-xl bg-primary/15 text-primary flex items-center justify-center">
                     <HardDrive className="w-5 h-5" />
                   </div>
                   <div>

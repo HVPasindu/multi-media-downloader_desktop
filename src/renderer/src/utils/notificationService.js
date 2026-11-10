@@ -1,23 +1,22 @@
 import Swal from 'sweetalert2'
 
 /**
- * Common dark-themed SweetAlert2 defaults matching APPLAN2 UI design system.
+ * Common dynamic theme-aware SweetAlert2 defaults matching APPLAN2 UI design system.
+ * Supports Dark, Light, and Custom background modes, and dynamically updates with active accent.
  */
 const darkThemeSwal = Swal.mixin({
   background: 'var(--app-surface-elevated, #0B1C38)',
   color: 'var(--app-text, #F4F8FF)',
-  confirmButtonColor: '#514BFF',
-  cancelButtonColor: 'var(--app-surface, #102449)',
+  confirmButtonColor: 'var(--theme-primary, #18C9F5)',
+  cancelButtonColor: 'var(--app-surface, #07152E)',
   customClass: {
-    popup: 'border border-primary/20 rounded-2xl shadow-2xl backdrop-blur-md',
-    title: 'text-text font-extrabold text-lg',
-    htmlContainer: 'text-text-muted text-xs leading-relaxed',
-    confirmButton:
-      'px-4 py-2.5 rounded-xl font-bold text-xs uppercase tracking-wider text-white shadow-lg cursor-pointer transition-all',
-    cancelButton:
-      'px-4 py-2.5 rounded-xl font-bold text-xs uppercase tracking-wider text-text-muted hover:text-text border border-primary/20 cursor-pointer transition-all'
+    popup: 'app-swal-popup',
+    title: 'app-swal-title',
+    htmlContainer: 'app-swal-html',
+    confirmButton: 'app-swal-confirm-btn',
+    cancelButton: 'app-swal-cancel-btn'
   },
-  buttonsStyling: true
+  buttonsStyling: false
 })
 
 /**
@@ -106,15 +105,30 @@ export function showWarning(title, message = '', options = {}) {
  * @returns {Promise<boolean>} Resolves to true if confirmed, false otherwise
  */
 export async function showConfirm(title, message = '', options = {}) {
+  const isDanger = Boolean(options.isDanger)
+  const customClasses = {
+    popup: 'app-swal-popup',
+    title: 'app-swal-title',
+    htmlContainer: 'app-swal-html',
+    confirmButton: isDanger
+      ? 'app-swal-confirm-btn app-swal-confirm-btn-danger'
+      : 'app-swal-confirm-btn',
+    cancelButton: 'app-swal-cancel-btn',
+    ...(options.customClass || {})
+  }
+
   const result = await darkThemeSwal.fire({
-    icon: options.icon || 'warning',
-    iconColor: options.iconColor || '#FFB547',
+    icon: options.icon || (isDanger ? 'warning' : 'question'),
+    iconColor: options.iconColor || (isDanger ? '#FF4568' : '#FFB547'),
     title,
     text: message,
     showCancelButton: true,
     confirmButtonText: options.confirmButtonText || 'Confirm',
     cancelButtonText: options.cancelButtonText || 'Cancel',
-    confirmButtonColor: options.isDanger ? '#FF4568' : '#514BFF',
+    confirmButtonColor: isDanger ? '#FF4568' : 'var(--theme-primary, #18C9F5)',
+    cancelButtonColor: 'var(--app-surface, #07152E)',
+    customClass: customClasses,
+    buttonsStyling: false,
     reverseButtons: true,
     focusCancel: true,
     ...options
@@ -135,14 +149,14 @@ export function showToast(title, icon = 'success', timer = 3000) {
     success: '#00DEA5',
     error: '#FF4568',
     warning: '#FFB547',
-    info: '#19D8FF'
+    info: 'var(--theme-primary, #18C9F5)'
   }
 
   return darkThemeSwal.fire({
     toast: true,
     position: 'top-end',
     icon,
-    iconColor: iconColors[icon] || '#19D8FF',
+    iconColor: iconColors[icon] || 'var(--theme-primary, #18C9F5)',
     title,
     showConfirmButton: false,
     timer,

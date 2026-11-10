@@ -567,7 +567,7 @@ export default function HistoryPage() {
           </div>
           {dateError && <span className="text-xs text-red-400 font-medium">{dateError}</span>}
           {(appliedFrom || appliedTo) && !dateError && (
-            <span className="text-xs text-[#19D8FF] font-medium ml-auto">
+            <span className="text-xs text-primary font-medium ml-auto">
               Active: {appliedFrom || 'Any'} &rarr; {appliedTo || 'Any'}
             </span>
           )}
@@ -718,7 +718,7 @@ export default function HistoryPage() {
                       <span
                         className={`inline-block px-2 py-0.5 rounded text-[11px] font-black uppercase tracking-wider ${
                           item.format === 'MP4'
-                            ? 'bg-cyan-500/15 text-[#19D8FF] border border-cyan-500/30'
+                            ? 'bg-primary/15 text-primary border border-primary/30'
                             : 'bg-emerald-500/15 text-[#00DEA5] border border-emerald-500/30'
                         }`}
                       >
@@ -833,7 +833,7 @@ export default function HistoryPage() {
                 <tr>
                   <td colSpan={10} className="py-16 text-center text-text-muted">
                     <div className="flex flex-col items-center justify-center gap-3 select-none">
-                      <Loader2 className="w-8 h-8 text-[#19D8FF] animate-spin" />
+                      <Loader2 className="w-8 h-8 text-primary animate-spin" />
                       <span className="text-sm font-semibold text-white">Loading history...</span>
                       <span className="text-xs text-text-muted">
                         Fetching your download history records...
@@ -852,9 +852,9 @@ export default function HistoryPage() {
                       <button
                         type="button"
                         onClick={fetchHistory}
-                        className="mt-2 inline-flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold text-white bg-[#07152E] hover:bg-[#0B1C38] border border-primary/20 hover:border-[#19D8FF]/40 transition-all cursor-pointer shadow-md"
+                        className="mt-2 inline-flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold text-text bg-surface hover:bg-surface-elevated border border-primary/20 hover:border-primary/40 transition-all cursor-pointer shadow-md"
                       >
-                        <RefreshCw className="w-3.5 h-3.5 text-[#19D8FF]" />
+                        <RefreshCw className="w-3.5 h-3.5 text-primary" />
                         <span>Retry</span>
                       </button>
                     </div>

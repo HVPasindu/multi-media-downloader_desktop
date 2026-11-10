@@ -351,6 +351,20 @@ export function hexToHsv(hex) {
 }
 
 /**
+ * Adjusts hue while recovering from pure black or near-black (V < 15 or S < 10)
+ * by restoring vibrant defaults (S = 85, V = 95).
+ */
+export function adjustHueWithBlackRecovery(newHue, currentS, currentV) {
+  let s = currentS
+  let v = currentV
+  if (v < 15 || s < 10) {
+    s = 85
+    v = 95
+  }
+  return { h: newHue, s, v }
+}
+
+/**
  * Computes standard WCAG relative luminance from RGB components.
  */
 export function getLuminance(r, g, b) {
