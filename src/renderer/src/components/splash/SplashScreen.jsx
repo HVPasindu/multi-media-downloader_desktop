@@ -101,7 +101,7 @@ export default function SplashScreen({
           <motion.img
             src={officialLogo}
             alt="Multi Media Downloader Logo"
-            className="relative z-10 w-36 h-36 object-contain pointer-events-none drop-shadow-[0_0_24px_rgba(25,216,255,0.7)]"
+            className="relative z-10 w-36 h-36 object-contain pointer-events-none drop-shadow-[0_0_24px_rgba(var(--theme-primary-rgb),0.7)]"
             initial={{ scale: 0.85, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
             transition={{ duration: 0.7, ease: 'easeOut' }}
@@ -113,7 +113,7 @@ export default function SplashScreen({
           initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.2, duration: 0.5 }}
-          className="text-2xl font-extrabold tracking-wider text-white uppercase drop-shadow-[0_2px_12px_rgba(25,216,255,0.35)]"
+          className="text-2xl font-extrabold tracking-wider text-white uppercase drop-shadow-[0_2px_12px_rgba(var(--theme-primary-rgb),0.35)]"
         >
           Multi Media Downloader
         </motion.h1>
@@ -155,7 +155,7 @@ export default function SplashScreen({
                 {isHealthError && onRetry && (
                   <button
                     onClick={onRetry}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-primary text-secondary hover:brightness-110 active:scale-95 transition-all shadow-[0_0_12px_rgba(25,216,255,0.4)]"
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-primary text-secondary hover:brightness-110 active:scale-95 transition-all shadow-[0_0_12px_rgba(var(--theme-primary-rgb),0.4)]"
                   >
                     <RefreshCw className="w-3.5 h-3.5" />
                     <span>Retry Connection</span>

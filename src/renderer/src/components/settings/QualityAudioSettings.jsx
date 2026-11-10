@@ -163,7 +163,7 @@ export default function QualityAudioSettings() {
         {/* Card Header */}
         <div className="flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-cyan-500/15 text-[#19D8FF] flex items-center justify-center">
+            <div className="w-9 h-9 rounded-xl bg-primary/15 text-primary flex items-center justify-center">
               <Video className="w-5 h-5" />
             </div>
             <div>
@@ -216,13 +216,13 @@ export default function QualityAudioSettings() {
                 onClick={() => handleSelectVideoQuality(opt.value)}
                 className={`flex flex-col items-center justify-center p-3 rounded-xl border text-xs font-bold transition-all duration-200 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed ${
                   isSelected
-                    ? 'bg-[#0B1C38] border-cyan-400 text-white shadow-[0_0_14px_rgba(25,216,255,0.3)]'
+                    ? 'bg-[#0B1C38] border-primary text-white shadow-[0_0_14px_rgba(var(--theme-primary-rgb),0.3)]'
                     : 'bg-[#07152E]/80 border-primary/15 text-text-muted hover:border-primary/30 hover:text-white'
                 }`}
               >
                 <span>{opt.label}</span>
                 {isSelected && (
-                  <span className="mt-1 flex items-center gap-0.5 text-[10px] text-cyan-400 font-semibold">
+                  <span className="mt-1 flex items-center gap-0.5 text-[10px] text-primary font-semibold">
                     <Check className="w-3 h-3" /> Selected
                   </span>
                 )}
@@ -237,7 +237,7 @@ export default function QualityAudioSettings() {
         {/* Card Header */}
         <div className="flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-cyan-500/15 text-[#19D8FF] flex items-center justify-center">
+            <div className="w-9 h-9 rounded-xl bg-primary/15 text-primary flex items-center justify-center">
               <Music className="w-5 h-5" />
             </div>
             <div>
@@ -289,13 +289,13 @@ export default function QualityAudioSettings() {
                 onClick={() => handleSelectAudioBitrate(opt.value)}
                 className={`flex flex-col items-center justify-center p-3.5 rounded-xl border text-xs font-bold transition-all duration-200 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed ${
                   isSelected
-                    ? 'bg-[#0B1C38] border-cyan-400 text-white shadow-[0_0_14px_rgba(25,216,255,0.3)]'
+                    ? 'bg-[#0B1C38] border-primary text-white shadow-[0_0_14px_rgba(var(--theme-primary-rgb),0.3)]'
                     : 'bg-[#07152E]/80 border-primary/15 text-text-muted hover:border-primary/30 hover:text-white'
                 }`}
               >
                 <span>{opt.label}</span>
                 {isSelected && (
-                  <span className="mt-1 flex items-center gap-0.5 text-[10px] text-cyan-400 font-semibold">
+                  <span className="mt-1 flex items-center gap-0.5 text-[10px] text-primary font-semibold">
                     <Check className="w-3 h-3" /> Selected
                   </span>
                 )}

@@ -10,6 +10,7 @@ import {
 } from 'lucide-react'
 import ToggleSwitch from '../components/ui/ToggleSwitch'
 import QualityAudioSettings from '../components/settings/QualityAudioSettings'
+import AppearanceSettings from '../components/settings/AppearanceSettings'
 import { SETTINGS_SECTIONS } from '../data/uiPreviewData'
 import {
   chooseDownloadFolder,
@@ -247,7 +248,7 @@ export default function SettingsPage() {
                 onClick={() => setActiveSection(sec.id)}
                 className={`flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs font-bold transition-all duration-200 text-left cursor-pointer ${
                   isActive
-                    ? 'bg-gradient-to-r from-[#19D8FF] to-[#3388FF] text-white shadow-[0_0_16px_rgba(25,216,255,0.35)]'
+                    ? 'theme-accent-gradient-2 theme-accent-glow text-white'
                     : 'text-text-muted hover:text-white hover:bg-[#0B1C38]'
                 }`}
               >
@@ -340,7 +341,7 @@ export default function SettingsPage() {
                       type="button"
                       onClick={handleChooseFolder}
                       title="Choose destination directory"
-                      className="px-4 py-2 rounded-xl text-xs font-bold bg-gradient-to-r from-[#19D8FF] to-[#3388FF] text-white shadow-[0_0_12px_rgba(25,216,255,0.3)] hover:shadow-[0_0_18px_rgba(25,216,255,0.45)] transition-all cursor-pointer flex-shrink-0"
+                      className="px-4 py-2 rounded-xl text-xs font-bold theme-accent-gradient-2 theme-accent-glow-sm text-white hover:opacity-95 transition-all cursor-pointer flex-shrink-0"
                     >
                       Change
                     </button>
@@ -392,7 +393,7 @@ export default function SettingsPage() {
                   <div className="flex flex-col gap-2 pt-1">
                     <div className="w-full h-3 rounded-full bg-[#040B1C] overflow-hidden border border-primary/20">
                       <div
-                        className="h-full bg-gradient-to-r from-[#19D8FF] to-[#3388FF] rounded-full shadow-[0_0_12px_rgba(25,216,255,0.5)] transition-all duration-500"
+                        className="h-full theme-accent-gradient-2 rounded-full theme-accent-glow-sm transition-all duration-500"
                         style={{ width: `${percentUsed}%` }}
                       />
                     </div>
@@ -412,8 +413,10 @@ export default function SettingsPage() {
             </>
           ) : activeSection === 'quality-audio' ? (
             <QualityAudioSettings />
+          ) : activeSection === 'appearance' ? (
+            <AppearanceSettings />
           ) : (
-            /* Sub-category Standby Notice */
+            /* Sub-category Standby Notice (e.g. About) */
             <div className="p-8 rounded-2xl bg-[#07152E]/80 border border-primary/15 text-center flex flex-col items-center justify-center gap-2">
               <span className="text-sm font-bold text-white capitalize">
                 {currentSectionLabel} Standby

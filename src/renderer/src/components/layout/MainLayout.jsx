@@ -74,17 +74,17 @@ export default function MainLayout({ onOpenSplashPreview = null }) {
           <div>
             {/* Official Branding Header */}
             <div className="flex flex-col items-center text-center pb-5 pt-1">
-              <div className="relative flex items-center justify-center w-20 h-20 mb-2 rounded-2xl bg-surface/80 border border-primary/30 shadow-[0_0_24px_rgba(25,216,255,0.25)]">
+              <div className="relative flex items-center justify-center w-20 h-20 mb-2 rounded-2xl bg-surface/80 border border-primary/30 shadow-[0_0_24px_rgba(var(--theme-primary-rgb),0.25)]">
                 <img
                   src={officialLogo}
                   alt="Multi Media Downloader"
-                  className="w-16 h-16 object-contain drop-shadow-[0_0_14px_rgba(25,216,255,0.8)]"
+                  className="w-16 h-16 object-contain drop-shadow-[0_0_14px_rgba(var(--theme-primary-rgb),0.8)]"
                 />
               </div>
               <h1 className="text-sm font-extrabold tracking-wider text-white uppercase mt-1 leading-tight">
                 Multi Media
               </h1>
-              <span className="text-[11px] font-bold tracking-widest text-[#19D8FF] uppercase">
+              <span className="text-[11px] font-bold tracking-widest text-primary uppercase">
                 Downloader
               </span>
             </div>
@@ -104,7 +104,7 @@ export default function MainLayout({ onOpenSplashPreview = null }) {
                     to={item.to}
                     className={`flex items-center justify-between px-4 py-3 rounded-xl text-sm font-bold transition-all duration-200 ${
                       isActive
-                        ? 'bg-gradient-to-r from-[#19D8FF] via-[#3388FF] to-[#514BFF] text-white shadow-[0_0_20px_rgba(25,216,255,0.4)]'
+                        ? 'theme-accent-gradient theme-accent-glow text-white'
                         : 'text-text-muted hover:text-white hover:bg-[#102449]/60'
                     }`}
                   >
@@ -119,7 +119,7 @@ export default function MainLayout({ onOpenSplashPreview = null }) {
                         className={`text-xs px-2 py-0.5 rounded-full font-bold ${
                           isActive
                             ? 'bg-white/20 text-white'
-                            : 'bg-primary/20 text-[#19D8FF] border border-primary/30'
+                            : 'bg-primary/20 text-primary border border-primary/30'
                         }`}
                       >
                         {item.badge}
