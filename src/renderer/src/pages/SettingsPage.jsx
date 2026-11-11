@@ -11,6 +11,7 @@ import {
 import ToggleSwitch from '../components/ui/ToggleSwitch'
 import QualityAudioSettings from '../components/settings/QualityAudioSettings'
 import AppearanceSettings from '../components/settings/AppearanceSettings'
+import AboutSettings from '../components/settings/AboutSettings'
 import { SETTINGS_SECTIONS } from '../data/uiPreviewData'
 import {
   chooseDownloadFolder,
@@ -416,23 +417,7 @@ export default function SettingsPage() {
           ) : activeSection === 'appearance' ? (
             <AppearanceSettings />
           ) : (
-            /* Sub-category Standby Notice (e.g. About) */
-            <div className="p-8 rounded-2xl bg-surface/80 border border-primary/15 text-center flex flex-col items-center justify-center gap-2">
-              <span className="text-sm font-bold text-text capitalize">
-                {currentSectionLabel} Standby
-              </span>
-              <p className="text-xs text-text-muted max-w-md">
-                Detailed configuration options for {currentSectionLabel} will be integrated in later
-                roadmap steps.
-              </p>
-              <button
-                type="button"
-                onClick={() => setActiveSection('general')}
-                className="mt-3 px-4 py-1.5 rounded-xl text-xs font-bold bg-primary/10 hover:bg-primary/20 text-primary border border-primary/25 cursor-pointer transition-all"
-              >
-                Return to General Settings
-              </button>
-            </div>
+            <AboutSettings />
           )}
         </div>
       </div>
