@@ -9,6 +9,9 @@ import {
   AlertCircle
 } from 'lucide-react'
 import ToggleSwitch from '../components/ui/ToggleSwitch'
+import QualityAudioSettings from '../components/settings/QualityAudioSettings'
+import AppearanceSettings from '../components/settings/AppearanceSettings'
+import AboutSettings from '../components/settings/AboutSettings'
 import { SETTINGS_SECTIONS } from '../data/uiPreviewData'
 import {
   chooseDownloadFolder,
@@ -219,11 +222,11 @@ export default function SettingsPage() {
       {/* ----------------- TOP HEADER ----------------- */}
       <div>
         <div className="flex items-center gap-3">
-          <h1 className="text-3xl lg:text-4xl font-extrabold text-white tracking-tight">
+          <h1 className="text-3xl lg:text-4xl font-extrabold text-text tracking-tight">
             Settings
           </h1>
           <span className="text-[10px] font-bold tracking-wider px-2 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20 uppercase">
-            General
+            {currentSectionLabel}
           </span>
         </div>
         <p className="text-sm text-text-muted mt-1 font-medium">
@@ -234,7 +237,7 @@ export default function SettingsPage() {
       {/* ----------------- SETTINGS SPLIT VIEW (LEFT MENU + RIGHT CONTENT) ----------------- */}
       <div className="grid grid-cols-1 md:grid-cols-12 gap-6 items-start">
         {/* ================= LEFT SUB-NAV MENU (3 COLS) ================= */}
-        <div className="md:col-span-3 flex flex-col gap-1.5 p-3 rounded-2xl bg-[#07152E]/90 border border-primary/15 shadow-[0_4px_24px_rgba(0,0,0,0.3)] backdrop-blur-md">
+        <div className="md:col-span-3 flex flex-col gap-1.5 p-3 rounded-2xl bg-surface/90 border border-primary/15 shadow-[0_4px_24px_rgba(0,0,0,0.3)] backdrop-blur-md">
           {SETTINGS_SECTIONS.map((sec) => {
             const Icon = sectionIcons[sec.id] || SettingsIcon
             const isActive = activeSection === sec.id
@@ -246,8 +249,8 @@ export default function SettingsPage() {
                 onClick={() => setActiveSection(sec.id)}
                 className={`flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs font-bold transition-all duration-200 text-left cursor-pointer ${
                   isActive
-                    ? 'bg-gradient-to-r from-[#19D8FF] to-[#3388FF] text-white shadow-[0_0_16px_rgba(25,216,255,0.35)]'
-                    : 'text-text-muted hover:text-white hover:bg-[#0B1C38]'
+                    ? 'theme-accent-gradient-2 theme-accent-glow text-on-gradient'
+                    : 'text-text-muted hover:text-text hover:bg-surface-elevated'
                 }`}
               >
                 <Icon className="w-4 h-4 flex-shrink-0" />
@@ -259,35 +262,17 @@ export default function SettingsPage() {
 
         {/* ================= RIGHT CONTENT AREA (9 COLS) ================= */}
         <div className="md:col-span-9 flex flex-col gap-6">
-          {activeSection !== 'general' ? (
-            /* Sub-category Standby Notice */
-            <div className="p-8 rounded-2xl bg-[#07152E]/80 border border-primary/15 text-center flex flex-col items-center justify-center gap-2">
-              <span className="text-sm font-bold text-white capitalize">
-                {currentSectionLabel} Standby
-              </span>
-              <p className="text-xs text-text-muted max-w-md">
-                Detailed configuration options for {currentSectionLabel} will be integrated in later
-                roadmap steps.
-              </p>
-              <button
-                type="button"
-                onClick={() => setActiveSection('general')}
-                className="mt-3 px-4 py-1.5 rounded-xl text-xs font-bold bg-primary/10 hover:bg-primary/20 text-primary border border-primary/25 cursor-pointer transition-all"
-              >
-                Return to General Settings
-              </button>
-            </div>
-          ) : (
+          {activeSection === 'general' ? (
             <>
               {/* Card 1: Start with Windows */}
-              <div className="p-5 lg:p-6 rounded-2xl bg-[#07152E]/90 border border-primary/20 shadow-[0_4px_24px_rgba(0,0,0,0.35)] backdrop-blur-md flex flex-col gap-5">
+              <div className="p-5 lg:p-6 rounded-2xl bg-surface/90 border border-primary/20 shadow-[0_4px_24px_rgba(0,0,0,0.35)] backdrop-blur-md flex flex-col gap-5">
                 {/* Card Header */}
                 <div className="flex items-center gap-3">
-                  <div className="w-9 h-9 rounded-xl bg-cyan-500/15 text-[#19D8FF] flex items-center justify-center">
+                  <div className="w-9 h-9 rounded-xl bg-primary/15 text-primary flex items-center justify-center">
                     <SettingsIcon className="w-5 h-5" />
                   </div>
                   <div>
-                    <h2 className="text-sm font-extrabold text-white">Start with Windows</h2>
+                    <h2 className="text-sm font-extrabold text-text">Start with Windows</h2>
                     <p className="text-[11px] text-text-muted">System startup preference</p>
                   </div>
                 </div>
@@ -296,7 +281,7 @@ export default function SettingsPage() {
                 <div className="flex flex-col gap-2 pt-1">
                   <div className="flex items-center justify-between gap-4">
                     <div>
-                      <span className="text-xs font-bold text-white block">Start with Windows</span>
+                      <span className="text-xs font-bold text-text block">Start with Windows</span>
                       <span className="text-[11px] text-text-muted">
                         {isStartupSupported
                           ? 'Launch app automatically when Windows starts'
@@ -329,14 +314,14 @@ export default function SettingsPage() {
               </div>
 
               {/* Card 2: Default Download Folder */}
-              <div className="p-5 lg:p-6 rounded-2xl bg-[#07152E]/90 border border-primary/20 shadow-[0_4px_24px_rgba(0,0,0,0.35)] backdrop-blur-md flex flex-col gap-5">
+              <div className="p-5 lg:p-6 rounded-2xl bg-surface/90 border border-primary/20 shadow-[0_4px_24px_rgba(0,0,0,0.35)] backdrop-blur-md flex flex-col gap-5">
                 {/* Card Header */}
                 <div className="flex items-center gap-3">
                   <div className="w-9 h-9 rounded-xl bg-blue-500/15 text-blue-400 flex items-center justify-center">
                     <Folder className="w-5 h-5" />
                   </div>
                   <div>
-                    <h2 className="text-sm font-extrabold text-white">Default Download Folder</h2>
+                    <h2 className="text-sm font-extrabold text-text">Default Download Folder</h2>
                     <p className="text-[11px] text-text-muted">
                       Choose where to save your downloaded files
                     </p>
@@ -351,13 +336,13 @@ export default function SettingsPage() {
                       readOnly
                       value={isLoadingFolder ? 'Loading saved folder...' : downloadFolder}
                       placeholder="Choose download folder..."
-                      className="flex-1 bg-[#040B1C] border border-primary/20 rounded-xl py-2 px-3 text-xs text-text-muted font-mono focus:outline-none focus:border-primary select-text"
+                      className="flex-1 bg-background border border-primary/20 rounded-xl py-2 px-3 text-xs text-text-muted font-mono focus:outline-none focus:border-primary select-text"
                     />
                     <button
                       type="button"
                       onClick={handleChooseFolder}
                       title="Choose destination directory"
-                      className="px-4 py-2 rounded-xl text-xs font-bold bg-gradient-to-r from-[#19D8FF] to-[#3388FF] text-white shadow-[0_0_12px_rgba(25,216,255,0.3)] hover:shadow-[0_0_18px_rgba(25,216,255,0.45)] transition-all cursor-pointer flex-shrink-0"
+                      className="px-4 py-2 rounded-xl text-xs font-bold theme-accent-gradient-2 theme-accent-glow-sm text-on-gradient hover:opacity-95 transition-all cursor-pointer flex-shrink-0"
                     >
                       Change
                     </button>
@@ -376,14 +361,14 @@ export default function SettingsPage() {
               </div>
 
               {/* Card 3: Storage Information */}
-              <div className="p-5 lg:p-6 rounded-2xl bg-[#07152E]/90 border border-primary/20 shadow-[0_4px_24px_rgba(0,0,0,0.35)] backdrop-blur-md flex flex-col gap-4">
+              <div className="p-5 lg:p-6 rounded-2xl bg-surface/90 border border-primary/20 shadow-[0_4px_24px_rgba(0,0,0,0.35)] backdrop-blur-md flex flex-col gap-4">
                 {/* Header */}
                 <div className="flex items-center gap-3">
-                  <div className="w-9 h-9 rounded-xl bg-cyan-500/15 text-[#19D8FF] flex items-center justify-center">
+                  <div className="w-9 h-9 rounded-xl bg-primary/15 text-primary flex items-center justify-center">
                     <HardDrive className="w-5 h-5" />
                   </div>
                   <div>
-                    <h2 className="text-sm font-extrabold text-white">Storage Information</h2>
+                    <h2 className="text-sm font-extrabold text-text">Storage Information</h2>
                     <p className="text-[11px] text-text-muted">Disk space on your download drive</p>
                   </div>
                 </div>
@@ -407,16 +392,16 @@ export default function SettingsPage() {
                   </div>
                 ) : (
                   <div className="flex flex-col gap-2 pt-1">
-                    <div className="w-full h-3 rounded-full bg-[#040B1C] overflow-hidden border border-primary/20">
+                    <div className="w-full h-3 rounded-full bg-background overflow-hidden border border-primary/20">
                       <div
-                        className="h-full bg-gradient-to-r from-[#19D8FF] to-[#3388FF] rounded-full shadow-[0_0_12px_rgba(25,216,255,0.5)] transition-all duration-500"
+                        className="h-full theme-accent-gradient-2 rounded-full theme-accent-glow-sm transition-all duration-500"
                         style={{ width: `${percentUsed}%` }}
                       />
                     </div>
 
                     <div className="flex items-center justify-between text-xs text-text-muted font-medium">
                       <span>
-                        <strong className="text-white">{formatDiskBytes(usedBytes)}</strong> used of{' '}
+                        <strong className="text-text">{formatDiskBytes(usedBytes)}</strong> used of{' '}
                         {formatDiskBytes(totalBytes)} ({percentUsed}%)
                       </span>
                       <span className="text-[#00DEA5] font-semibold">
@@ -427,6 +412,12 @@ export default function SettingsPage() {
                 )}
               </div>
             </>
+          ) : activeSection === 'quality-audio' ? (
+            <QualityAudioSettings />
+          ) : activeSection === 'appearance' ? (
+            <AppearanceSettings />
+          ) : (
+            <AboutSettings />
           )}
         </div>
       </div>

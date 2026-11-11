@@ -117,6 +117,10 @@ const TEST_SUITES = [
   {
     name: 'Security: Settings IPC Sender Hardening & Multi-Window Isolation',
     file: 'tests/settings_ipc_security_tests.js'
+  },
+  {
+    name: 'Appearance: Global Theme & Accessibility',
+    file: 'tests/appearance_theme_tests.mjs'
   }
 ]
 
@@ -257,7 +261,7 @@ async function main() {
   console.log(
     '\n╔════════════════════════════════════════════════════════════════════════════════╗'
   )
-  console.log('║        APPLAN2 — Automated Backend Test Runner (Step 04.44)                    ║')
+  console.log('║        APPLAN2 — Automated Backend & Appearance Test Runner                    ║')
   console.log(
     '╚════════════════════════════════════════════════════════════════════════════════╝\n'
   )
@@ -279,7 +283,7 @@ async function main() {
   console.log(
     '\n\n════════════════════════════════════════════════════════════════════════════════'
   )
-  console.log('                       BACKEND TEST SUITE SUMMARY                               ')
+  console.log('                BACKEND & APPEARANCE TEST SUITE SUMMARY                         ')
   console.log('════════════════════════════════════════════════════════════════════════════════')
   console.log('Status      | Duration | Suite Name')
   console.log(
@@ -310,7 +314,7 @@ async function main() {
   console.log('════════════════════════════════════════════════════════════════════════════════\n')
 
   if (failedCount > 0) {
-    console.error(`❌ Backend test run completed with ${failedCount} failing suite(s).\n`)
+    console.error(`❌ Test run completed with ${failedCount} failing suite(s).\n`)
     process.exit(1)
   } else if (blockedCount > 0) {
     console.log(
@@ -318,7 +322,7 @@ async function main() {
     )
     process.exit(0)
   } else {
-    console.log('🎉 ALL BACKEND TEST SUITES PASSED SUCCESSFULLY (100% PASS)!\n')
+    console.log('🎉 ALL BACKEND & APPEARANCE TEST SUITES PASSED SUCCESSFULLY (100% PASS)!\n')
     process.exit(0)
   }
 }

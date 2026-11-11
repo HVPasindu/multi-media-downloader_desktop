@@ -1,6 +1,7 @@
 import { useRef, useMemo, Component } from 'react'
 import { Canvas, useFrame } from '@react-three/fiber'
 import * as THREE from 'three'
+import { useAppearanceTheme } from '../../utils/appearanceTheme'
 
 /**
  * Fallback static CSS decoration rendered if WebGL is unsupported or throws an error.
@@ -11,8 +12,8 @@ function StaticFallback({ className = '' }) {
       className={`relative flex items-center justify-center pointer-events-none ${className}`}
       aria-hidden="true"
     >
-      <div className="w-40 h-40 rounded-full border border-primary/30 shadow-[0_0_35px_rgba(25,216,255,0.35)] animate-pulse" />
-      <div className="absolute w-28 h-28 rounded-full border border-accent/40 shadow-[0_0_25px_rgba(81,75,255,0.3)]" />
+      <div className="w-40 h-40 rounded-full border border-primary/30 shadow-[0_0_35px_rgba(var(--theme-primary-rgb),0.35)] animate-pulse" />
+      <div className="absolute w-28 h-28 rounded-full border border-accent/40 shadow-[0_0_25px_rgba(var(--theme-tertiary-rgb),0.3)]" />
     </div>
   )
 }
@@ -43,9 +44,9 @@ class ThreeErrorBoundary extends Component {
 }
 
 /**
- * Animated 3D Ring with subtle dual-color emission (Electric Cyan & Violet)
+ * Animated 3D Ring with subtle dual-color emission (Cyberpunk Primary & Tertiary)
  */
-function GlowingRing({ reducedMotion }) {
+function GlowingRing({ reducedMotion, primaryColor = '#18C9F5', tertiaryColor = '#514BFF' }) {
   const meshRef = useRef(null)
   const particlesRef = useRef(null)
 
@@ -80,8 +81,8 @@ function GlowingRing({ reducedMotion }) {
       <mesh ref={meshRef}>
         <torusGeometry args={[1.5, 0.04, 16, 64]} />
         <meshStandardMaterial
-          color="#19D8FF"
-          emissive="#514BFF"
+          color={primaryColor}
+          emissive={tertiaryColor}
           emissiveIntensity={0.8}
           roughness={0.2}
           metalness={0.8}
@@ -95,7 +96,7 @@ function GlowingRing({ reducedMotion }) {
         </bufferGeometry>
         <pointsMaterial
           size={0.06}
-          color="#19D8FF"
+          color={primaryColor}
           transparent
           opacity={0.85}
           blending={THREE.AdditiveBlending}
@@ -109,6 +110,8 @@ function GlowingRing({ reducedMotion }) {
  * Isolated Three.js Decorative Component for Splash Screen
  */
 export default function SplashDecoration3D({ className = 'w-64 h-64' }) {
+  const { theme } = useAppearanceTheme()
+
   // Check if WebGL context is available in this environment
   const webGLAvailable = useMemo(() => {
     try {
@@ -146,9 +149,13 @@ export default function SplashDecoration3D({ className = 'w-64 h-64' }) {
           style={{ background: 'transparent' }}
         >
           <ambientLight intensity={0.5} />
-          <pointLight position={[3, 3, 3]} color="#19D8FF" intensity={1.5} />
-          <pointLight position={[-3, -3, 2]} color="#514BFF" intensity={1.2} />
-          <GlowingRing reducedMotion={reducedMotion} />
+          <pointLight position={[3, 3, 3]} color={theme?.primary || '#18C9F5'} intensity={1.5} />
+          <pointLight position={[-3, -3, 2]} color={theme?.tertiary || '#514BFF'} intensity={1.2} />
+          <GlowingRing
+            reducedMotion={reducedMotion}
+            primaryColor={theme?.primary}
+            tertiaryColor={theme?.tertiary}
+          />
         </Canvas>
       </div>
     </ThreeErrorBoundary>

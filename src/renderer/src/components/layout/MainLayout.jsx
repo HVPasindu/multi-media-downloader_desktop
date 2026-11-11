@@ -37,9 +37,9 @@ export default function MainLayout({ onOpenSplashPreview = null }) {
   ]
 
   return (
-    <div className="flex flex-col h-screen w-screen overflow-hidden bg-[#040B1C] text-text font-sans select-none">
+    <div className="flex flex-col h-screen w-screen overflow-hidden bg-background text-text font-sans select-none">
       {/* ----------------- TOP SLIM TITLE BAR ----------------- */}
-      <header className="h-9 w-full bg-[#061226]/90 border-b border-primary/10 flex items-center justify-between px-3 select-none z-30 flex-shrink-0">
+      <header className="h-9 w-full bg-[var(--app-header)]/90 border-b border-primary/10 flex items-center justify-between px-3 select-none z-30 flex-shrink-0">
         <div className="flex items-center gap-2">
           <img
             src={officialLogo}
@@ -70,21 +70,21 @@ export default function MainLayout({ onOpenSplashPreview = null }) {
       {/* ----------------- BODY: SIDEBAR + MAIN VIEW ----------------- */}
       <div className="flex flex-1 overflow-hidden">
         {/* ----------------- LEFT SIDEBAR ----------------- */}
-        <aside className="w-64 flex flex-col justify-between border-r border-primary/10 bg-[#07152E]/95 backdrop-blur-xl p-4 select-none relative z-20 flex-shrink-0">
+        <aside className="w-64 flex flex-col justify-between border-r border-primary/10 bg-[var(--app-sidebar)]/95 backdrop-blur-xl p-4 select-none relative z-20 flex-shrink-0">
           <div>
             {/* Official Branding Header */}
             <div className="flex flex-col items-center text-center pb-5 pt-1">
-              <div className="relative flex items-center justify-center w-20 h-20 mb-2 rounded-2xl bg-surface/80 border border-primary/30 shadow-[0_0_24px_rgba(25,216,255,0.25)]">
+              <div className="relative flex items-center justify-center w-20 h-20 mb-2 rounded-2xl bg-surface/80 border border-primary/30 shadow-[0_0_24px_rgba(var(--theme-primary-rgb),0.25)]">
                 <img
                   src={officialLogo}
                   alt="Multi Media Downloader"
-                  className="w-16 h-16 object-contain drop-shadow-[0_0_14px_rgba(25,216,255,0.8)]"
+                  className="w-16 h-16 object-contain drop-shadow-[0_0_14px_rgba(var(--theme-primary-rgb),0.8)]"
                 />
               </div>
-              <h1 className="text-sm font-extrabold tracking-wider text-white uppercase mt-1 leading-tight">
+              <h1 className="text-sm font-extrabold tracking-wider text-text uppercase mt-1 leading-tight">
                 Multi Media
               </h1>
-              <span className="text-[11px] font-bold tracking-widest text-[#19D8FF] uppercase">
+              <span className="text-[11px] font-bold tracking-widest text-primary uppercase">
                 Downloader
               </span>
             </div>
@@ -104,8 +104,8 @@ export default function MainLayout({ onOpenSplashPreview = null }) {
                     to={item.to}
                     className={`flex items-center justify-between px-4 py-3 rounded-xl text-sm font-bold transition-all duration-200 ${
                       isActive
-                        ? 'bg-gradient-to-r from-[#19D8FF] via-[#3388FF] to-[#514BFF] text-white shadow-[0_0_20px_rgba(25,216,255,0.4)]'
-                        : 'text-text-muted hover:text-white hover:bg-[#102449]/60'
+                        ? 'theme-accent-gradient theme-accent-glow text-on-gradient'
+                        : 'text-text-muted hover:text-text hover:bg-surface-elevated/60'
                     }`}
                   >
                     <div className="flex items-center gap-3">
@@ -118,8 +118,8 @@ export default function MainLayout({ onOpenSplashPreview = null }) {
                       <span
                         className={`text-xs px-2 py-0.5 rounded-full font-bold ${
                           isActive
-                            ? 'bg-white/20 text-white'
-                            : 'bg-primary/20 text-[#19D8FF] border border-primary/30'
+                            ? 'bg-black/15 text-on-gradient'
+                            : 'bg-primary/20 text-primary border border-primary/30'
                         }`}
                       >
                         {item.badge}
@@ -141,7 +141,7 @@ export default function MainLayout({ onOpenSplashPreview = null }) {
         {/* Step 05.02: min-w-0 prevents flex overflow; ref enables scroll restoration */}
         <main
           ref={mainContentRef}
-          className="flex-1 min-w-0 flex flex-col h-full overflow-y-auto bg-[#040B1C] relative z-10"
+          className="flex-1 min-w-0 flex flex-col h-full overflow-y-auto bg-background relative z-10"
         >
           <Outlet />
         </main>

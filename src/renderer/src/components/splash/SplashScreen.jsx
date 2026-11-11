@@ -55,7 +55,7 @@ export default function SplashScreen({
   ).message
 
   return (
-    <div className="relative w-full h-full flex flex-col items-center justify-center bg-[#040B1C] text-text overflow-hidden select-none">
+    <div className="relative w-full h-full flex flex-col items-center justify-center bg-background text-text overflow-hidden select-none">
       {/* Background radial glow accents */}
       <div className="absolute -top-40 -left-40 w-96 h-96 rounded-full bg-primary/10 blur-[120px] pointer-events-none" />
       <div className="absolute -bottom-40 -right-40 w-96 h-96 rounded-full bg-accent/15 blur-[120px] pointer-events-none" />
@@ -69,7 +69,7 @@ export default function SplashScreen({
           {onClosePreview && (
             <button
               onClick={onClosePreview}
-              className="ml-2 hover:text-white px-1.5 py-0.5 rounded bg-surface border border-primary/20 hover:border-primary/50 transition-colors"
+              className="ml-2 hover:text-text px-1.5 py-0.5 rounded bg-surface border border-primary/20 hover:border-primary/50 transition-colors"
             >
               Exit
             </button>
@@ -101,7 +101,7 @@ export default function SplashScreen({
           <motion.img
             src={officialLogo}
             alt="Multi Media Downloader Logo"
-            className="relative z-10 w-36 h-36 object-contain pointer-events-none drop-shadow-[0_0_24px_rgba(25,216,255,0.7)]"
+            className="relative z-10 w-36 h-36 object-contain pointer-events-none drop-shadow-[0_0_24px_rgba(var(--theme-primary-rgb),0.7)]"
             initial={{ scale: 0.85, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
             transition={{ duration: 0.7, ease: 'easeOut' }}
@@ -113,7 +113,7 @@ export default function SplashScreen({
           initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.2, duration: 0.5 }}
-          className="text-2xl font-extrabold tracking-wider text-white uppercase drop-shadow-[0_2px_12px_rgba(25,216,255,0.35)]"
+          className="text-2xl font-extrabold tracking-wider text-text uppercase drop-shadow-[0_2px_12px_rgba(var(--theme-primary-rgb),0.35)]"
         >
           Multi Media Downloader
         </motion.h1>
@@ -155,7 +155,7 @@ export default function SplashScreen({
                 {isHealthError && onRetry && (
                   <button
                     onClick={onRetry}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-primary text-secondary hover:brightness-110 active:scale-95 transition-all shadow-[0_0_12px_rgba(25,216,255,0.4)]"
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-primary text-secondary hover:brightness-110 active:scale-95 transition-all shadow-[0_0_12px_rgba(var(--theme-primary-rgb),0.4)]"
                   >
                     <RefreshCw className="w-3.5 h-3.5" />
                     <span>Retry Connection</span>
