@@ -118,12 +118,9 @@ const { createRoot } = await import('react-dom/client')
 const { default: CustomColorPicker } = await import(
   '../src/renderer/src/components/settings/CustomColorPicker.jsx'
 )
-const {
-  calculateRgbColor,
-  calculateHueColor,
-  calculateHexColor,
-  calculateSvColor
-} = await import('../src/renderer/src/utils/colorPickerState.js')
+const { calculateRgbColor, calculateHueColor } = await import(
+  '../src/renderer/src/utils/colorPickerState.js'
+)
 
 console.log('--- APPLAN2 GENUINE REACT DOM MOUNTING & COLOR PICKER ISOLATION TESTS ---\n')
 
@@ -488,6 +485,10 @@ await act(async () => {
 })
 assert.strictEqual(activeMouseMoveListeners.size, 1, 'Accent drag active: mousemove registered')
 assert.strictEqual(activeMouseUpListeners.size, baseMouseUpCount + 1, 'Accent drag active: mouseup registered')
+assert.ok(
+  typeof accentDragNotif === 'string' && accentDragNotif.startsWith('#'),
+  'Accent drag mousedown notified parent callback with valid HEX color'
+)
 const dragAccentMove = lastAddedMouseMove
 const dragAccentUp = lastAddedMouseUp
 

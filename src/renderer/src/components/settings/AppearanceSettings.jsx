@@ -13,7 +13,6 @@ import {
 } from 'lucide-react'
 import {
   THEME_PRESETS,
-  DEFAULT_THEME,
   BACKGROUND_PRESETS,
   useAppearanceTheme
 } from '../../utils/appearanceTheme'

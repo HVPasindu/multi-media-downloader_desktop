@@ -43,27 +43,33 @@ export default function CustomColorPicker({
   const [hexInput, setHexInput] = useState(safeInitial)
   const [hexError, setHexError] = useState(null)
   const [rgbState, setRgbState] = useState(() => hexToRgb(safeInitial) || { r: 24, g: 201, b: 245 })
+  const [prevInitialColor, setPrevInitialColor] = useState(initialColor)
 
   const hsvRef = useRef(initialHsv)
   const svAreaRef = useRef(null)
   const isDraggingSv = useRef(false)
   const cleanupDragListenersRef = useRef(null)
 
-  // Keep internal state updated if initialColor prop changes from outside (e.g. preset chosen)
-  useEffect(() => {
+  // Synchronize internal state when initialColor prop changes externally (e.g. preset chosen)
+  if (initialColor !== prevInitialColor) {
+    setPrevInitialColor(initialColor)
     if (isValidHex(initialColor)) {
       const formatted = initialColor.toUpperCase()
       const rgb = hexToRgb(formatted)
       if (rgb) {
         const nextHsv = rgbToHsv(rgb.r, rgb.g, rgb.b)
-        hsvRef.current = nextHsv
         setHexInput(formatted)
         setHexError(null)
         setRgbState(rgb)
         setHsv(nextHsv)
       }
     }
-  }, [initialColor])
+  }
+
+  // Keep hsvRef synchronized with committed state for drag handlers
+  useEffect(() => {
+    hsvRef.current = hsv
+  }, [hsv])
 
   // Clean up global drag listeners if component unmounts while dragging
   useEffect(() => {

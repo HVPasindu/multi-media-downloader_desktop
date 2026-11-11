@@ -75,30 +75,21 @@ const {
   rgbToHex,
   rgbToHsl,
   hslToRgb,
-  rgbToHsv,
   hsvToRgb,
   hsvToHex,
   hexToHsv,
-  getLuminance,
-  isLightColor,
   getContrastRatio,
   getReadableTextColor,
   getGradientReadableTextColor,
   adjustHueWithBlackRecovery,
   deriveBackgroundPalette,
-  generateContrastingAccent,
   generateCustomPalette,
   applyThemeVariables,
   loadSavedTheme,
-  saveTheme,
   setPresetTheme,
   setCustomTheme,
-  setBackgroundMode,
   setBackgroundPreset,
-  setCustomBackgroundHex,
-  resetAppearanceTheme,
-  resetBackgroundTheme,
-  initAppearanceTheme
+  setCustomBackgroundHex
 } = await import('../src/renderer/src/utils/appearanceTheme.js')
 
 console.log('--- APPLAN2 COMPLETE APPEARANCE THEME UNIT TESTS ---')

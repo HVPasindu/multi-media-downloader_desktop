@@ -412,16 +412,9 @@ async function runTests() {
       const slowA = new Promise((r) => {
         resolveSlowA = r
       })
-      let resolveFastB
-      const fastB = new Promise((r) => {
-        resolveFastB = r
-      })
 
       let analyzeSequence = 0
-      nextAnalyzeImpl = async () => {
-        analyzeSequence += 1
-        return analyzeSequence === 1 ? slowA : fastB
-      }
+      nextAnalyzeImpl = async () => slowA
 
       // Case C1: In-flight URL A -> user types invalid text -> A resolves late -> A discarded
       await setControlledInputValue(env, urlInput, 'https://www.youtube.com/watch?v=raceA1')
