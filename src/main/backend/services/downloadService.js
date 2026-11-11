@@ -1939,7 +1939,9 @@ export async function executeDownloadJob(jobId, options = {}) {
 
       if (isTransient) {
         if (startupEntry?.cancelRequested) {
-          throw new DownloadCancelledError('Download was cancelled before retrying transient failure')
+          throw new DownloadCancelledError(
+            'Download was cancelled before retrying transient failure'
+          )
         }
         if (startupEntry?.pauseRequested) {
           throw new DownloadPausedError('Download was paused before retrying transient failure')
@@ -2587,6 +2589,8 @@ export async function executeDownloadJob(jobId, options = {}) {
     }
 
     // Step 09.F - Handle sources that do not support resume (HTTP 416 / Range Not Satisfiable)
+    let activeError = error
+
     if (
       isResumeIncompatibilityError(error) &&
       !options?.isResumeRetry &&
@@ -2658,7 +2662,11 @@ export async function executeDownloadJob(jobId, options = {}) {
           }
         )
 
-        if (requeuedCount === 1 && !startupEntry?.cancelRequested && !startupEntry?.pauseRequested) {
+        if (
+          requeuedCount === 1 &&
+          !startupEntry?.cancelRequested &&
+          !startupEntry?.pauseRequested
+        ) {
           return await executeDownloadJob(jobId, { isResumeRetry: true })
         }
       } catch (retryError) {
@@ -2666,7 +2674,7 @@ export async function executeDownloadJob(jobId, options = {}) {
           retryError instanceof DownloadCancelledError ||
           retryError instanceof DownloadPausedError
         ) {
-          error = retryError
+          activeError = retryError
         } else {
           console.error(`[download] Fallback fresh retry for job ${jobId} failed:`, retryError)
         }
@@ -2674,8 +2682,8 @@ export async function executeDownloadJob(jobId, options = {}) {
     }
 
     if (
-      error instanceof DownloadCancelledError ||
-      (!(error instanceof DownloadPausedError) && startupEntry?.cancelRequested)
+      activeError instanceof DownloadCancelledError ||
+      (!(activeError instanceof DownloadPausedError) && startupEntry?.cancelRequested)
     ) {
       // 1. Confirm child process termination if process was spawned
       const currentEntry = activeDownloadProcesses.get(jobId)
@@ -2800,12 +2808,12 @@ export async function executeDownloadJob(jobId, options = {}) {
         }
       }
 
-      throw error
+      throw activeError
     }
 
     if (!executionErrorPersisted) {
       try {
-        const failedJob = await markDownloadJobFailed(jobId, error)
+        const failedJob = await markDownloadJobFailed(jobId, activeError)
 
         if (!failedJob) {
           console.error('Could not mark Download Job as failed:', jobId)
@@ -2831,7 +2839,7 @@ export async function executeDownloadJob(jobId, options = {}) {
       }
     }
 
-    throw error
+    throw activeError
   } finally {
     const curProc = activeDownloadProcesses.get(jobId)
     if (!curProc || !curProc.executionToken || curProc.executionToken === executionToken) {

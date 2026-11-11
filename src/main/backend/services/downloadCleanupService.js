@@ -240,7 +240,6 @@ export async function cleanupJobTemporaryFiles(jobId, downloadPath) {
 }
 
 async function cleanupJobTemporaryFilesUnlocked(jobId, downloadPath) {
-
   let jobTempPath
   try {
     jobTempPath = getJobTemporaryWorkspacePath(jobId, downloadPath)

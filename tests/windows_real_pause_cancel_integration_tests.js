@@ -1289,7 +1289,11 @@ async function runWindowsRealIntegrationTests() {
       error_message: 'Network connection lost'
     })
 
-    const partialDirKB2 = path.join(testDb.tempDir, '.applan2-partial-downloads', `job-${jobKB2.id}`)
+    const partialDirKB2 = path.join(
+      testDb.tempDir,
+      '.applan2-partial-downloads',
+      `job-${jobKB2.id}`
+    )
     fs.mkdirSync(partialDirKB2, { recursive: true })
     fs.writeFileSync(
       path.join(partialDirKB2, 'sample.mp4.part'),
@@ -1367,7 +1371,11 @@ async function runWindowsRealIntegrationTests() {
       error_message: 'Network connection lost'
     })
 
-    const partialDirKB3 = path.join(testDb.tempDir, '.applan2-partial-downloads', `job-${jobKB3.id}`)
+    const partialDirKB3 = path.join(
+      testDb.tempDir,
+      '.applan2-partial-downloads',
+      `job-${jobKB3.id}`
+    )
     fs.mkdirSync(partialDirKB3, { recursive: true })
     fs.writeFileSync(
       path.join(partialDirKB3, 'sample.mp4.part'),
