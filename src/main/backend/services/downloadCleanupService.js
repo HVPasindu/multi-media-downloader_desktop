@@ -4,6 +4,33 @@ import { mkdir, rm, lstat, readdir, rmdir, realpath, unlink } from 'node:fs/prom
 // Dedicated hidden subfolder for job-isolated partial and intermediate files
 export const PARTIAL_DOWNLOADS_DIR_NAME = '.applan2-partial-downloads'
 
+// Per-job mutex serializing temporary workspace preparation and cleanup operations
+const jobWorkspaceLocks = new Map()
+
+async function withJobWorkspaceLock(jobId, task) {
+  const numericJobId = Number(jobId)
+  if (!Number.isSafeInteger(numericJobId) || numericJobId <= 0) {
+    return await task()
+  }
+
+  const previous = jobWorkspaceLocks.get(numericJobId) || Promise.resolve()
+  let release
+  const current = new Promise((resolve) => {
+    release = resolve
+  })
+  jobWorkspaceLocks.set(numericJobId, current)
+
+  await previous
+  try {
+    return await task()
+  } finally {
+    release()
+    if (jobWorkspaceLocks.get(numericJobId) === current) {
+      jobWorkspaceLocks.delete(numericJobId)
+    }
+  }
+}
+
 // Validate that a Download Job ID is a positive safe integer
 function validateJobId(jobId) {
   if (!Number.isSafeInteger(jobId) || jobId <= 0) {
@@ -60,6 +87,14 @@ export function getJobTemporaryWorkspacePath(jobId, downloadPath) {
 
 // Prepare the job-owned temporary directory before execution starts
 export async function prepareJobTemporaryWorkspace(jobId, downloadPath) {
+  // Validate arguments and path safety via getJobTemporaryWorkspacePath before acquiring lock
+  getJobTemporaryWorkspacePath(jobId, downloadPath)
+  return await withJobWorkspaceLock(jobId, () =>
+    prepareJobTemporaryWorkspaceUnlocked(jobId, downloadPath)
+  )
+}
+
+async function prepareJobTemporaryWorkspaceUnlocked(jobId, downloadPath) {
   const jobTempPath = getJobTemporaryWorkspacePath(jobId, downloadPath)
   const normalizedDownloadPath = path.resolve(downloadPath.trim())
   const basePartialDir = path.resolve(normalizedDownloadPath, PARTIAL_DOWNLOADS_DIR_NAME)
@@ -198,6 +233,13 @@ export async function cleanupJobTemporaryFiles(jobId, downloadPath) {
 
   validateJobId(jobId)
   validateDownloadPath(downloadPath)
+
+  return await withJobWorkspaceLock(jobId, () =>
+    cleanupJobTemporaryFilesUnlocked(jobId, downloadPath)
+  )
+}
+
+async function cleanupJobTemporaryFilesUnlocked(jobId, downloadPath) {
 
   let jobTempPath
   try {

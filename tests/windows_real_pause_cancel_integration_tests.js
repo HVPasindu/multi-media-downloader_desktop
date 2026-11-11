@@ -23,9 +23,15 @@ import {
 import {
   getActiveDownloadProcess,
   setActiveDownloadProcessForTesting,
+  setExecutionHooksForTesting,
+  resetExecutionHooksForTesting,
   pauseRunningDownload,
   verifyFinalMediaContent
 } from '../src/main/backend/services/downloadService.js'
+import {
+  prepareJobTemporaryWorkspace,
+  cleanupJobTemporaryFiles
+} from '../src/main/backend/services/downloadCleanupService.js'
 import { retryDownloadJob } from '../src/main/backend/services/downloadRetryService.js'
 import {
   resumeInterruptedNetworkJobs,
@@ -1253,6 +1259,198 @@ async function runWindowsRealIntegrationTests() {
       'Test K.10: Temporary partial folder cleanly cleaned up'
     )
     assert.equal(getQueueStatus().activeCount, 0, 'Test K.11: No active download running')
+    assert.equal(jobKBAfter.error_message, null, 'Test K.11b: No spurious failed error message')
+
+    // Verify subsequent network recovery never resurrects a manually cancelled job
+    const reRecoveryKB = await resumeInterruptedNetworkJobs({ isOnline: true })
+    assert.equal(
+      reRecoveryKB.resumedCount,
+      0,
+      'Test K.11c: Re-running network recovery does not re-queue cancelled job'
+    )
+    const jobKBReRecovery = await DownloadJob.findByPk(jobKB.id)
+    assert.equal(jobKBReRecovery.status, 'cancelled', 'Test K.11d: Cancelled job stays cancelled')
+
+    // Scenario B2: Ordering 2 - Executor claims 'downloading' first before concurrent Manual Cancel
+    console.log(
+      '[Test K] Scenario B2: Recovery claims downloading first before concurrent Manual Cancel...'
+    )
+    resetQueueForTesting()
+    setAnalyzerForTesting(mockAnalyzer)
+
+    const jobKB2 = await DownloadJob.create({
+      media_id: media.id,
+      source_type: 'link',
+      output_format: 'mp4',
+      quality: '720p',
+      status: 'interrupted',
+      progress: 40,
+      downloaded_bytes: Math.floor(FILE_SIZE * 0.4),
+      error_message: 'Network connection lost'
+    })
+
+    const partialDirKB2 = path.join(testDb.tempDir, '.applan2-partial-downloads', `job-${jobKB2.id}`)
+    fs.mkdirSync(partialDirKB2, { recursive: true })
+    fs.writeFileSync(
+      path.join(partialDirKB2, 'sample.mp4.part'),
+      fixtureBuf.subarray(0, Math.floor(FILE_SIZE * 0.4))
+    )
+
+    let enteredPrePrepKB2 = null
+    const enteredPrePrepPromiseKB2 = new Promise((r) => {
+      enteredPrePrepKB2 = r
+    })
+    let releasePrePrepKB2 = null
+    const releasePrePrepPromiseKB2 = new Promise((r) => {
+      releasePrePrepKB2 = r
+    })
+
+    setExecutionHooksForTesting({
+      beforePrepareWorkspace: async ({ jobId }) => {
+        if (jobId === jobKB2.id) {
+          enteredPrePrepKB2()
+          await releasePrePrepPromiseKB2
+        }
+      }
+    })
+
+    const recoveryPromiseKB2 = resumeInterruptedNetworkJobs({ isOnline: true })
+    await enteredPrePrepPromiseKB2
+    await recoveryPromiseKB2
+
+    const cancelPromiseKB2 = cancelDownloadJob(jobKB2.id)
+    for (let i = 0; i < 200; i++) {
+      if (getActiveDownloadProcess(jobKB2.id)?.cancelRequested) break
+      await new Promise((r) => setImmediate(r))
+    }
+    assert.equal(
+      Boolean(getActiveDownloadProcess(jobKB2.id)?.cancelRequested),
+      true,
+      'Test K.12: Concurrent cancel signaled claimed execution before workspace preparation'
+    )
+    releasePrePrepKB2()
+    const cancelResultKB2 = await cancelPromiseKB2
+    resetExecutionHooksForTesting()
+
+    for (let i = 0; i < 20; i++) {
+      if (getQueueStatus().activeCount === 0 && !getActiveDownloadProcess(jobKB2.id)) break
+      await new Promise((r) => setTimeout(r, 50))
+    }
+
+    const jobKB2After = await DownloadJob.findByPk(jobKB2.id)
+    assert.equal(cancelResultKB2.outcome, 'cancelled', 'Test K.13: Ordering 2 cancel outcome')
+    assert.equal(jobKB2After.status, 'cancelled', 'Test K.14: Ordering 2 persists cancelled')
+    assert.equal(jobKB2After.progress, 0, 'Test K.15: Ordering 2 progress reset to 0%')
+    assert.equal(jobKB2After.downloaded_bytes, 0, 'Test K.16: Ordering 2 bytes reset to 0')
+    assert.equal(jobKB2After.error_message, null, 'Test K.17: Ordering 2 cleared error message')
+    assert.equal(fs.existsSync(partialDirKB2), false, 'Test K.18: Ordering 2 temp dir removed')
+    assert.equal(getQueueStatus().activeCount, 0, 'Test K.19: Ordering 2 zero active jobs')
+
+    const reRecoveryKB2 = await resumeInterruptedNetworkJobs({ isOnline: true })
+    assert.equal(reRecoveryKB2.resumedCount, 0, 'Test K.20: Recovery ignores cancelled KB2')
+
+    // Scenario B3: Ordering 3 - Cancel immediately after prepareJobTemporaryWorkspace + workspace mutex
+    console.log(
+      '[Test K] Scenario B3: Post-workspace-prep Manual Cancel & concurrent workspace mutex...'
+    )
+    resetQueueForTesting()
+    setAnalyzerForTesting(mockAnalyzer)
+
+    const jobKB3 = await DownloadJob.create({
+      media_id: media.id,
+      source_type: 'link',
+      output_format: 'mp4',
+      quality: '720p',
+      status: 'interrupted',
+      progress: 40,
+      downloaded_bytes: Math.floor(FILE_SIZE * 0.4),
+      error_message: 'Network connection lost'
+    })
+
+    const partialDirKB3 = path.join(testDb.tempDir, '.applan2-partial-downloads', `job-${jobKB3.id}`)
+    fs.mkdirSync(partialDirKB3, { recursive: true })
+    fs.writeFileSync(
+      path.join(partialDirKB3, 'sample.mp4.part'),
+      fixtureBuf.subarray(0, Math.floor(FILE_SIZE * 0.4))
+    )
+
+    let enteredPostPrepKB3 = null
+    const enteredPostPrepPromiseKB3 = new Promise((r) => {
+      enteredPostPrepKB3 = r
+    })
+    let releasePostPrepKB3 = null
+    const releasePostPrepPromiseKB3 = new Promise((r) => {
+      releasePostPrepKB3 = r
+    })
+
+    setExecutionHooksForTesting({
+      afterPrepareWorkspace: async ({ jobId }) => {
+        if (jobId === jobKB3.id) {
+          enteredPostPrepKB3()
+          await releasePostPrepPromiseKB3
+        }
+      }
+    })
+
+    const recoveryPromiseKB3 = resumeInterruptedNetworkJobs({ isOnline: true })
+    await enteredPostPrepPromiseKB3
+    await recoveryPromiseKB3
+
+    const cancelPromiseKB3 = cancelDownloadJob(jobKB3.id)
+    for (let i = 0; i < 200; i++) {
+      if (getActiveDownloadProcess(jobKB3.id)?.cancelRequested) break
+      await new Promise((r) => setImmediate(r))
+    }
+    assert.equal(
+      Boolean(getActiveDownloadProcess(jobKB3.id)?.cancelRequested),
+      true,
+      'Test K.21: Concurrent cancel signaled claimed execution right after workspace prep'
+    )
+    releasePostPrepKB3()
+    const cancelResultKB3 = await cancelPromiseKB3
+    resetExecutionHooksForTesting()
+
+    for (let i = 0; i < 20; i++) {
+      if (getQueueStatus().activeCount === 0 && !getActiveDownloadProcess(jobKB3.id)) break
+      await new Promise((r) => setTimeout(r, 50))
+    }
+
+    const jobKB3After = await DownloadJob.findByPk(jobKB3.id)
+    assert.equal(cancelResultKB3.outcome, 'cancelled', 'Test K.22: Ordering 3 cancel outcome')
+    assert.equal(jobKB3After.status, 'cancelled', 'Test K.23: Ordering 3 persists cancelled')
+    assert.equal(jobKB3After.progress, 0, 'Test K.24: Ordering 3 progress reset to 0%')
+    assert.equal(jobKB3After.downloaded_bytes, 0, 'Test K.25: Ordering 3 bytes reset to 0')
+    assert.equal(jobKB3After.error_message, null, 'Test K.26: Ordering 3 cleared error message')
+    assert.equal(fs.existsSync(partialDirKB3), false, 'Test K.27: Ordering 3 temp dir removed')
+    assert.equal(getQueueStatus().activeCount, 0, 'Test K.28: Ordering 3 zero active jobs')
+
+    // Concurrent prepareJobTemporaryWorkspace vs cleanupJobTemporaryFiles stress verification
+    const partialDirMutex = path.join(
+      testDb.tempDir,
+      '.applan2-partial-downloads',
+      `job-${jobKB3.id}`
+    )
+    fs.mkdirSync(partialDirMutex, { recursive: true })
+    fs.writeFileSync(path.join(partialDirMutex, 'race.part'), Buffer.from('partial-data'))
+    const [prepRaceRes, cleanRaceRes] = await Promise.all([
+      prepareJobTemporaryWorkspace(jobKB3.id, testDb.tempDir),
+      cleanupJobTemporaryFiles(jobKB3.id, testDb.tempDir)
+    ])
+    assert.equal(
+      typeof prepRaceRes,
+      'string',
+      'Test K.29: Concurrent prepareJobTemporaryWorkspace resolved without EBADF/ENOENT'
+    )
+    assert.equal(
+      cleanRaceRes?.success,
+      true,
+      'Test K.30: Concurrent cleanupJobTemporaryFiles succeeded without EBADF/ENOENT'
+    )
+    assert.equal(
+      fs.existsSync(partialDirMutex),
+      false,
+      'Test K.31: Serialized cleanup left no stale partial directory after prepare-then-cleanup'
+    )
 
     // Scenario C: Normal Network Recovery
     console.log('[Test K] Scenario C: Normal Network Recovery...')
@@ -1431,6 +1629,8 @@ async function runWindowsRealIntegrationTests() {
     console.log(' Tests A-L: Genuine Production Paths, Win32 Ctrl-Break & Range   ')
     console.log('================================================================\n')
   } finally {
+    resetExecutionHooksForTesting()
+    setRecoveryHooksForTesting(null)
     resetAnalyzerForTesting()
     resetAllowLocalhostForTesting()
     server.close()
