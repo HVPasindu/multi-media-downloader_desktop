@@ -156,11 +156,7 @@ export function buildToastOptions(options = {}, icon = 'success', title = '', ti
     info: 'var(--theme-primary, #18C9F5)'
   }
 
-  const {
-    customClass: callerClass = {},
-    iconColor: callerIconColor,
-    ...safeOptions
-  } = opts
+  const { customClass: callerClass = {}, iconColor: callerIconColor, ...safeOptions } = opts
 
   const defaultClasses = {
     popup: 'app-swal-popup',

@@ -435,7 +435,11 @@ export function sampleGradientColors(colors = [], stepsPerSegment = 8) {
  * Analyzes WCAG contrast across a multi-stop gradient (including intermediate stops),
  * determining worst-case contrast for black and white and calculating the required accessibility treatment.
  */
-export function getGradientContrastAnalysis(colors = [], darkColor = '#000000', lightColor = '#FFFFFF') {
+export function getGradientContrastAnalysis(
+  colors = [],
+  darkColor = '#000000',
+  lightColor = '#FFFFFF'
+) {
   const samples = sampleGradientColors(colors)
   if (samples.length === 0) {
     return {
@@ -514,7 +518,11 @@ export function getGradientContrastAnalysis(colors = [], darkColor = '#000000', 
  * Returns the text color ('#000000' or '#FFFFFF') that provides the highest worst-case (minimum)
  * contrast ratio across an array of gradient stop colors (sampling intermediate colors).
  */
-export function getGradientReadableTextColor(colors = [], darkColor = '#000000', lightColor = '#FFFFFF') {
+export function getGradientReadableTextColor(
+  colors = [],
+  darkColor = '#000000',
+  lightColor = '#FFFFFF'
+) {
   const analysis = getGradientContrastAnalysis(colors, darkColor, lightColor)
   return analysis.textColor
 }
@@ -599,7 +607,8 @@ export function generateContrastingAccent(bgHex) {
 export function deriveBackgroundPalette(bgMode, bgPresetId, customBgHex) {
   // Mode: 'dark'
   if (bgMode === 'dark') {
-    const preset = BACKGROUND_PRESETS.find((p) => p.id === bgPresetId && p.isDark) || DEFAULT_BACKGROUND_PRESET
+    const preset =
+      BACKGROUND_PRESETS.find((p) => p.id === bgPresetId && p.isDark) || DEFAULT_BACKGROUND_PRESET
 
     if (preset.id === 'midnight-navy') {
       return {
@@ -626,18 +635,10 @@ export function deriveBackgroundPalette(bgMode, bgPresetId, customBgHex) {
     const hsl = rgbToHsl(rgb.r, rgb.g, rgb.b)
 
     const bgHex = preset.hex
-    const headerHex = rgbToHex(
-      ...Object.values(hslToRgb(hsl.h, hsl.s, Math.max(4, hsl.l - 2)))
-    )
-    const surfaceHex = rgbToHex(
-      ...Object.values(hslToRgb(hsl.h, hsl.s, Math.min(22, hsl.l + 4)))
-    )
-    const elevatedHex = rgbToHex(
-      ...Object.values(hslToRgb(hsl.h, hsl.s, Math.min(28, hsl.l + 9)))
-    )
-    const deepHex = rgbToHex(
-      ...Object.values(hslToRgb(hsl.h, hsl.s, Math.min(35, hsl.l + 15)))
-    )
+    const headerHex = rgbToHex(...Object.values(hslToRgb(hsl.h, hsl.s, Math.max(4, hsl.l - 2))))
+    const surfaceHex = rgbToHex(...Object.values(hslToRgb(hsl.h, hsl.s, Math.min(22, hsl.l + 4))))
+    const elevatedHex = rgbToHex(...Object.values(hslToRgb(hsl.h, hsl.s, Math.min(28, hsl.l + 9))))
+    const deepHex = rgbToHex(...Object.values(hslToRgb(hsl.h, hsl.s, Math.min(35, hsl.l + 15))))
 
     return {
       mode: 'dark',
@@ -660,7 +661,9 @@ export function deriveBackgroundPalette(bgMode, bgPresetId, customBgHex) {
 
   // Mode: 'light'
   if (bgMode === 'light') {
-    const preset = BACKGROUND_PRESETS.find((p) => p.id === bgPresetId && !p.isDark) || BACKGROUND_PRESETS.find((p) => p.id === 'arctic-white')
+    const preset =
+      BACKGROUND_PRESETS.find((p) => p.id === bgPresetId && !p.isDark) ||
+      BACKGROUND_PRESETS.find((p) => p.id === 'arctic-white')
     const bgHex = preset ? preset.hex : '#F7FAFC'
 
     return {
@@ -689,12 +692,8 @@ export function deriveBackgroundPalette(bgMode, bgPresetId, customBgHex) {
   const hsl = rgbToHsl(rgb.r, rgb.g, rgb.b)
 
   if (isLight) {
-    const elevatedHex = rgbToHex(
-      ...Object.values(hslToRgb(hsl.h, hsl.s, Math.max(88, hsl.l - 4)))
-    )
-    const deepHex = rgbToHex(
-      ...Object.values(hslToRgb(hsl.h, hsl.s, Math.max(80, hsl.l - 9)))
-    )
+    const elevatedHex = rgbToHex(...Object.values(hslToRgb(hsl.h, hsl.s, Math.max(88, hsl.l - 4))))
+    const deepHex = rgbToHex(...Object.values(hslToRgb(hsl.h, hsl.s, Math.max(80, hsl.l - 9))))
 
     return {
       mode: 'custom',
@@ -716,18 +715,10 @@ export function deriveBackgroundPalette(bgMode, bgPresetId, customBgHex) {
   }
 
   // Custom Dark
-  const headerHex = rgbToHex(
-    ...Object.values(hslToRgb(hsl.h, hsl.s, Math.max(3, hsl.l - 2)))
-  )
-  const surfaceHex = rgbToHex(
-    ...Object.values(hslToRgb(hsl.h, hsl.s, Math.min(25, hsl.l + 4)))
-  )
-  const elevatedHex = rgbToHex(
-    ...Object.values(hslToRgb(hsl.h, hsl.s, Math.min(32, hsl.l + 9)))
-  )
-  const deepHex = rgbToHex(
-    ...Object.values(hslToRgb(hsl.h, hsl.s, Math.min(40, hsl.l + 15)))
-  )
+  const headerHex = rgbToHex(...Object.values(hslToRgb(hsl.h, hsl.s, Math.max(3, hsl.l - 2))))
+  const surfaceHex = rgbToHex(...Object.values(hslToRgb(hsl.h, hsl.s, Math.min(25, hsl.l + 4))))
+  const elevatedHex = rgbToHex(...Object.values(hslToRgb(hsl.h, hsl.s, Math.min(32, hsl.l + 9))))
+  const deepHex = rgbToHex(...Object.values(hslToRgb(hsl.h, hsl.s, Math.min(40, hsl.l + 15))))
 
   return {
     mode: 'custom',
@@ -812,8 +803,7 @@ export function applyThemeVariables(themeState) {
   // 2. Background Theme Semantic Variables
   const bg = themeState.background || { mode: 'dark', presetId: 'midnight-navy' }
   const bgPalette =
-    themeState.bgPalette ||
-    deriveBackgroundPalette(bg.mode, bg.presetId, bg.customHex)
+    themeState.bgPalette || deriveBackgroundPalette(bg.mode, bg.presetId, bg.customHex)
 
   root.style.setProperty('--app-background', bgPalette.background)
   root.style.setProperty('--app-header', bgPalette.header)
@@ -1244,7 +1234,11 @@ export function useAppearanceTheme() {
     isCustom: themeState.mode === 'custom',
 
     // Background system
-    background: themeState.background || { mode: 'dark', presetId: 'midnight-navy', customHex: null },
+    background: themeState.background || {
+      mode: 'dark',
+      presetId: 'midnight-navy',
+      customHex: null
+    },
     bgPalette: themeState.bgPalette || deriveBackgroundPalette('dark', 'midnight-navy'),
     isDarkBackground: themeState.bgPalette?.isDark ?? true,
 

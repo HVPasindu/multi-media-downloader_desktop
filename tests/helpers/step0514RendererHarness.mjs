@@ -314,7 +314,9 @@ export function withCapturedConsole() {
  */
 export async function renderStrict(env, element, container = null) {
   const target =
-    container || env.document.getElementById('root') || env.document.body.appendChild(env.document.createElement('div'))
+    container ||
+    env.document.getElementById('root') ||
+    env.document.body.appendChild(env.document.createElement('div'))
   const root = env.createRoot(target)
   await env.act(async () => {
     root.render(env.React.createElement(env.React.StrictMode, null, element))
@@ -453,7 +455,8 @@ export function createMockWindowApi(overrides = {}) {
       .filter((j) => j.status === 'completed')
       .reduce(
         (acc, j) =>
-          acc + (Number(j.file?.file_size) || Number(j.total_bytes) || Number(j.downloaded_bytes) || 0),
+          acc +
+          (Number(j.file?.file_size) || Number(j.total_bytes) || Number(j.downloaded_bytes) || 0),
         0
       )
 
@@ -480,13 +483,18 @@ export function createMockWindowApi(overrides = {}) {
   }
 
   const filterAndPaginate = (urlObj) => {
-    const statusesRaw = urlObj.searchParams.get('statuses') || urlObj.searchParams.get('status') || ''
+    const statusesRaw =
+      urlObj.searchParams.get('statuses') || urlObj.searchParams.get('status') || ''
     const requestedStatuses = statusesRaw
       .split(',')
       .map((s) => s.trim())
       .filter((s) => s && s !== 'all')
     const search = (urlObj.searchParams.get('search') || '').trim().toLowerCase()
-    const format = (urlObj.searchParams.get('outputFormat') || urlObj.searchParams.get('format') || '')
+    const format = (
+      urlObj.searchParams.get('outputFormat') ||
+      urlObj.searchParams.get('format') ||
+      ''
+    )
       .trim()
       .toLowerCase()
     const limit = Math.max(1, Number(urlObj.searchParams.get('limit') || 20))
@@ -551,7 +559,13 @@ export function createMockWindowApi(overrides = {}) {
       totalBitrateKbps: 2500 - idx * 300
     }))
     const audioFormats = [
-      { formatId: 'm4a-192', extension: 'm4a', audioCodec: 'aac', fileSize: 4 * 1024 * 1024, audioBitrateKbps: 192 }
+      {
+        formatId: 'm4a-192',
+        extension: 'm4a',
+        audioCodec: 'aac',
+        fileSize: 4 * 1024 * 1024,
+        audioBitrateKbps: 192
+      }
     ]
 
     return {

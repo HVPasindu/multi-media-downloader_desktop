@@ -11,11 +11,7 @@ import {
   Sparkles,
   Layers
 } from 'lucide-react'
-import {
-  THEME_PRESETS,
-  BACKGROUND_PRESETS,
-  useAppearanceTheme
-} from '../../utils/appearanceTheme'
+import { THEME_PRESETS, BACKGROUND_PRESETS, useAppearanceTheme } from '../../utils/appearanceTheme'
 import CustomColorPicker from './CustomColorPicker'
 
 /**
@@ -119,14 +115,13 @@ export default function AppearanceSettings() {
               <h2 className="text-sm font-extrabold text-text">Live Theme Preview</h2>
               <p className="text-[11px] text-text-muted">
                 Accent:{' '}
-                <span className="font-bold text-text uppercase tracking-wider">
-                  {theme.name}
-                </span>{' '}
+                <span className="font-bold text-text uppercase tracking-wider">{theme.name}</span>{' '}
                 {isCustom && <span className="text-primary font-mono">({theme.primary})</span>} •
                 Background:{' '}
                 <span className="font-bold text-text capitalize">
                   {background.mode === 'preset'
-                    ? BACKGROUND_PRESETS.find((p) => p.id === background.presetId)?.name || 'Default'
+                    ? BACKGROUND_PRESETS.find((p) => p.id === background.presetId)?.name ||
+                      'Default'
                     : background.mode}
                 </span>{' '}
                 <span className="text-text-muted font-mono">({bgPalette.background})</span>
@@ -221,7 +216,9 @@ export default function AppearanceSettings() {
                   <Sliders className="w-4 h-4" />
                   <span>Quality & Audio</span>
                 </div>
-                <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-black/15 text-on-gradient">Active</span>
+                <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-black/15 text-on-gradient">
+                  Active
+                </span>
               </div>
             </div>
 
@@ -330,8 +327,7 @@ export default function AppearanceSettings() {
           </span>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             {BACKGROUND_PRESETS.map((p) => {
-              const isSelected =
-                background.mode !== 'custom' && background.presetId === p.id
+              const isSelected = background.mode !== 'custom' && background.presetId === p.id
 
               return (
                 <button

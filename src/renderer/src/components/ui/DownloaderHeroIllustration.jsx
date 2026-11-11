@@ -52,7 +52,11 @@ export default function DownloaderHeroIllustration({ className = '' }) {
             <defs>
               <linearGradient id="pedestalGrad" x1="0%" y1="0%" x2="100%" y2="0%">
                 <stop offset="0%" stopColor="var(--app-surface, #07152E)" stopOpacity="0.9" />
-                <stop offset="50%" stopColor="var(--app-surface-elevated, #102449)" stopOpacity="0.95" />
+                <stop
+                  offset="50%"
+                  stopColor="var(--app-surface-elevated, #102449)"
+                  stopOpacity="0.95"
+                />
                 <stop offset="100%" stopColor="var(--app-surface, #07152E)" stopOpacity="0.9" />
               </linearGradient>
               <linearGradient id="ringGrad" x1="0%" y1="0%" x2="100%" y2="0%">

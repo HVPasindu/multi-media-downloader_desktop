@@ -94,12 +94,10 @@ async function runPerformanceSmokeSuite() {
   const { default: DownloaderPage } = await import('../src/renderer/src/pages/DownloaderPage.jsx')
   const { default: DownloadsPage } = await import('../src/renderer/src/pages/DownloadsPage.jsx')
   const { default: HistoryPage } = await import('../src/renderer/src/pages/HistoryPage.jsx')
-  const { default: AppearanceSettings } = await import(
-    '../src/renderer/src/components/settings/AppearanceSettings.jsx'
-  )
-  const { THEME_PRESETS, BACKGROUND_PRESETS } = await import(
-    '../src/renderer/src/utils/appearanceTheme.js'
-  )
+  const { default: AppearanceSettings } =
+    await import('../src/renderer/src/components/settings/AppearanceSettings.jsx')
+  const { THEME_PRESETS, BACKGROUND_PRESETS } =
+    await import('../src/renderer/src/utils/appearanceTheme.js')
   const { getDatabase } = await import('../src/main/backend/config/database.js')
 
   const consoleTracker = withCapturedConsole()
@@ -121,11 +119,9 @@ async function runPerformanceSmokeSuite() {
         env,
         env.React.createElement(HashRouter, null, env.React.createElement(App))
       )
-      await waitForDom(
-        env,
-        () => container.querySelector('input[aria-label="Media link URL"]'),
-        { timeoutMs: 3000 }
-      )
+      await waitForDom(env, () => container.querySelector('input[aria-label="Media link URL"]'), {
+        timeoutMs: 3000
+      })
       const splashToReadyMs = Number((performance.now() - mountStart).toFixed(2))
 
       const navTimings = []
@@ -279,7 +275,9 @@ async function runPerformanceSmokeSuite() {
       )
       await waitForDom(env, () => strictContainer.textContent.includes('Downloads Manager'))
       await unmountStrict(env, strictRoot)
-      console.log('✓ CHECK 2 passed: No empty flash, transient error retry recovery, and poll stop verified.')
+      console.log(
+        '✓ CHECK 2 passed: No empty flash, transient error retry recovery, and poll stop verified.'
+      )
     }
 
     // =========================================================================
@@ -362,8 +360,12 @@ async function runPerformanceSmokeSuite() {
       const pauseBtn = container.querySelector('button[title="Pause download"]')
       assert.ok(pauseBtn, 'Pause download button must render')
       await env.act(async () => {
-        pauseBtn.dispatchEvent(new env.window.MouseEvent('click', { bubbles: true, cancelable: true }))
-        pauseBtn.dispatchEvent(new env.window.MouseEvent('click', { bubbles: true, cancelable: true }))
+        pauseBtn.dispatchEvent(
+          new env.window.MouseEvent('click', { bubbles: true, cancelable: true })
+        )
+        pauseBtn.dispatchEvent(
+          new env.window.MouseEvent('click', { bubbles: true, cancelable: true })
+        )
       })
       assert.equal(postPauseCount, 1, 'Rapid Pause double-click must send strictly 1 POST')
       releasePause({
@@ -515,7 +517,9 @@ async function runPerformanceSmokeSuite() {
       // Next page -> Showing 51–100 of 250
       const tNext0 = performance.now()
       await clickElement(env, dlContainer.querySelector('button[title="Next page"]'))
-      await waitForDom(env, () => dlContainer.textContent.includes('Showing 51–100 of 250 downloads'))
+      await waitForDom(env, () =>
+        dlContainer.textContent.includes('Showing 51–100 of 250 downloads')
+      )
       const nextPageMs = Number((performance.now() - tNext0).toFixed(2))
 
       // Live SQLite search -> Showing 1–15 of 15 downloads
@@ -537,7 +541,10 @@ async function runPerformanceSmokeSuite() {
         timeoutMs: 5000
       })
       const historyInitialMs = Number((performance.now() - hStart).toFixed(2))
-      assert.ok(hContainer.textContent.includes('250'), 'History StatCard Total Files must show 250')
+      assert.ok(
+        hContainer.textContent.includes('250'),
+        'History StatCard Total Files must show 250'
+      )
 
       await clickElement(env, hContainer.querySelector('button[title="Next page"]'))
       await waitForDom(env, () => hContainer.textContent.includes('Showing 21–40 of 250'))

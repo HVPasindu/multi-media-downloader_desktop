@@ -475,7 +475,10 @@ export default function DownloadsPage() {
                 const retryButtonState = getRetryButtonState(retryingJobId, item.id)
 
                 return (
-                  <tr key={item.id} className="hover:bg-surface-elevated/40 transition-colors group">
+                  <tr
+                    key={item.id}
+                    className="hover:bg-surface-elevated/40 transition-colors group"
+                  >
                     {/* Index */}
                     <td className="py-3.5 px-4 text-center text-text-muted/70 font-mono text-xs">
                       {itemIndex}

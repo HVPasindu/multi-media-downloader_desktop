@@ -80,9 +80,8 @@ async function runApiIntegrationSuite() {
     clearDownloadHistory,
     getActiveDownloadsCount
   } = await import('../src/renderer/src/services/downloadsApi.js')
-  const { getDownloadSettings, updateDownloadSettings } = await import(
-    '../src/renderer/src/services/downloadSettingsApi.js'
-  )
+  const { getDownloadSettings, updateDownloadSettings } =
+    await import('../src/renderer/src/services/downloadSettingsApi.js')
 
   try {
     // =========================================================================
@@ -280,7 +279,9 @@ async function runApiIntegrationSuite() {
       }
       await env.waitForJobState(qId, (j) => j.status === 'completed')
     }
-    console.log('✓ TEST 4 passed: Concurrency cap=2, FIFO queue, duplicate check & active count verified.')
+    console.log(
+      '✓ TEST 4 passed: Concurrency cap=2, FIFO queue, duplicate check & active count verified.'
+    )
 
     // =========================================================================
     // TEST 5: Pagination, Search, Delete Single & Clear History + Summary Sync
@@ -304,7 +305,11 @@ async function runApiIntegrationSuite() {
       method: 'DELETE',
       body: { confirm: false, statuses: ['completed'] }
     })
-    assert.equal(clearNoConfirm.status, 400, 'Clear history without confirm: true must fail with 400')
+    assert.equal(
+      clearNoConfirm.status,
+      400,
+      'Clear history without confirm: true must fail with 400'
+    )
 
     const clearAll = await clearDownloadHistory({
       confirm: true,

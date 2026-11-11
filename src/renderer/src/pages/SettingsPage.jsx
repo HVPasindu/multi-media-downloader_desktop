@@ -222,9 +222,7 @@ export default function SettingsPage() {
       {/* ----------------- TOP HEADER ----------------- */}
       <div>
         <div className="flex items-center gap-3">
-          <h1 className="text-3xl lg:text-4xl font-extrabold text-text tracking-tight">
-            Settings
-          </h1>
+          <h1 className="text-3xl lg:text-4xl font-extrabold text-text tracking-tight">Settings</h1>
           <span className="text-[10px] font-bold tracking-wider px-2 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20 uppercase">
             {currentSectionLabel}
           </span>

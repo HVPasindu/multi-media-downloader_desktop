@@ -101,12 +101,22 @@ console.log('\n[Test 1] Verifying all 6 approved Accent Presets...')
 assert.strictEqual(THEME_PRESETS.length, 6, 'Should have exactly 6 accent presets')
 
 const expectedAccents = {
-  'ocean-blue': { name: 'Ocean Blue', primary: '#18C9F5', secondary: '#3388FF', tertiary: '#514BFF' },
-  'purple-neon': { name: 'Purple Neon', primary: '#A855F7', secondary: '#7C3AED', tertiary: '#EC4899' },
-  'emerald': { name: 'Emerald', primary: '#10B981', secondary: '#059669', tertiary: '#22D3EE' },
-  'sunset': { name: 'Sunset', primary: '#F97316', secondary: '#EF4444', tertiary: '#FBBF24' },
-  'rose': { name: 'Rose', primary: '#EC4899', secondary: '#DB2777', tertiary: '#A855F7' },
-  'golden': { name: 'Golden', primary: '#EAB308', secondary: '#F59E0B', tertiary: '#F97316' }
+  'ocean-blue': {
+    name: 'Ocean Blue',
+    primary: '#18C9F5',
+    secondary: '#3388FF',
+    tertiary: '#514BFF'
+  },
+  'purple-neon': {
+    name: 'Purple Neon',
+    primary: '#A855F7',
+    secondary: '#7C3AED',
+    tertiary: '#EC4899'
+  },
+  emerald: { name: 'Emerald', primary: '#10B981', secondary: '#059669', tertiary: '#22D3EE' },
+  sunset: { name: 'Sunset', primary: '#F97316', secondary: '#EF4444', tertiary: '#FBBF24' },
+  rose: { name: 'Rose', primary: '#EC4899', secondary: '#DB2777', tertiary: '#A855F7' },
+  golden: { name: 'Golden', primary: '#EAB308', secondary: '#F59E0B', tertiary: '#F97316' }
 }
 
 for (const [id, expected] of Object.entries(expectedAccents)) {
@@ -129,27 +139,63 @@ console.log('\n[Test 2] Verifying all 8 Background Presets...')
 assert.strictEqual(BACKGROUND_PRESETS.length, 8, 'Should have exactly 8 background presets')
 
 const expectedBackgrounds = {
-  'midnight-navy': { name: 'Midnight Navy', hex: '#040B1C', isDark: true, matchedAccentId: 'ocean-blue' },
+  'midnight-navy': {
+    name: 'Midnight Navy',
+    hex: '#040B1C',
+    isDark: true,
+    matchedAccentId: 'ocean-blue'
+  },
   'carbon-black': { name: 'Carbon Black', hex: '#101318', isDark: true, matchedAccentId: 'golden' },
-  'deep-space': { name: 'Deep Space', hex: '#17102B', isDark: true, matchedAccentId: 'purple-neon' },
+  'deep-space': {
+    name: 'Deep Space',
+    hex: '#17102B',
+    isDark: true,
+    matchedAccentId: 'purple-neon'
+  },
   'cyber-teal': { name: 'Cyber Teal', hex: '#082B2B', isDark: true, matchedAccentId: 'emerald' },
-  'arctic-white': { name: 'Arctic White', hex: '#F7FAFC', isDark: false, matchedAccentId: 'ocean-blue' },
+  'arctic-white': {
+    name: 'Arctic White',
+    hex: '#F7FAFC',
+    isDark: false,
+    matchedAccentId: 'ocean-blue'
+  },
   'pearl-mist': { name: 'Pearl Mist', hex: '#EEF2F7', isDark: false, matchedAccentId: 'emerald' },
   'rose-dusk': { name: 'Rose Dusk', hex: '#2A1427', isDark: true, matchedAccentId: 'rose' },
-  'aurora-slate': { name: 'Aurora Slate', hex: '#142536', isDark: true, matchedAccentId: 'ocean-blue' }
+  'aurora-slate': {
+    name: 'Aurora Slate',
+    hex: '#142536',
+    isDark: true,
+    matchedAccentId: 'ocean-blue'
+  }
 }
 
 for (const [id, expected] of Object.entries(expectedBackgrounds)) {
   const found = BACKGROUND_PRESETS.find((p) => p.id === id)
   assert.ok(found, `Background preset ${id} must exist`)
   assert.strictEqual(found.name, expected.name, `Background ${id} name mismatch`)
-  assert.strictEqual(found.hex.toUpperCase(), expected.hex.toUpperCase(), `Background ${id} hex mismatch`)
+  assert.strictEqual(
+    found.hex.toUpperCase(),
+    expected.hex.toUpperCase(),
+    `Background ${id} hex mismatch`
+  )
   assert.strictEqual(found.isDark, expected.isDark, `Background ${id} isDark mismatch`)
-  assert.strictEqual(found.matchedAccentId, expected.matchedAccentId, `Background ${id} matchedAccentId mismatch`)
+  assert.strictEqual(
+    found.matchedAccentId,
+    expected.matchedAccentId,
+    `Background ${id} matchedAccentId mismatch`
+  )
 }
 
-assert.strictEqual(DEFAULT_BACKGROUND_ID, 'midnight-navy', 'Default background ID must be midnight-navy')
-assert.strictEqual(DEFAULT_BACKGROUND_PRESET.id, 'midnight-navy', 'Default background preset must match')
+assert.strictEqual(
+  DEFAULT_BACKGROUND_ID,
+  'midnight-navy',
+  'Default background ID must be midnight-navy'
+)
+assert.strictEqual(
+  DEFAULT_BACKGROUND_PRESET.id,
+  'midnight-navy',
+  'Default background preset must match'
+)
 console.log('✓ Test 2 Passed: All 8 background presets verified.')
 
 // --------------------------------------------------------------------------
@@ -178,7 +224,11 @@ assert.strictEqual(lightPalette.isDark, false, 'Palette must not be dark')
 assert.strictEqual(lightPalette.colorScheme, 'light', 'Color scheme must be light')
 assert.strictEqual(lightPalette.background.toUpperCase(), '#F7FAFC')
 assert.strictEqual(lightPalette.text.toUpperCase(), '#172033', 'Light mode text must be dark text')
-assert.strictEqual(lightPalette.textMuted.toUpperCase(), '#526179', 'Light mode text muted must be slate')
+assert.strictEqual(
+  lightPalette.textMuted.toUpperCase(),
+  '#526179',
+  'Light mode text muted must be slate'
+)
 assert.ok(isValidHex(lightPalette.surface), 'Light surface must be valid HEX')
 assert.ok(isValidHex(lightPalette.surfaceElevated), 'Light surface elevated must be valid HEX')
 console.log('✓ Test 4 Passed: Light background palette derived with readable dark text.')
@@ -259,7 +309,9 @@ const normalColor = adjustHueWithBlackRecovery(120, 70, 80)
 assert.strictEqual(normalColor.h, 120)
 assert.strictEqual(normalColor.s, 70, 'Normal saturation untouched')
 assert.strictEqual(normalColor.v, 80, 'Normal value untouched')
-console.log('✓ Test 8 Passed: Black colour recovery helper restores vibrant defaults on hue adjustment.')
+console.log(
+  '✓ Test 8 Passed: Black colour recovery helper restores vibrant defaults on hue adjustment.'
+)
 
 // --------------------------------------------------------------------------
 // 9. Custom Accent Palette Generation
@@ -271,7 +323,9 @@ assert.ok(isValidHex(generated.secondary), 'Generated secondary is valid HEX')
 assert.ok(isValidHex(generated.tertiary), 'Generated tertiary is valid HEX')
 assert.notStrictEqual(generated.secondary, generated.primary, 'Secondary differs from primary')
 assert.notStrictEqual(generated.tertiary, generated.primary, 'Tertiary differs from primary')
-console.log(`✓ Test 9 Passed: Custom palette generated (${generated.primary}, ${generated.secondary}, ${generated.tertiary}).`)
+console.log(
+  `✓ Test 9 Passed: Custom palette generated (${generated.primary}, ${generated.secondary}, ${generated.tertiary}).`
+)
 
 // --------------------------------------------------------------------------
 // 10. Automatic Accent Matching for all 8 Background Presets
@@ -286,9 +340,15 @@ for (const bg of BACKGROUND_PRESETS) {
 
   const updatedState = setBackgroundPreset(bg.id)
   assert.strictEqual(updatedState.background.presetId, bg.id, `Background set to ${bg.id}`)
-  assert.strictEqual(updatedState.presetId, bg.matchedAccentId, `Accent auto-matched to ${bg.matchedAccentId}`)
+  assert.strictEqual(
+    updatedState.presetId,
+    bg.matchedAccentId,
+    `Accent auto-matched to ${bg.matchedAccentId}`
+  )
 }
-console.log('✓ Test 10 Passed: All 8 background presets automatically match approved accent presets.')
+console.log(
+  '✓ Test 10 Passed: All 8 background presets automatically match approved accent presets.'
+)
 
 // --------------------------------------------------------------------------
 // 11. Manual Accent Selection after Background Selection (Override Rule)
@@ -305,7 +365,11 @@ assert.strictEqual(activeState.presetId, 'purple-neon')
 // User explicitly selects Emerald accent
 setPresetTheme('emerald')
 activeState = loadSavedTheme()
-assert.strictEqual(activeState.background.presetId, 'deep-space', 'Background must remain deep-space')
+assert.strictEqual(
+  activeState.background.presetId,
+  'deep-space',
+  'Background must remain deep-space'
+)
 assert.strictEqual(activeState.presetId, 'emerald', 'Accent must be updated to emerald')
 
 // Verify that re-initializing or loading from storage preserves both selections
@@ -327,7 +391,11 @@ assert.strictEqual(legacyLoaded.presetId, 'sunset', 'Legacy presetId parsed corr
 assert.strictEqual(legacyLoaded.primary, '#F97316', 'Sunset primary loaded')
 assert.ok(legacyLoaded.background, 'Background object injected')
 assert.strictEqual(legacyLoaded.background.mode, 'dark', 'Default background mode dark')
-assert.strictEqual(legacyLoaded.background.presetId, 'midnight-navy', 'Default background preset midnight-navy')
+assert.strictEqual(
+  legacyLoaded.background.presetId,
+  'midnight-navy',
+  'Default background preset midnight-navy'
+)
 assert.strictEqual(legacyLoaded.bgPalette.isDark, true, 'Default dark palette active')
 console.log('✓ Test 12 Passed: Legacy stored configurations gracefully upgraded without errors.')
 
@@ -370,9 +438,16 @@ mockStorage.set('applan2.appearance.theme', 'CORRUPT_JSON{{{')
 
 const safeFallback = loadSavedTheme()
 assert.strictEqual(safeFallback.presetId, 'ocean-blue', 'Falls back to default ocean-blue accent')
-assert.strictEqual(safeFallback.background.presetId, 'midnight-navy', 'Falls back to midnight-navy background')
+assert.strictEqual(
+  safeFallback.background.presetId,
+  'midnight-navy',
+  'Falls back to midnight-navy background'
+)
 
-mockStorage.set('applan2.appearance.theme', JSON.stringify({ mode: 'invalid_mode', presetId: 'fake' }))
+mockStorage.set(
+  'applan2.appearance.theme',
+  JSON.stringify({ mode: 'invalid_mode', presetId: 'fake' })
+)
 const invalidFallbackTest = loadSavedTheme()
 assert.strictEqual(invalidFallbackTest.presetId, 'ocean-blue', 'Invalid preset falls back safely')
 console.log('✓ Test 15 Passed: Corrupted storage handled gracefully with safe default fallback.')
@@ -419,7 +494,9 @@ assert.strictEqual(
   mockCssVariables.get('--app-surface'),
   '--color-secondary must match --app-surface'
 )
-console.log('✓ Test 17 Passed: Surface variable protection verified (--color-secondary matches --app-surface).')
+console.log(
+  '✓ Test 17 Passed: Surface variable protection verified (--color-secondary matches --app-surface).'
+)
 
 // --------------------------------------------------------------------------
 // 18. WCAG Contrast Ratio & Readable Text Selection
@@ -429,7 +506,11 @@ const bwContrast = getContrastRatio('#000000', '#FFFFFF')
 assert.ok(Math.abs(bwContrast - 21) < 0.1, 'Black/White contrast ratio is approx 21:1')
 
 // Ocean Blue (#18C9F5): Bright cyan requires dark text (#000000)
-assert.strictEqual(getReadableTextColor('#18C9F5'), '#000000', 'Ocean blue primary requires dark text')
+assert.strictEqual(
+  getReadableTextColor('#18C9F5'),
+  '#000000',
+  'Ocean blue primary requires dark text'
+)
 // Golden (#EAB308): Bright yellow requires dark text (#000000)
 assert.strictEqual(getReadableTextColor('#EAB308'), '#000000', 'Golden primary requires dark text')
 // Emerald (#10B981): Bright green requires dark text (#000000)
@@ -456,55 +537,82 @@ console.log('\n[Test 19] Testing strict background validation & invalid data rec
 mockStorage.clear()
 
 // Case A: Dark mode with light preset -> falls back to midnight-navy
-mockStorage.set('applan2.appearance.theme', JSON.stringify({
-  mode: 'preset',
-  presetId: 'emerald',
-  background: { mode: 'dark', presetId: 'arctic-white' }
-}))
+mockStorage.set(
+  'applan2.appearance.theme',
+  JSON.stringify({
+    mode: 'preset',
+    presetId: 'emerald',
+    background: { mode: 'dark', presetId: 'arctic-white' }
+  })
+)
 const darkWithLightPreset = loadSavedTheme()
 assert.strictEqual(darkWithLightPreset.presetId, 'emerald', 'Valid accent preserved')
 assert.strictEqual(darkWithLightPreset.background.mode, 'dark')
-assert.strictEqual(darkWithLightPreset.background.presetId, 'midnight-navy', 'Light preset rejected in dark mode')
+assert.strictEqual(
+  darkWithLightPreset.background.presetId,
+  'midnight-navy',
+  'Light preset rejected in dark mode'
+)
 
 // Case B: Light mode with dark preset -> falls back to arctic-white
-mockStorage.set('applan2.appearance.theme', JSON.stringify({
-  mode: 'preset',
-  presetId: 'sunset',
-  background: { mode: 'light', presetId: 'carbon-black' }
-}))
+mockStorage.set(
+  'applan2.appearance.theme',
+  JSON.stringify({
+    mode: 'preset',
+    presetId: 'sunset',
+    background: { mode: 'light', presetId: 'carbon-black' }
+  })
+)
 const lightWithDarkPreset = loadSavedTheme()
 assert.strictEqual(lightWithDarkPreset.presetId, 'sunset', 'Valid accent preserved')
 assert.strictEqual(lightWithDarkPreset.background.mode, 'light')
-assert.strictEqual(lightWithDarkPreset.background.presetId, 'arctic-white', 'Dark preset rejected in light mode')
+assert.strictEqual(
+  lightWithDarkPreset.background.presetId,
+  'arctic-white',
+  'Dark preset rejected in light mode'
+)
 
 // Case C: Invalid mode string -> falls back to default dark midnight-navy
-mockStorage.set('applan2.appearance.theme', JSON.stringify({
-  mode: 'preset',
-  presetId: 'golden',
-  background: { mode: 'neon_hacker', presetId: 'cyber-teal' }
-}))
+mockStorage.set(
+  'applan2.appearance.theme',
+  JSON.stringify({
+    mode: 'preset',
+    presetId: 'golden',
+    background: { mode: 'neon_hacker', presetId: 'cyber-teal' }
+  })
+)
 const invalidModeRes = loadSavedTheme()
 assert.strictEqual(invalidModeRes.presetId, 'golden', 'Valid accent preserved')
 assert.strictEqual(invalidModeRes.background.mode, 'dark')
 assert.strictEqual(invalidModeRes.background.presetId, 'midnight-navy')
 
 // Case D: Custom mode with invalid hex -> falls back to default background
-mockStorage.set('applan2.appearance.theme', JSON.stringify({
-  mode: 'custom',
-  customHex: '#FF5500',
-  background: { mode: 'custom', customHex: 'not-a-hex' }
-}))
+mockStorage.set(
+  'applan2.appearance.theme',
+  JSON.stringify({
+    mode: 'custom',
+    customHex: '#FF5500',
+    background: { mode: 'custom', customHex: 'not-a-hex' }
+  })
+)
 const invalidCustomBgRes = loadSavedTheme()
 assert.strictEqual(invalidCustomBgRes.customHex, '#FF5500', 'Valid custom accent preserved')
-assert.strictEqual(invalidCustomBgRes.background.mode, 'dark', 'Invalid custom hex falls back to dark')
+assert.strictEqual(
+  invalidCustomBgRes.background.mode,
+  'dark',
+  'Invalid custom hex falls back to dark'
+)
 assert.strictEqual(invalidCustomBgRes.background.presetId, 'midnight-navy')
 
 // Case E: Unknown preset ID in dark mode -> falls back to midnight-navy
-mockStorage.set('applan2.appearance.theme', JSON.stringify({
-  mode: 'preset',
-  presetId: 'purple-neon',
-  background: { mode: 'dark', presetId: 'non-existent-preset' }
-}))
+mockStorage.set(
+  'applan2.appearance.theme',
+  JSON.stringify({
+    mode: 'preset',
+    presetId: 'purple-neon',
+    background: { mode: 'dark', presetId: 'non-existent-preset' }
+  })
+)
 const unknownPresetRes = loadSavedTheme()
 assert.strictEqual(unknownPresetRes.presetId, 'purple-neon', 'Valid accent preserved')
 assert.strictEqual(unknownPresetRes.background.presetId, 'midnight-navy')
@@ -524,9 +632,21 @@ applyThemeVariables({
   bgPalette: deriveBackgroundPalette('dark', 'midnight-navy')
 })
 
-assert.strictEqual(mockCssVariables.get('--theme-on-primary'), '#000000', '--theme-on-primary must be #000000 for #18C9F5')
-assert.strictEqual(mockCssVariables.get('--theme-on-gradient'), '#000000', '--theme-on-gradient must be #000000 for Ocean Blue')
-assert.strictEqual(mockCssVariables.get('--app-on-danger'), '#000000', '--app-on-danger must be #000000 for WCAG AA compliance')
+assert.strictEqual(
+  mockCssVariables.get('--theme-on-primary'),
+  '#000000',
+  '--theme-on-primary must be #000000 for #18C9F5'
+)
+assert.strictEqual(
+  mockCssVariables.get('--theme-on-gradient'),
+  '#000000',
+  '--theme-on-gradient must be #000000 for Ocean Blue'
+)
+assert.strictEqual(
+  mockCssVariables.get('--app-on-danger'),
+  '#000000',
+  '--app-on-danger must be #000000 for WCAG AA compliance'
+)
 
 // Apply Purple Neon (primary #A855F7 has luminance 0.214; contrast with black is 5.28:1 vs white 3.97:1)
 applyThemeVariables({
@@ -536,7 +656,11 @@ applyThemeVariables({
   background: { mode: 'dark', presetId: 'midnight-navy' },
   bgPalette: deriveBackgroundPalette('dark', 'midnight-navy')
 })
-assert.strictEqual(mockCssVariables.get('--theme-on-primary'), '#000000', '--theme-on-primary achieves WCAG AA 4.5:1 with dark text')
+assert.strictEqual(
+  mockCssVariables.get('--theme-on-primary'),
+  '#000000',
+  '--theme-on-primary achieves WCAG AA 4.5:1 with dark text'
+)
 
 // Apply a very dark primary (e.g. #17102B) which requires white text
 applyThemeVariables({
@@ -546,7 +670,11 @@ applyThemeVariables({
   background: { mode: 'dark', presetId: 'midnight-navy' },
   bgPalette: deriveBackgroundPalette('dark', 'midnight-navy')
 })
-assert.strictEqual(mockCssVariables.get('--theme-on-primary'), '#FFFFFF', '--theme-on-primary is white on dark primary')
+assert.strictEqual(
+  mockCssVariables.get('--theme-on-primary'),
+  '#FFFFFF',
+  '--theme-on-primary is white on dark primary'
+)
 assert.strictEqual(mockCssVariables.get('--app-on-danger'), '#000000')
 console.log('✓ Test 20 Passed: Contrast-aware CSS variables set dynamically on root.')
 
@@ -580,7 +708,10 @@ assert.strictEqual(typeof mergeSwalClasses, 'function', 'mergeSwalClasses export
 
 // 1. mergeSwalClasses verifies non-destructive extension of theme classes
 const baseClasses = { popup: 'app-swal-popup', title: 'app-swal-title' }
-const mergedClasses = mergeSwalClasses(baseClasses, { popup: 'custom-popup-extra', customSlot: 'my-slot' })
+const mergedClasses = mergeSwalClasses(baseClasses, {
+  popup: 'custom-popup-extra',
+  customSlot: 'my-slot'
+})
 assert.strictEqual(mergedClasses.popup, 'app-swal-popup custom-popup-extra')
 assert.strictEqual(mergedClasses.title, 'app-swal-title')
 assert.strictEqual(mergedClasses.customSlot, 'my-slot')
@@ -593,18 +724,44 @@ const alertOverrideAttempt = {
   customClass: { popup: 'injected-popup-class' }
 }
 const builtAlert = buildAlertOptions(alertOverrideAttempt, 'error', 'Error Title', 'Error Message')
-assert.strictEqual(builtAlert.background, 'var(--app-surface-elevated, #0B1C38)', 'Caller cannot override theme background')
-assert.strictEqual(builtAlert.color, 'var(--app-text, #F4F8FF)', 'Caller cannot override theme text color')
-assert.strictEqual(builtAlert.buttonsStyling, false, 'Caller cannot re-enable default buttonsStyling')
-assert.ok(builtAlert.customClass.popup.includes('app-swal-popup'), 'Mandatory app-swal-popup class preserved')
-assert.ok(builtAlert.customClass.popup.includes('injected-popup-class'), 'Caller customClass merged cleanly')
+assert.strictEqual(
+  builtAlert.background,
+  'var(--app-surface-elevated, #0B1C38)',
+  'Caller cannot override theme background'
+)
+assert.strictEqual(
+  builtAlert.color,
+  'var(--app-text, #F4F8FF)',
+  'Caller cannot override theme text color'
+)
+assert.strictEqual(
+  builtAlert.buttonsStyling,
+  false,
+  'Caller cannot re-enable default buttonsStyling'
+)
+assert.ok(
+  builtAlert.customClass.popup.includes('app-swal-popup'),
+  'Mandatory app-swal-popup class preserved'
+)
+assert.ok(
+  builtAlert.customClass.popup.includes('injected-popup-class'),
+  'Caller customClass merged cleanly'
+)
 assert.strictEqual(builtAlert.icon, 'error')
 assert.strictEqual(builtAlert.iconColor, '#FF4568', 'Semantic error icon color #FF4568 applied')
 
 // 3. buildConfirmOptions protects theme defaults and applies correct danger/normal styles
-const builtConfirmDanger = buildConfirmOptions({ isDanger: true }, 'Confirm Action', 'Are you sure?')
+const builtConfirmDanger = buildConfirmOptions(
+  { isDanger: true },
+  'Confirm Action',
+  'Are you sure?'
+)
 assert.strictEqual(builtConfirmDanger.showCancelButton, true)
-assert.strictEqual(builtConfirmDanger.confirmButtonColor, '#FF4568', 'Danger confirmation uses #FF4568')
+assert.strictEqual(
+  builtConfirmDanger.confirmButtonColor,
+  '#FF4568',
+  'Danger confirmation uses #FF4568'
+)
 assert.strictEqual(builtConfirmDanger.buttonsStyling, false)
 assert.ok(builtConfirmDanger.customClass.confirmButton.includes('app-swal-confirm-btn-danger'))
 
@@ -614,18 +771,30 @@ assert.ok(builtConfirmNormal.customClass.confirmButton.includes('app-swal-confir
 assert.ok(!builtConfirmNormal.customClass.confirmButton.includes('app-swal-confirm-btn-danger'))
 
 // 4. buildToastOptions protects theme and configures non-intrusive toast
-const builtToast = buildToastOptions({ background: '#FF0000', buttonsStyling: true }, 'info', 'Saved', 2500)
+const builtToast = buildToastOptions(
+  { background: '#FF0000', buttonsStyling: true },
+  'info',
+  'Saved',
+  2500
+)
 assert.strictEqual(builtToast.toast, true)
 assert.strictEqual(builtToast.timer, 2500)
 assert.strictEqual(builtToast.buttonsStyling, false, 'Toast buttonsStyling protected')
-assert.strictEqual(builtToast.background, 'var(--app-surface-elevated, #0B1C38)', 'Toast background protected')
-console.log('✓ Test 21 Passed: Notification Service options safety, builders and class merging verified.')
+assert.strictEqual(
+  builtToast.background,
+  'var(--app-surface-elevated, #0B1C38)',
+  'Toast background protected'
+)
+console.log(
+  '✓ Test 21 Passed: Notification Service options safety, builders and class merging verified.'
+)
 
 // --------------------------------------------------------------------------
 // 22. StatCard Non-Semantic Accent Mapping Verification (Phase 04)
 // --------------------------------------------------------------------------
 console.log('\n[Test 22] Testing StatCard dynamic accent and semantic isolation...')
-const { getStatCardColorStyles, STAT_CARD_COLOR_MAP } = await import('../src/renderer/src/utils/statCardTheme.js')
+const { getStatCardColorStyles, STAT_CARD_COLOR_MAP } =
+  await import('../src/renderer/src/utils/statCardTheme.js')
 
 assert.strictEqual(typeof getStatCardColorStyles, 'function', 'getStatCardColorStyles exported')
 assert.ok(STAT_CARD_COLOR_MAP, 'STAT_CARD_COLOR_MAP exported')
@@ -634,19 +803,28 @@ assert.ok(STAT_CARD_COLOR_MAP, 'STAT_CARD_COLOR_MAP exported')
 const cyanStyles = getStatCardColorStyles('cyan')
 assert.ok(cyanStyles.border.includes('primary'), 'Cyan maps to primary border')
 assert.ok(cyanStyles.iconBg.includes('text-primary'), 'Cyan text is text-primary')
-assert.ok(cyanStyles.activeBorder.includes('var(--theme-primary-rgb)'), 'Cyan activeBorder uses primary rgb variable')
+assert.ok(
+  cyanStyles.activeBorder.includes('var(--theme-primary-rgb)'),
+  'Cyan activeBorder uses primary rgb variable'
+)
 
 // Blue must map to secondary-accent theme token
 const blueStyles = getStatCardColorStyles('blue')
 assert.ok(blueStyles.border.includes('secondary-accent'), 'Blue maps to secondary-accent border')
 assert.ok(blueStyles.iconBg.includes('text-secondary-accent'), 'Blue text is text-secondary-accent')
-assert.ok(blueStyles.activeBorder.includes('var(--theme-secondary-rgb)'), 'Blue activeBorder uses secondary rgb variable')
+assert.ok(
+  blueStyles.activeBorder.includes('var(--theme-secondary-rgb)'),
+  'Blue activeBorder uses secondary rgb variable'
+)
 
 // Purple must map to accent (tertiary) theme token
 const purpleStyles = getStatCardColorStyles('purple')
 assert.ok(purpleStyles.border.includes('border-accent'), 'Purple maps to border-accent')
 assert.ok(purpleStyles.iconBg.includes('text-accent'), 'Purple text is text-accent')
-assert.ok(purpleStyles.activeBorder.includes('var(--theme-tertiary-rgb)'), 'Purple activeBorder uses tertiary rgb variable')
+assert.ok(
+  purpleStyles.activeBorder.includes('var(--theme-tertiary-rgb)'),
+  'Purple activeBorder uses tertiary rgb variable'
+)
 
 // Green must remain semantic emerald / #00DEA5 (never overwritten by accent theme)
 const greenStyles = getStatCardColorStyles('green')
@@ -660,19 +838,21 @@ assert.ok(redStyles.iconBg.includes('#FF4568'), 'Red retains semantic hex #FF456
 
 // Fallback safety for unknown accents
 const fallbackStyles = getStatCardColorStyles('unknown-accent')
-assert.strictEqual(fallbackStyles, STAT_CARD_COLOR_MAP.cyan, 'Unknown accent safely falls back to cyan')
+assert.strictEqual(
+  fallbackStyles,
+  STAT_CARD_COLOR_MAP.cyan,
+  'Unknown accent safely falls back to cyan'
+)
 console.log('✓ Test 22 Passed: StatCard accent mapping and semantic isolation verified.')
 
 // --------------------------------------------------------------------------
 // 23. Color Picker Input Synchronization & Pure State Calculations (Phase 01)
 // --------------------------------------------------------------------------
-console.log('\n[Test 23] Testing production Color Picker state calculations (colorPickerState.js)...')
-const {
-  calculateSvColor,
-  calculateHueColor,
-  calculateHexColor,
-  calculateRgbColor
-} = await import('../src/renderer/src/utils/colorPickerState.js')
+console.log(
+  '\n[Test 23] Testing production Color Picker state calculations (colorPickerState.js)...'
+)
+const { calculateSvColor, calculateHueColor, calculateHexColor, calculateRgbColor } =
+  await import('../src/renderer/src/utils/colorPickerState.js')
 
 assert.strictEqual(typeof calculateSvColor, 'function', 'calculateSvColor exported')
 assert.strictEqual(typeof calculateHueColor, 'function', 'calculateHueColor exported')
@@ -704,7 +884,11 @@ assert.strictEqual(svBottomLeft.hex.toUpperCase(), '#000000', 'SV bottom-left pr
 const svBottomRight = calculateSvColor(baseHsv, 200, 200, svRect)
 assert.strictEqual(svBottomRight.hsv.s, 100, 'SV bottom-right: Saturation is 100')
 assert.strictEqual(svBottomRight.hsv.v, 0, 'SV bottom-right: Value is 0')
-assert.strictEqual(svBottomRight.hex.toUpperCase(), '#000000', 'SV bottom-right produces pure black')
+assert.strictEqual(
+  svBottomRight.hex.toUpperCase(),
+  '#000000',
+  'SV bottom-right produces pure black'
+)
 
 // Offset bounding rect check (e.g. left: 50, top: 100):
 const offsetRect = { left: 50, top: 100, width: 200, height: 200 }
@@ -715,11 +899,31 @@ assert.strictEqual(svOffsetTopLeft.hsv.v, 100)
 // B. Hue change with Black Hue Recovery (adjustHueWithBlackRecovery)
 const t23BlackHsv = { h: 0, s: 0, v: 0 }
 const t23RecoveredFromBlack = calculateHueColor(t23BlackHsv, 240)
-assert.deepStrictEqual(t23RecoveredFromBlack.hsv, { h: 240, s: 85, v: 95 }, 'Black hue recovery restores { h: 240, s: 85, v: 95 }')
-assert.strictEqual(t23RecoveredFromBlack.hex.toUpperCase(), '#2424F2', 'Recovered HEX at 240° is #2424F2')
-assert.deepStrictEqual(t23RecoveredFromBlack.rgb, { r: 36, g: 36, b: 242 }, 'Recovered RGB at 240° is { r: 36, g: 36, b: 242 }')
-assert.strictEqual(hsvToHex(240, 85, 95).toUpperCase(), '#2424F2', 'Production hsvToHex confirms #2424F2')
-assert.deepStrictEqual(hsvToRgb(240, 85, 95), { r: 36, g: 36, b: 242 }, 'Production hsvToRgb confirms { r: 36, g: 36, b: 242 }')
+assert.deepStrictEqual(
+  t23RecoveredFromBlack.hsv,
+  { h: 240, s: 85, v: 95 },
+  'Black hue recovery restores { h: 240, s: 85, v: 95 }'
+)
+assert.strictEqual(
+  t23RecoveredFromBlack.hex.toUpperCase(),
+  '#2424F2',
+  'Recovered HEX at 240° is #2424F2'
+)
+assert.deepStrictEqual(
+  t23RecoveredFromBlack.rgb,
+  { r: 36, g: 36, b: 242 },
+  'Recovered RGB at 240° is { r: 36, g: 36, b: 242 }'
+)
+assert.strictEqual(
+  hsvToHex(240, 85, 95).toUpperCase(),
+  '#2424F2',
+  'Production hsvToHex confirms #2424F2'
+)
+assert.deepStrictEqual(
+  hsvToRgb(240, 85, 95),
+  { r: 36, g: 36, b: 242 },
+  'Production hsvToRgb confirms { r: 36, g: 36, b: 242 }'
+)
 
 // C. Direct HEX input synchronization
 const validHexInput = calculateHexColor('#10B981', { hex: '#18C9F5' })
@@ -770,9 +974,17 @@ assert.strictEqual(seqB.hsv.v, 0, 'Black value is 0')
 
 // Hue recovery from sequential RGB black state at 240°
 const seqRecovered = calculateHueColor(seqB.hsv, 240)
-assert.deepStrictEqual(seqRecovered.hsv, { h: 240, s: 85, v: 95 }, 'Recovered HSV is { h: 240, s: 85, v: 95 }')
+assert.deepStrictEqual(
+  seqRecovered.hsv,
+  { h: 240, s: 85, v: 95 },
+  'Recovered HSV is { h: 240, s: 85, v: 95 }'
+)
 assert.strictEqual(seqRecovered.hex.toUpperCase(), '#2424F2', 'Recovered HEX is #2424F2')
-assert.deepStrictEqual(seqRecovered.rgb, { r: 36, g: 36, b: 242 }, 'Recovered RGB is { r: 36, g: 36, b: 242 }')
+assert.deepStrictEqual(
+  seqRecovered.rgb,
+  { r: 36, g: 36, b: 242 },
+  'Recovered RGB is { r: 36, g: 36, b: 242 }'
+)
 
 // E. Spectrum conversions roundtrip
 const testHexes = ['#18C9F5', '#00DEA5', '#FF4568', '#A855F7', '#FFFFFF', '#000000']
@@ -794,11 +1006,12 @@ console.log('✓ Test 23 Passed: Production Color Picker state calculations veri
 // --------------------------------------------------------------------------
 // 24. Six Approved Accent Presets & Independent WCAG AA Gradient Contrast Verification (Phase 03)
 // --------------------------------------------------------------------------
-console.log('\n[Test 24] Testing WCAG AA gradient contrast and dynamic overlay across all 6 presets...')
-
-const { sampleGradientColors, getGradientContrastAnalysis } = await import(
-  '../src/renderer/src/utils/appearanceTheme.js'
+console.log(
+  '\n[Test 24] Testing WCAG AA gradient contrast and dynamic overlay across all 6 presets...'
 )
+
+const { sampleGradientColors, getGradientContrastAnalysis } =
+  await import('../src/renderer/src/utils/appearanceTheme.js')
 
 // Reference data from the production dynamic search algorithm:
 const expectedPresetContrast = {
@@ -830,7 +1043,11 @@ for (const preset of THEME_PRESETS) {
       `${preset.name} final contrast matches reference (${expected.finalMin})`
     )
   } else {
-    assert.strictEqual(analysis.needsTreatment, false, `${preset.name} natively compliant without overlay`)
+    assert.strictEqual(
+      analysis.needsTreatment,
+      false,
+      `${preset.name} natively compliant without overlay`
+    )
     assert.ok(
       Math.abs(analysis.achievedContrast - expected.finalMin) < 0.05,
       `${preset.name} native contrast matches reference (${expected.finalMin})`
@@ -890,11 +1107,17 @@ console.log('✓ Test 24 Passed: All 6 presets pass independent WCAG AA contrast
 // --------------------------------------------------------------------------
 // 25. React StrictMode Dual-Instance Component & Event Listener Cleanup Execution (Phase 02)
 // --------------------------------------------------------------------------
-console.log('\n[Test 25] Executing React StrictMode & Color Picker Component Isolation test suite...')
+console.log(
+  '\n[Test 25] Executing React StrictMode & Color Picker Component Isolation test suite...'
+)
 const { execFileSync } = await import('node:child_process')
 execFileSync(
   process.execPath,
-  ['--loader', './tests/loaders/electron_loader.mjs', 'tests/appearance_color_picker_component_tests.mjs'],
+  [
+    '--loader',
+    './tests/loaders/electron_loader.mjs',
+    'tests/appearance_color_picker_component_tests.mjs'
+  ],
   { stdio: 'inherit' }
 )
 console.log('✓ Test 25 Passed: React StrictMode and Background/Accent isolation verified.')

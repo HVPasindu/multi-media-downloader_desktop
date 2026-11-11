@@ -62,8 +62,8 @@ function makeSampleJob(overrides = {}) {
     media_id: id + 100,
     source_url: overrides.source_url ?? `https://www.youtube.com/watch?v=vid_${id}`,
     output_format: format,
-    quality: format === 'mp4' ? overrides.quality ?? '1080p' : null,
-    audio_bitrate_kbps: format === 'mp3' ? overrides.audio_bitrate_kbps ?? 320 : null,
+    quality: format === 'mp4' ? (overrides.quality ?? '1080p') : null,
+    audio_bitrate_kbps: format === 'mp3' ? (overrides.audio_bitrate_kbps ?? 320) : null,
     status,
     progress: overrides.progress ?? (status === 'completed' ? 100 : status === 'queued' ? 0 : 45),
     downloaded_bytes: overrides.downloaded_bytes ?? 5242880,
@@ -105,9 +105,8 @@ async function runTests() {
   const { default: DownloadsPage } = await import('../src/renderer/src/pages/DownloadsPage.jsx')
   const { default: HistoryPage } = await import('../src/renderer/src/pages/HistoryPage.jsx')
   const { default: SettingsPage } = await import('../src/renderer/src/pages/SettingsPage.jsx')
-  const { default: MediaThumbnail } = await import(
-    '../src/renderer/src/components/ui/MediaThumbnail.jsx'
-  )
+  const { default: MediaThumbnail } =
+    await import('../src/renderer/src/components/ui/MediaThumbnail.jsx')
 
   const consoleTracker = withCapturedConsole()
 
@@ -185,7 +184,11 @@ async function runTests() {
           return true
         })
 
-        assert.equal(mainEl.scrollTop, 0, `Main scrollTop must reset to 0 after entering ${step.navText}`)
+        assert.equal(
+          mainEl.scrollTop,
+          0,
+          `Main scrollTop must reset to 0 after entering ${step.navText}`
+        )
       }
 
       await unmountStrict(env, root)
@@ -212,7 +215,9 @@ async function runTests() {
       )
 
       await unmountStrict(env, unknownRoot)
-      console.log('✓ SUITE 1 passed: Splash, 4 routes, badge count, scroll reset & * fallback verified.')
+      console.log(
+        '✓ SUITE 1 passed: Splash, 4 routes, badge count, scroll reset & * fallback verified.'
+      )
     }
 
     // =========================================================================
@@ -272,7 +277,10 @@ async function runTests() {
       await clickElement(env, analyzeBtn)
       await waitForDom(env, () => {
         const alertEl = container.querySelector('#media-url-error[role="alert"]')
-        assert.ok(alertEl && alertEl.textContent.length > 0, 'Invalid URL must show #media-url-error alert')
+        assert.ok(
+          alertEl && alertEl.textContent.length > 0,
+          'Invalid URL must show #media-url-error alert'
+        )
         return true
       })
 
@@ -345,9 +353,18 @@ async function runTests() {
         const btns320 = findButtonsByText(container, '320')
         const btns192 = findButtonsByText(container, '192')
         const btns128 = findButtonsByText(container, '128')
-        assert.ok(btns320.length > 0 && !btns320[0].disabled, 'MP3 320 kbps button must be enabled in MP3 mode')
-        assert.ok(btns192.length > 0 && !btns192[0].disabled, 'MP3 192 kbps button must be enabled in MP3 mode')
-        assert.ok(btns128.length > 0 && !btns128[0].disabled, 'MP3 128 kbps button must be enabled in MP3 mode')
+        assert.ok(
+          btns320.length > 0 && !btns320[0].disabled,
+          'MP3 320 kbps button must be enabled in MP3 mode'
+        )
+        assert.ok(
+          btns192.length > 0 && !btns192[0].disabled,
+          'MP3 192 kbps button must be enabled in MP3 mode'
+        )
+        assert.ok(
+          btns128.length > 0 && !btns128[0].disabled,
+          'MP3 128 kbps button must be enabled in MP3 mode'
+        )
         const btns2160 = findButtonsByText(container, '2160p')
         assert.ok(
           btns2160.length > 0 && btns2160.every((b) => b.disabled),
@@ -522,7 +539,9 @@ async function runTests() {
         assert.ok(container.querySelector('button[title="Cancel download"]'))
         assert.ok(container.querySelector('button[title="Play / Open file"]'))
         assert.ok(container.querySelector('button[title="Open containing folder"]'))
-        assert.ok(container.querySelector('button[title="Delete from history (keeps file on disk)"]'))
+        assert.ok(
+          container.querySelector('button[title="Delete from history (keeps file on disk)"]')
+        )
         return true
       })
 
@@ -581,7 +600,11 @@ async function runTests() {
       )
       await waitForDom(env, () => {
         const retryButtons = termContainer.querySelectorAll('button[title="Retry download"]')
-        assert.equal(retryButtons.length, 2, 'Both failed and cancelled rows must expose Retry download')
+        assert.equal(
+          retryButtons.length,
+          2,
+          'Both failed and cancelled rows must expose Retry download'
+        )
         return true
       })
       await unmountStrict(env, termRoot)
@@ -634,7 +657,8 @@ async function runTests() {
       const manyJobs = Array.from({ length: 25 }, (_, i) =>
         makeSampleJob({
           id: i + 1,
-          status: i === 0 ? 'downloading' : i === 1 ? 'queued' : i % 4 === 0 ? 'failed' : 'completed',
+          status:
+            i === 0 ? 'downloading' : i === 1 ? 'queued' : i % 4 === 0 ? 'failed' : 'completed',
           output_format: i % 3 === 0 ? 'mp3' : 'mp4',
           title: i === 0 ? 'Cyberpunk Search Hit' : `Library Item #${i + 1}`
         })
@@ -681,12 +705,8 @@ async function runTests() {
       if (clearCompBtn) {
         mockBridge.clearCalls()
         await clickElement(env, clearCompBtn)
-        await waitForDom(
-          env,
-          () =>
-            mockBridge.calls.some(
-              (c) => c.path === '/api/downloads/history' && c.method === 'DELETE'
-            )
+        await waitForDom(env, () =>
+          mockBridge.calls.some((c) => c.path === '/api/downloads/history' && c.method === 'DELETE')
         )
       }
 
@@ -694,8 +714,18 @@ async function runTests() {
 
       // --- 3B: HistoryPage ---
       const historyJobs = [
-        makeSampleJob({ id: 51, status: 'completed', output_format: 'mp4', title: 'History MP4 Video' }),
-        makeSampleJob({ id: 52, status: 'failed', output_format: 'mp3', title: 'History Failed Audio' })
+        makeSampleJob({
+          id: 51,
+          status: 'completed',
+          output_format: 'mp4',
+          title: 'History MP4 Video'
+        }),
+        makeSampleJob({
+          id: 52,
+          status: 'failed',
+          output_format: 'mp3',
+          title: 'History Failed Audio'
+        })
       ]
       const histBridge = createMockWindowApi({ jobs: historyJobs })
       env.window.api = histBridge.api
@@ -736,7 +766,10 @@ async function runTests() {
       await waitForDom(env, () => histBridge.calls.some((c) => c.path?.includes('/retry')))
 
       setSwalConfirmDecision(true)
-      await clickElement(env, hContainer.querySelector('button[title="Delete record from history"]'))
+      await clickElement(
+        env,
+        hContainer.querySelector('button[title="Delete record from history"]')
+      )
       await waitForDom(env, () =>
         histBridge.calls.some((c) => c.method === 'DELETE' && c.path === '/api/downloads/51')
       )
@@ -868,28 +901,43 @@ async function runTests() {
           `https://www.youtube.com/watch?v=${encodeURIComponent(item.label)}`
         )
         const analyzeBtn = findButtonsByText(container, 'Analyze')[0]
-        assert.ok(analyzeBtn && !analyzeBtn.disabled, `Analyze button should be enabled before ${item.label}`)
+        assert.ok(
+          analyzeBtn && !analyzeBtn.disabled,
+          `Analyze button should be enabled before ${item.label}`
+        )
         await clickElement(env, analyzeBtn)
 
         await waitForDom(env, () => {
           const alertEl = container.querySelector('#media-api-error[role="alert"]')
-          assert.ok(alertEl && alertEl.textContent.trim().length > 0, `Expected alert for ${item.label}`)
+          assert.ok(
+            alertEl && alertEl.textContent.trim().length > 0,
+            `Expected alert for ${item.label}`
+          )
           assert.equal(alertEl.textContent.includes('at Function'), false, 'No stack trace in UI')
-          assert.equal(alertEl.textContent.includes('TypeError:'), false, 'No raw JS TypeError in UI')
+          assert.equal(
+            alertEl.textContent.includes('TypeError:'),
+            false,
+            'No raw JS TypeError in UI'
+          )
           return true
         })
 
         if (item.checkCooldown) {
           await waitForDom(env, () => {
             const waitBtn = findButtonsByText(container, 'Wait ')[0]
-            assert.ok(waitBtn && waitBtn.disabled, 'HTTP 429 must disable Analyze button with Wait <s>s')
+            assert.ok(
+              waitBtn && waitBtn.disabled,
+              'HTTP 429 must disable Analyze button with Wait <s>s'
+            )
             return true
           })
         }
       }
 
       await unmountStrict(env, root)
-      console.log('✓ SUITE 4 passed: Error Handling Matrix (7 error types + 429 cooldown) verified.')
+      console.log(
+        '✓ SUITE 4 passed: Error Handling Matrix (7 error types + 429 cooldown) verified.'
+      )
     }
 
     // =========================================================================
@@ -922,12 +970,16 @@ async function runTests() {
       // Tab 3: Appearance -> switch preset -> inspect --theme-primary CSS variable
       await clickElement(env, findButtonsByText(container, 'Appearance')[0])
       await waitForDom(env, () => container.textContent.includes('Live Theme Preview'))
-      const presetBtn = findButtonsByText(container, 'Neon Violet')[0] ||
+      const presetBtn =
+        findButtonsByText(container, 'Neon Violet')[0] ||
         findButtonsByText(container, 'Cyber Cyan')[0]
       if (presetBtn) {
         await clickElement(env, presetBtn)
         const primaryVar = env.document.documentElement.style.getPropertyValue('--theme-primary')
-        assert.ok(primaryVar.length > 0, 'Appearance preset switch must apply --theme-primary CSS var')
+        assert.ok(
+          primaryVar.length > 0,
+          'Appearance preset switch must apply --theme-primary CSS var'
+        )
       }
 
       // Tab 4: About -> Developer Name & dynamic package.json version
@@ -937,7 +989,10 @@ async function runTests() {
         container.textContent.includes(expectedAppVersion),
         `About page must display package version ${expectedAppVersion}`
       )
-      assert.ok(container.textContent.includes('39.0.0'), 'About runtime info must show Electron version when present')
+      assert.ok(
+        container.textContent.includes('39.0.0'),
+        'About runtime info must show Electron version when present'
+      )
 
       // Tab return -> General
       await clickElement(env, findButtonsByText(container, 'General')[0])
