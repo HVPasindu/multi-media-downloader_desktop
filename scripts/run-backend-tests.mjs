@@ -121,6 +121,18 @@ const TEST_SUITES = [
   {
     name: 'Appearance: Global Theme & Accessibility',
     file: 'tests/appearance_theme_tests.mjs'
+  },
+  {
+    name: 'Stage 05.14: Frontend React DOM & StrictMode E2E',
+    file: 'tests/step0514_frontend_dom_e2e_tests.mjs'
+  },
+  {
+    name: 'Stage 05.14: Layer A <-> Express Live API Integration E2E',
+    file: 'tests/step0514_api_integration_e2e_tests.js'
+  },
+  {
+    name: 'Stage 05.14: Frontend Performance, Leak & 250-Row Pagination E2E',
+    file: 'tests/step0514_performance_smoke_tests.mjs'
   }
 ]
 
