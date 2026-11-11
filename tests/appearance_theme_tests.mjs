@@ -724,11 +724,11 @@ assert.strictEqual(svOffsetTopLeft.hsv.v, 100)
 // B. Hue change with Black Hue Recovery (adjustHueWithBlackRecovery)
 const t23BlackHsv = { h: 0, s: 0, v: 0 }
 const t23RecoveredFromBlack = calculateHueColor(t23BlackHsv, 240)
-assert.strictEqual(t23RecoveredFromBlack.hsv.h, 240)
-assert.strictEqual(t23RecoveredFromBlack.hsv.s, 85, 'Black hue recovery restores saturation 85')
-assert.strictEqual(t23RecoveredFromBlack.hsv.v, 95, 'Black hue recovery restores value 95')
-assert.notStrictEqual(t23RecoveredFromBlack.hex, '#000000', 'Recovered color is no longer black')
-assert.ok(isValidHex(t23RecoveredFromBlack.hex))
+assert.deepStrictEqual(t23RecoveredFromBlack.hsv, { h: 240, s: 85, v: 95 }, 'Black hue recovery restores { h: 240, s: 85, v: 95 }')
+assert.strictEqual(t23RecoveredFromBlack.hex.toUpperCase(), '#2424F2', 'Recovered HEX at 240° is #2424F2')
+assert.deepStrictEqual(t23RecoveredFromBlack.rgb, { r: 36, g: 36, b: 242 }, 'Recovered RGB at 240° is { r: 36, g: 36, b: 242 }')
+assert.strictEqual(hsvToHex(240, 85, 95).toUpperCase(), '#2424F2', 'Production hsvToHex confirms #2424F2')
+assert.deepStrictEqual(hsvToRgb(240, 85, 95), { r: 36, g: 36, b: 242 }, 'Production hsvToRgb confirms { r: 36, g: 36, b: 242 }')
 
 // C. Direct HEX input synchronization
 const validHexInput = calculateHexColor('#10B981', { hex: '#18C9F5' })
@@ -766,9 +766,22 @@ assert.strictEqual(rgbResult.rgb.g, 0)
 assert.strictEqual(rgbResult.rgb.b, 0)
 assert.strictEqual(rgbResult.hex, '#FF0000')
 
-// Black RGB input produces #000000
-const blackRgbResult = calculateRgbColor({ r: 255, g: 255, b: 255 }, { h: 0, s: 0, v: 100 }, 'r', '0')
-assert.strictEqual(blackRgbResult.rgb.r, 0)
+// Sequential reduction of R, G, B channels from {255,255,255} -> {0,0,0} produces #000000
+const seqR = calculateRgbColor({ r: 255, g: 255, b: 255 }, { h: 0, s: 0, v: 100 }, 'r', '0')
+assert.deepStrictEqual(seqR.rgb, { r: 0, g: 255, b: 255 })
+const seqG = calculateRgbColor(seqR.rgb, seqR.hsv, 'g', '0')
+assert.deepStrictEqual(seqG.rgb, { r: 0, g: 0, b: 255 })
+const seqB = calculateRgbColor(seqG.rgb, seqG.hsv, 'b', '0')
+assert.deepStrictEqual(seqB.rgb, { r: 0, g: 0, b: 0 }, 'All three RGB channels are zero')
+assert.strictEqual(seqB.hex.toUpperCase(), '#000000', 'All-zero RGB produces #000000')
+assert.strictEqual(seqB.hsv.s, 0, 'Black saturation is 0')
+assert.strictEqual(seqB.hsv.v, 0, 'Black value is 0')
+
+// Hue recovery from sequential RGB black state at 240°
+const seqRecovered = calculateHueColor(seqB.hsv, 240)
+assert.deepStrictEqual(seqRecovered.hsv, { h: 240, s: 85, v: 95 }, 'Recovered HSV is { h: 240, s: 85, v: 95 }')
+assert.strictEqual(seqRecovered.hex.toUpperCase(), '#2424F2', 'Recovered HEX is #2424F2')
+assert.deepStrictEqual(seqRecovered.rgb, { r: 36, g: 36, b: 242 }, 'Recovered RGB is { r: 36, g: 36, b: 242 }')
 
 // E. Spectrum conversions roundtrip
 const testHexes = ['#18C9F5', '#00DEA5', '#FF4568', '#A855F7', '#FFFFFF', '#000000']
