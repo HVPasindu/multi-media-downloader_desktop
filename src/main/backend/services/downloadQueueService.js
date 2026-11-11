@@ -343,6 +343,7 @@ export async function cancelDownloadJob(jobId) {
 
         if (updatedCount === 1) {
           scheduledJobIds.delete(jobId)
+          clearJobRetryState(jobId)
 
           return {
             outcome: 'cancelled',
@@ -378,6 +379,9 @@ export async function cancelDownloadJob(jobId) {
         )
 
         if (updatedCount === 1) {
+          scheduledJobIds.delete(jobId)
+          clearJobRetryState(jobId)
+
           return {
             outcome: 'cancelled',
             status: 'cancelled',
@@ -551,6 +555,7 @@ export async function pauseDownloadJob(jobId) {
 
         if (updatedCount === 1) {
           scheduledJobIds.delete(jobId)
+          clearJobRetryState(jobId)
 
           return {
             outcome: 'paused',
@@ -583,6 +588,9 @@ export async function pauseDownloadJob(jobId) {
         )
 
         if (updatedCount === 1) {
+          scheduledJobIds.delete(jobId)
+          clearJobRetryState(jobId)
+
           return {
             outcome: 'paused',
             status: 'paused',

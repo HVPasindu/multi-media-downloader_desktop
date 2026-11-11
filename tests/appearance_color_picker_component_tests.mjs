@@ -115,15 +115,10 @@ console.error = (...args) => {
 const React = (await import('react')).default
 const { act, useState } = React
 const { createRoot } = await import('react-dom/client')
-const { default: CustomColorPicker } = await import(
-  '../src/renderer/src/components/settings/CustomColorPicker.jsx'
-)
-const {
-  calculateRgbColor,
-  calculateHueColor,
-  calculateHexColor,
-  calculateSvColor
-} = await import('../src/renderer/src/utils/colorPickerState.js')
+const { default: CustomColorPicker } =
+  await import('../src/renderer/src/components/settings/CustomColorPicker.jsx')
+const { calculateRgbColor, calculateHueColor } =
+  await import('../src/renderer/src/utils/colorPickerState.js')
 
 console.log('--- APPLAN2 GENUINE REACT DOM MOUNTING & COLOR PICKER ISOLATION TESTS ---\n')
 
@@ -154,7 +149,12 @@ let harnessApi = null
 const bgNotifications = []
 const accentNotifications = []
 
-function DualPickerHarness({ initialBg = '#040B1C', initialAccent = '#18C9F5', onBgChange, onAccentChange }) {
+function DualPickerHarness({
+  initialBg = '#040B1C',
+  initialAccent = '#18C9F5',
+  onBgChange,
+  onAccentChange
+}) {
   const [bgColor, setBgColor] = useState(initialBg)
   const [accentColor, setAccentColor] = useState(initialAccent)
 
@@ -232,7 +232,9 @@ assert.ok(accentRInput, 'accent-rgb-r exists')
 assert.ok(accentGInput, 'accent-rgb-g exists')
 assert.ok(accentBInput, 'accent-rgb-b exists')
 
-const [bgPickerEl, accentPickerEl] = container.querySelectorAll('.appearance-settings-test-root > div')
+const [bgPickerEl, accentPickerEl] = container.querySelectorAll(
+  '.appearance-settings-test-root > div'
+)
 assert.ok(bgPickerEl, 'Background picker root container exists')
 assert.ok(accentPickerEl, 'Accent picker root container exists')
 
@@ -258,7 +260,11 @@ assert.strictEqual(bgHexInput.value, '#142536', 'Background input displays #1425
 assert.strictEqual(bgRInput.value, '20', 'Background R input synchronizes to 20')
 assert.strictEqual(bgGInput.value, '37', 'Background G input synchronizes to 37')
 assert.strictEqual(bgBInput.value, '54', 'Background B input synchronizes to 54')
-assert.strictEqual(bgPickerEl.querySelector('.h-20 span').textContent.trim(), '#142536', 'Background live preview swatch displays #142536')
+assert.strictEqual(
+  bgPickerEl.querySelector('.h-20 span').textContent.trim(),
+  '#142536',
+  'Background live preview swatch displays #142536'
+)
 assert.strictEqual(bgNotifications.length, 1, 'Background parent callback triggered exactly once')
 assert.strictEqual(bgNotifications[0], '#142536', 'Background callback received #142536')
 
@@ -266,8 +272,16 @@ assert.strictEqual(accentHexInput.value, '#18C9F5', 'Accent input strictly prese
 assert.strictEqual(accentRInput.value, '24', 'Accent R input preserved at 24')
 assert.strictEqual(accentGInput.value, '201', 'Accent G input preserved at 201')
 assert.strictEqual(accentBInput.value, '245', 'Accent B input preserved at 245')
-assert.strictEqual(accentPickerEl.querySelector('.h-20 span').textContent.trim(), '#18C9F5', 'Accent live preview swatch preserved at #18C9F5')
-assert.strictEqual(accentNotifications.length, 0, 'Accent callback NOT triggered during background update')
+assert.strictEqual(
+  accentPickerEl.querySelector('.h-20 span').textContent.trim(),
+  '#18C9F5',
+  'Accent live preview swatch preserved at #18C9F5'
+)
+assert.strictEqual(
+  accentNotifications.length,
+  0,
+  'Accent callback NOT triggered during background update'
+)
 
 // Test B — Accent Picker Interaction
 console.log('  -> Test B: Interacting with Accent HEX input (#A855F7)...')
@@ -281,7 +295,10 @@ assert.strictEqual(accentRInput.value, '168', 'Accent R input synchronizes to 16
 assert.strictEqual(accentGInput.value, '85', 'Accent G input synchronizes to 85')
 assert.strictEqual(accentBInput.value, '247', 'Accent B input synchronizes to 247')
 const accentSwatchText = accentPickerEl.querySelector('.h-20 span').textContent.trim()
-assert.ok(accentSwatchText === '#A855F7' || accentSwatchText === '#A854F7', 'Accent live preview swatch displays #A854F7 / #A855F7')
+assert.ok(
+  accentSwatchText === '#A855F7' || accentSwatchText === '#A854F7',
+  'Accent live preview swatch displays #A854F7 / #A855F7'
+)
 assert.strictEqual(accentNotifications.length, 1, 'Accent parent callback triggered exactly once')
 assert.strictEqual(accentNotifications[0], '#A855F7', 'Accent callback received #A855F7')
 
@@ -289,8 +306,16 @@ assert.strictEqual(bgHexInput.value, '#142536', 'Background input strictly prese
 assert.strictEqual(bgRInput.value, '20', 'Background R input preserved at 20')
 assert.strictEqual(bgGInput.value, '37', 'Background G input preserved at 37')
 assert.strictEqual(bgBInput.value, '54', 'Background B input preserved at 54')
-assert.strictEqual(bgPickerEl.querySelector('.h-20 span').textContent.trim(), '#142536', 'Background preview swatch preserved at #142536')
-assert.strictEqual(bgNotifications.length, 0, 'Background callback NOT triggered during accent update')
+assert.strictEqual(
+  bgPickerEl.querySelector('.h-20 span').textContent.trim(),
+  '#142536',
+  'Background preview swatch preserved at #142536'
+)
+assert.strictEqual(
+  bgNotifications.length,
+  0,
+  'Background callback NOT triggered during accent update'
+)
 
 // Test C — RGB Input Synchronization on Mounted Inputs
 console.log('  -> Test C: Interacting with mounted RGB inputs...')
@@ -301,29 +326,56 @@ await setNativeInputValue(bgRInput, '16')
 await setNativeInputValue(bgGInput, '185')
 await setNativeInputValue(bgBInput, '129')
 
-assert.strictEqual(bgHexInput.value, '#10B981', 'Background HEX synchronized from RGB inputs to #10B981')
+assert.strictEqual(
+  bgHexInput.value,
+  '#10B981',
+  'Background HEX synchronized from RGB inputs to #10B981'
+)
 const bgSwatchAfterRgb = bgPickerEl.querySelector('.h-20 span').textContent.trim()
 assert.notStrictEqual(bgSwatchAfterRgb, '#142536', 'Background preview updated from #142536')
-assert.ok(bgSwatchAfterRgb === '#10B981' || bgSwatchAfterRgb === '#11BA82', 'Background preview displays synchronized green')
+assert.ok(
+  bgSwatchAfterRgb === '#10B981' || bgSwatchAfterRgb === '#11BA82',
+  'Background preview displays synchronized green'
+)
 assert.strictEqual(accentHexInput.value, '#A855F7', 'Accent HEX remains isolated at #A855F7')
-assert.strictEqual(accentPickerEl.querySelector('.h-20 span').textContent.trim(), accentSwatchText, 'Accent preview remains isolated')
+assert.strictEqual(
+  accentPickerEl.querySelector('.h-20 span').textContent.trim(),
+  accentSwatchText,
+  'Accent preview remains isolated'
+)
 
 // Test D — Hue Slider Interaction
 console.log('  -> Test D: Interacting with Hue range slider...')
-const bgHueSlider = container.querySelector('input[type="range"][aria-label="Active Background Hue Slider"]')
+const bgHueSlider = container.querySelector(
+  'input[type="range"][aria-label="Active Background Hue Slider"]'
+)
 assert.ok(bgHueSlider, 'Hue range slider exists in DOM')
 
 bgNotifications.length = 0
 await setNativeInputValue(bgHueSlider, '240')
 
-assert.strictEqual(bgNotifications.length, 1, 'Hue change triggered exactly one parent notification')
+assert.strictEqual(
+  bgNotifications.length,
+  1,
+  'Hue change triggered exactly one parent notification'
+)
 assert.ok(bgHexInput.value.startsWith('#'), 'Valid hex generated from hue change')
 assert.strictEqual(bgNotifications[0], bgHexInput.value, 'Parent callback received matching colour')
-const bgHsvText = Array.from(bgPickerEl.querySelectorAll('span')).find((s) => s.textContent?.startsWith('HSV:'))?.textContent
+const bgHsvText = Array.from(bgPickerEl.querySelectorAll('span')).find((s) =>
+  s.textContent?.startsWith('HSV:')
+)?.textContent
 assert.ok(bgHsvText?.startsWith('HSV: 240°'), 'HSV text in DOM displays 240° hue')
-assert.strictEqual(bgPickerEl.querySelector('.h-20 span').textContent.trim(), bgHexInput.value, 'Background preview swatch displays current hex')
+assert.strictEqual(
+  bgPickerEl.querySelector('.h-20 span').textContent.trim(),
+  bgHexInput.value,
+  'Background preview swatch displays current hex'
+)
 assert.strictEqual(accentHexInput.value, '#A855F7', 'Accent remains isolated')
-assert.strictEqual(accentPickerEl.querySelector('.h-20 span').textContent.trim(), accentSwatchText, 'Accent preview remains isolated')
+assert.strictEqual(
+  accentPickerEl.querySelector('.h-20 span').textContent.trim(),
+  accentSwatchText,
+  'Accent preview remains isolated'
+)
 
 // Test E — External Parent State Changes (initialColor synchronization)
 console.log('  -> Test E: External parent state update synchronization...')
@@ -331,18 +383,28 @@ await act(async () => {
   harnessApi.setBgColor('#FF5500')
 })
 
-assert.strictEqual(bgHexInput.value, '#FF5500', 'Background synchronized with external state to #FF5500')
+assert.strictEqual(
+  bgHexInput.value,
+  '#FF5500',
+  'Background synchronized with external state to #FF5500'
+)
 assert.strictEqual(bgRInput.value, '255', 'Background R synchronized to 255')
 assert.strictEqual(bgGInput.value, '85', 'Background G synchronized to 85')
 assert.strictEqual(bgBInput.value, '0', 'Background B synchronized to 0')
-assert.strictEqual(accentHexInput.value, '#A855F7', 'Accent preserved during external background state update')
+assert.strictEqual(
+  accentHexInput.value,
+  '#A855F7',
+  'Accent preserved during external background state update'
+)
 
 console.log('✓ Phase 02 Passed: Real DOM interaction and dual-picker isolation verified.')
 
 // ============================================================================
 // PHASE 03: Genuine Event Listener Registration and Cleanup
 // ============================================================================
-console.log('\n[Phase 03] Testing genuine event listener registration and cleanup on real window...')
+console.log(
+  '\n[Phase 03] Testing genuine event listener registration and cleanup on real window...'
+)
 
 // Locate Background 2D SV area element
 const svAreas = container.querySelectorAll('.cursor-crosshair')
@@ -370,7 +432,11 @@ accentSvArea.getBoundingClientRect = () => ({
 })
 
 // Test A — Mouse Down registers listeners on window
-assert.strictEqual(activeMouseMoveListeners.size, 0, 'No active window mousemove listeners before mouse down')
+assert.strictEqual(
+  activeMouseMoveListeners.size,
+  0,
+  'No active window mousemove listeners before mouse down'
+)
 const baseMouseUpCount = activeMouseUpListeners.size
 
 bgNotifications.length = 0
@@ -384,12 +450,28 @@ await act(async () => {
   )
 })
 
-assert.strictEqual(activeMouseMoveListeners.size, 1, 'Exactly 1 mousemove listener registered on window')
-assert.strictEqual(activeMouseUpListeners.size, baseMouseUpCount + 1, 'Exactly 1 mouseup drag listener registered on window')
+assert.strictEqual(
+  activeMouseMoveListeners.size,
+  1,
+  'Exactly 1 mousemove listener registered on window'
+)
+assert.strictEqual(
+  activeMouseUpListeners.size,
+  baseMouseUpCount + 1,
+  'Exactly 1 mouseup drag listener registered on window'
+)
 const capturedMoveListener = lastAddedMouseMove
 const capturedUpListener = lastAddedMouseUp
-assert.strictEqual(typeof capturedMoveListener, 'function', 'Captured genuine mousemove callback reference')
-assert.strictEqual(typeof capturedUpListener, 'function', 'Captured genuine mouseup callback reference')
+assert.strictEqual(
+  typeof capturedMoveListener,
+  'function',
+  'Captured genuine mousemove callback reference'
+)
+assert.strictEqual(
+  typeof capturedUpListener,
+  'function',
+  'Captured genuine mouseup callback reference'
+)
 
 // Test B — Mouse Move updates state
 await act(async () => {
@@ -402,9 +484,19 @@ await act(async () => {
   )
 })
 assert.ok(bgNotifications.length >= 1, 'Mousemove updated color state')
-assert.strictEqual(bgHexInput.value, bgNotifications[bgNotifications.length - 1], 'HEX matches callback')
-assert.strictEqual(bgPickerEl.querySelector('.h-20 span').textContent.trim(), bgHexInput.value, 'Colour preview matches HEX')
-const bgMoveHsv = Array.from(bgPickerEl.querySelectorAll('span')).find((s) => s.textContent?.startsWith('HSV:'))?.textContent
+assert.strictEqual(
+  bgHexInput.value,
+  bgNotifications[bgNotifications.length - 1],
+  'HEX matches callback'
+)
+assert.strictEqual(
+  bgPickerEl.querySelector('.h-20 span').textContent.trim(),
+  bgHexInput.value,
+  'Colour preview matches HEX'
+)
+const bgMoveHsv = Array.from(bgPickerEl.querySelectorAll('span')).find((s) =>
+  s.textContent?.startsWith('HSV:')
+)?.textContent
 assert.ok(bgMoveHsv?.includes('100%, 100%'), 'HSV updated to S=100% V=100%')
 
 // Test C — Mouse Up removes window listeners
@@ -415,10 +507,26 @@ await act(async () => {
     })
   )
 })
-assert.strictEqual(activeMouseMoveListeners.size, 0, 'mousemove listener cleanly removed from window on mouseup')
-assert.strictEqual(activeMouseUpListeners.size, baseMouseUpCount, 'mouseup listener cleanly removed from window on mouseup')
-assert.strictEqual(lastRemovedMouseMove, capturedMoveListener, 'Exact registered mousemove function removed')
-assert.strictEqual(lastRemovedMouseUp, capturedUpListener, 'Exact registered mouseup function removed')
+assert.strictEqual(
+  activeMouseMoveListeners.size,
+  0,
+  'mousemove listener cleanly removed from window on mouseup'
+)
+assert.strictEqual(
+  activeMouseUpListeners.size,
+  baseMouseUpCount,
+  'mouseup listener cleanly removed from window on mouseup'
+)
+assert.strictEqual(
+  lastRemovedMouseMove,
+  capturedMoveListener,
+  'Exact registered mousemove function removed'
+)
+assert.strictEqual(
+  lastRemovedMouseUp,
+  capturedUpListener,
+  'Exact registered mouseup function removed'
+)
 
 // Test D — Unmount During Active Drag (Background Picker)
 console.log('  -> Test D: Unmounting React root while drag is actively in progress...')
@@ -432,7 +540,11 @@ await act(async () => {
   )
 })
 assert.strictEqual(activeMouseMoveListeners.size, 1, 'Drag active: mousemove listener on window')
-assert.strictEqual(activeMouseUpListeners.size, baseMouseUpCount + 1, 'Drag active: mouseup listener on window')
+assert.strictEqual(
+  activeMouseUpListeners.size,
+  baseMouseUpCount + 1,
+  'Drag active: mouseup listener on window'
+)
 const dragBgMove = lastAddedMouseMove
 const dragBgUp = lastAddedMouseUp
 
@@ -451,8 +563,16 @@ assert.strictEqual(
   baseMouseUpCount,
   'Unmount cleanup hook successfully removed window mouseup listener (zero leaks)'
 )
-assert.strictEqual(lastRemovedMouseMove, dragBgMove, 'Exact background drag mousemove function removed on unmount')
-assert.strictEqual(lastRemovedMouseUp, dragBgUp, 'Exact background drag mouseup function removed on unmount')
+assert.strictEqual(
+  lastRemovedMouseMove,
+  dragBgMove,
+  'Exact background drag mousemove function removed on unmount'
+)
+assert.strictEqual(
+  lastRemovedMouseUp,
+  dragBgUp,
+  'Exact background drag mouseup function removed on unmount'
+)
 
 // Repeat Test D for Accent Picker in a freshly mounted root
 const accentRootContainer = document.getElementById('root')
@@ -468,14 +588,23 @@ await act(async () => {
         idPrefix: 'accent-drag-test',
         selectionLabel: 'Accent Drag Test',
         showPalettePreview: false,
-        onColorChange: (c) => { accentDragNotif = c }
+        onColorChange: (c) => {
+          accentDragNotif = c
+        }
       })
     )
   )
 })
 
 const freshAccentSv = accentRootContainer.querySelector('.cursor-crosshair')
-freshAccentSv.getBoundingClientRect = () => ({ left: 0, top: 0, width: 200, height: 200, right: 200, bottom: 200 })
+freshAccentSv.getBoundingClientRect = () => ({
+  left: 0,
+  top: 0,
+  width: 200,
+  height: 200,
+  right: 200,
+  bottom: 200
+})
 
 await act(async () => {
   freshAccentSv.dispatchEvent(
@@ -487,19 +616,41 @@ await act(async () => {
   )
 })
 assert.strictEqual(activeMouseMoveListeners.size, 1, 'Accent drag active: mousemove registered')
-assert.strictEqual(activeMouseUpListeners.size, baseMouseUpCount + 1, 'Accent drag active: mouseup registered')
+assert.strictEqual(
+  activeMouseUpListeners.size,
+  baseMouseUpCount + 1,
+  'Accent drag active: mouseup registered'
+)
+assert.ok(
+  typeof accentDragNotif === 'string' && accentDragNotif.startsWith('#'),
+  'Accent drag mousedown notified parent callback with valid HEX color'
+)
 const dragAccentMove = lastAddedMouseMove
 const dragAccentUp = lastAddedMouseUp
 
 await act(async () => {
   accentRoot.unmount()
 })
-assert.strictEqual(activeMouseMoveListeners.size, 0, 'Accent unmount removed mousemove listener (zero leaks)')
-assert.strictEqual(activeMouseUpListeners.size, baseMouseUpCount, 'Accent unmount removed mouseup listener (zero leaks)')
-assert.strictEqual(lastRemovedMouseMove, dragAccentMove, 'Exact accent drag mousemove removed on unmount')
+assert.strictEqual(
+  activeMouseMoveListeners.size,
+  0,
+  'Accent unmount removed mousemove listener (zero leaks)'
+)
+assert.strictEqual(
+  activeMouseUpListeners.size,
+  baseMouseUpCount,
+  'Accent unmount removed mouseup listener (zero leaks)'
+)
+assert.strictEqual(
+  lastRemovedMouseMove,
+  dragAccentMove,
+  'Exact accent drag mousemove removed on unmount'
+)
 assert.strictEqual(lastRemovedMouseUp, dragAccentUp, 'Exact accent drag mouseup removed on unmount')
 
-console.log('✓ Phase 03 Passed: Real window event listener registration and unmount cleanup verified.')
+console.log(
+  '✓ Phase 03 Passed: Real window event listener registration and unmount cleanup verified.'
+)
 
 // ============================================================================
 // PHASE 04: Complete RGB Black State and Hue Recovery Verification
@@ -525,7 +676,11 @@ assert.strictEqual(recovered.hsv.h, 240, 'Recovered hue is 240')
 assert.strictEqual(recovered.hsv.s, 85, 'Recovered saturation is 85')
 assert.strictEqual(recovered.hsv.v, 95, 'Recovered value is 95')
 assert.strictEqual(recovered.hex.toUpperCase(), '#2424F2', 'Recovered HEX is exactly #2424F2')
-assert.deepStrictEqual(recovered.rgb, { r: 36, g: 36, b: 242 }, 'Recovered RGB is exactly { r: 36, g: 36, b: 242 }')
+assert.deepStrictEqual(
+  recovered.rgb,
+  { r: 36, g: 36, b: 242 },
+  'Recovered RGB is exactly { r: 36, g: 36, b: 242 }'
+)
 
 // C. Actual UI mounted test in freshly created root
 const freshContainer = document.getElementById('root')
@@ -542,7 +697,9 @@ await act(async () => {
         idPrefix: 'black-test',
         selectionLabel: 'Black Recovery Test',
         showPalettePreview: false,
-        onColorChange: (c) => { freshColor = c }
+        onColorChange: (c) => {
+          freshColor = c
+        }
       })
     )
   )
@@ -552,7 +709,9 @@ const testR = freshContainer.querySelector('#black-test-rgb-r')
 const testG = freshContainer.querySelector('#black-test-rgb-g')
 const testB = freshContainer.querySelector('#black-test-rgb-b')
 const testHex = freshContainer.querySelector('#black-test-hex-field')
-const testHue = freshContainer.querySelector('input[type="range"][aria-label="Black Recovery Test Hue Slider"]')
+const testHue = freshContainer.querySelector(
+  'input[type="range"][aria-label="Black Recovery Test Hue Slider"]'
+)
 
 // Set all three inputs to 0
 await setNativeInputValue(testR, '0')
@@ -612,15 +771,29 @@ const hsvReadout = Array.from(freshContainer.querySelectorAll('span')).find((s) 
   s.textContent.startsWith('HSV:')
 )
 assert.ok(hsvReadout, 'HSV readout exists in DOM')
-assert.strictEqual(hsvReadout.textContent.trim(), 'HSV: 240°, 85%, 95%', 'HSV becomes 240°, 85%, 95%')
+assert.strictEqual(
+  hsvReadout.textContent.trim(),
+  'HSV: 240°, 85%, 95%',
+  'HSV becomes 240°, 85%, 95%'
+)
 
 await act(async () => {
   freshRoot.unmount()
 })
 console.error = originalConsoleError
-assert.strictEqual(reactConsoleWarnings.length, 0, 'Zero React StrictMode / state-update warnings throughout entire run')
+assert.strictEqual(
+  reactConsoleWarnings.length,
+  0,
+  'Zero React StrictMode / state-update warnings throughout entire run'
+)
 console.log('✓ Phase 04 Passed: RGB Black state and Hue Recovery (#2424F2 / 36,36,242) verified.')
 
-console.log('\n========================================================================================')
-console.log('>>> ALL 4 PHASES OF REACT DOM MOUNTING, ISOLATION & HUE RECOVERY PASSED (100% PASS) <<<')
-console.log('========================================================================================\n')
+console.log(
+  '\n========================================================================================'
+)
+console.log(
+  '>>> ALL 4 PHASES OF REACT DOM MOUNTING, ISOLATION & HUE RECOVERY PASSED (100% PASS) <<<'
+)
+console.log(
+  '========================================================================================\n'
+)

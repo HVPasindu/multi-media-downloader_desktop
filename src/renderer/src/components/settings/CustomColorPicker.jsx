@@ -43,27 +43,33 @@ export default function CustomColorPicker({
   const [hexInput, setHexInput] = useState(safeInitial)
   const [hexError, setHexError] = useState(null)
   const [rgbState, setRgbState] = useState(() => hexToRgb(safeInitial) || { r: 24, g: 201, b: 245 })
+  const [prevInitialColor, setPrevInitialColor] = useState(initialColor)
 
   const hsvRef = useRef(initialHsv)
   const svAreaRef = useRef(null)
   const isDraggingSv = useRef(false)
   const cleanupDragListenersRef = useRef(null)
 
-  // Keep internal state updated if initialColor prop changes from outside (e.g. preset chosen)
-  useEffect(() => {
+  // Synchronize internal state when initialColor prop changes externally (e.g. preset chosen)
+  if (initialColor !== prevInitialColor) {
+    setPrevInitialColor(initialColor)
     if (isValidHex(initialColor)) {
       const formatted = initialColor.toUpperCase()
       const rgb = hexToRgb(formatted)
       if (rgb) {
         const nextHsv = rgbToHsv(rgb.r, rgb.g, rgb.b)
-        hsvRef.current = nextHsv
         setHexInput(formatted)
         setHexError(null)
         setRgbState(rgb)
         setHsv(nextHsv)
       }
     }
-  }, [initialColor])
+  }
+
+  // Keep hsvRef synchronized with committed state for drag handlers
+  useEffect(() => {
+    hsvRef.current = hsv
+  }, [hsv])
 
   // Clean up global drag listeners if component unmounts while dragging
   useEffect(() => {
@@ -278,7 +284,9 @@ export default function CustomColorPicker({
           </div>
 
           <div className="text-[11px] text-text-muted flex items-center justify-between font-mono">
-            <span>HSV: {hsv.h}°, {hsv.s}%, {hsv.v}%</span>
+            <span>
+              HSV: {hsv.h}°, {hsv.s}%, {hsv.v}%
+            </span>
           </div>
         </div>
       </div>
@@ -287,7 +295,10 @@ export default function CustomColorPicker({
       <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 items-end pt-1">
         {/* HEX Input (5 cols) */}
         <div className="sm:col-span-5 flex flex-col gap-1">
-          <label htmlFor={`${idPrefix}-hex-field`} className="text-xs font-semibold text-text flex items-center gap-1.5">
+          <label
+            htmlFor={`${idPrefix}-hex-field`}
+            className="text-xs font-semibold text-text flex items-center gap-1.5"
+          >
             <span>HEX Code</span>
             <span className="text-[10px] text-text-muted font-normal">(e.g. #18C9F5)</span>
           </label>

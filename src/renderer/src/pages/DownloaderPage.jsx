@@ -105,6 +105,7 @@ export default function DownloaderPage() {
   const activeRequestIdRef = useRef(0)
   const speedTrackerRef = useRef(new Map())
   const isPollingRecentRef = useRef(false)
+  const isSubmittingDownloadRef = useRef(false)
   const hasActiveRecentRef = useRef(false)
   const savedPreferencesRef = useRef({
     preferredMp4Quality: 'best',
@@ -700,7 +701,7 @@ export default function DownloaderPage() {
 
   // Step 04 & Step 05.09: Download Job Creation Handler
   const handleDownloadClick = async () => {
-    if (isSubmittingDownload || isAnalyzing) return
+    if (isSubmittingDownload || isSubmittingDownloadRef.current || isAnalyzing) return
     setDownloadSubmitFeedback(null)
 
     // 1. Validation: Ensure media is analyzed and URL matches
@@ -782,7 +783,8 @@ export default function DownloaderPage() {
       }
     }
 
-    // 2. Submit job creation to backend
+    // 2. Submit job creation to backend (synchronous ref guard prevents same-frame double-click duplicates)
+    isSubmittingDownloadRef.current = true
     setIsSubmittingDownload(true)
 
     try {
@@ -828,6 +830,7 @@ export default function DownloaderPage() {
         message: safeErrorInfo.message
       })
     } finally {
+      isSubmittingDownloadRef.current = false
       setIsSubmittingDownload(false)
     }
   }
