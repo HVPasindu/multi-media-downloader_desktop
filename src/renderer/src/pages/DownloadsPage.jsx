@@ -63,6 +63,7 @@ export default function DownloadsPage() {
   const [pageSize, setPageSize] = useState(20)
   const [currentPage, setCurrentPage] = useState(1)
   const [deletingJobId, setDeletingJobId] = useState(null)
+  const deletingLockRef = useRef(false)
   const retryGuardRef = useRef(null)
   if (retryGuardRef.current === null) {
     retryGuardRef.current = createRetryGuard()
@@ -221,18 +222,20 @@ export default function DownloadsPage() {
   }
 
   const handleDeleteRecord = async (jobId) => {
-    if (deletingJobId !== null) return
-    const confirmed = await showConfirm(
-      'Delete History Record?',
-      'Are you sure you want to delete this download from history? (The downloaded media file will remain on your computer).',
-      {
-        confirmButtonText: 'Delete Record',
-        isDanger: true
-      }
-    )
-    if (!confirmed) return
+    if (deletingJobId !== null || deletingLockRef.current) return
+    deletingLockRef.current = true
 
     try {
+      const confirmed = await showConfirm(
+        'Delete History Record?',
+        'Are you sure you want to delete this download from history? (The downloaded media file will remain on your computer).',
+        {
+          confirmButtonText: 'Delete Record',
+          isDanger: true
+        }
+      )
+      if (!confirmed) return
+
       setDeletingJobId(jobId)
       const res = await deleteDownloadHistory(jobId)
       if (res.ok && res.data?.success) {
@@ -250,6 +253,7 @@ export default function DownloadsPage() {
       )
       showError('Delete Error', errorInfo.message)
     } finally {
+      deletingLockRef.current = false
       setDeletingJobId(null)
     }
   }
@@ -287,11 +291,11 @@ export default function DownloadsPage() {
     }
   }
 
-  // Permanently clear failed download records from SQLite history (Order 09)
+  // Permanently clear failed and cancelled download records from SQLite history (Order 09 + Surgical Fix)
   const handleClearFailed = async () => {
     const confirmed = await showConfirm(
       'Clear Failed Downloads?',
-      'This will permanently remove failed download records from history. Media files on disk will not be deleted.',
+      'This will permanently remove failed and cancelled download records from history. Media files on disk will not be deleted.',
       {
         confirmButtonText: 'Clear Failed',
         isDanger: true
@@ -303,11 +307,18 @@ export default function DownloadsPage() {
     try {
       const res = await clearDownloadHistory({
         confirm: true,
-        statuses: ['failed']
+        statuses: ['failed', 'cancelled']
       })
 
       if (res.ok && res.data?.success) {
-        showToast('Failed downloads cleared from history', 'success')
+        const deletedJobs = Number(res.data?.data?.deletedJobs ?? 0)
+
+        if (deletedJobs > 0) {
+          showToast('Failed and cancelled downloads cleared from history', 'success')
+        } else {
+          showToast('No failed or cancelled downloads to clear', 'info')
+        }
+
         if (typeof retry === 'function') retry()
         fetchGlobalCounts()
       } else {
@@ -749,20 +760,35 @@ export default function DownloadsPage() {
                           </>
                         )}
 
-                        {/* Failed or Cancelled: Retry */}
+                        {/* Failed or Cancelled: Retry + Delete */}
                         {(isFailed || isCancelled) && (
-                          <button
-                            type="button"
-                            onClick={() => handleRetryJob(item.id)}
-                            disabled={retryButtonState.disabled}
-                            className="px-2.5 py-1 rounded-lg bg-background/80 hover:bg-surface-elevated border border-primary/20 hover:border-primary/40 text-text-muted hover:text-text flex items-center gap-1.5 transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
-                            title="Retry download"
-                          >
-                            <RotateCcw
-                              className={`w-3.5 h-3.5 text-primary ${retryButtonState.isSpinning ? 'animate-spin' : ''}`}
-                            />
-                            <span className="text-[11px] font-bold">Retry</span>
-                          </button>
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => handleRetryJob(item.id)}
+                              disabled={retryButtonState.disabled}
+                              className="px-2.5 py-1 rounded-lg bg-background/80 hover:bg-surface-elevated border border-primary/20 hover:border-primary/40 text-text-muted hover:text-text flex items-center gap-1.5 transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
+                              title="Retry download"
+                            >
+                              <RotateCcw
+                                className={`w-3.5 h-3.5 text-primary ${retryButtonState.isSpinning ? 'animate-spin' : ''}`}
+                              />
+                              <span className="text-[11px] font-bold">Retry</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteRecord(item.id)}
+                              disabled={deletingJobId === item.id || retryingJobId === item.id}
+                              className="w-8 h-8 rounded-lg bg-background/80 hover:bg-red-500/20 border border-primary/20 hover:border-red-500/40 text-text-muted hover:text-red-400 flex items-center justify-center transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
+                              title="Delete from history (keeps file on disk)"
+                            >
+                              {deletingJobId === item.id ? (
+                                <Loader2 className="w-3.5 h-3.5 animate-spin text-red-400" />
+                              ) : (
+                                <Trash2 className="w-3.5 h-3.5" />
+                              )}
+                            </button>
+                          </>
                         )}
                       </div>
                     </td>
