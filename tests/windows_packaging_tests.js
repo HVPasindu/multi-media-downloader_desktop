@@ -1,3 +1,4 @@
+import { app } from 'electron'
 import assert from 'node:assert/strict'
 import path from 'node:path'
 import os from 'node:os'
@@ -380,7 +381,7 @@ async function runAllWindowsPackagingTests() {
     console.log('✓ TEST V passed: Preload IPC bridge confirmed.\n')
 
     // ------------------------------------------------------------------------
-    // TEST W: Packaging includes executable resources OUTSIDE app.asar
+    // TEST W: Packaging includes executable resources OUTSIDE app.asar without duplication
     // ------------------------------------------------------------------------
     console.log('--- TEST W: electron-builder.yml extraResources Configuration ---')
     const builderYmlPath = path.resolve(process.cwd(), 'electron-builder.yml')
@@ -388,7 +389,74 @@ async function runAllWindowsPackagingTests() {
     assert.ok(builderYmlRaw.includes('extraResources:'), 'Must specify extraResources block')
     assert.ok(builderYmlRaw.includes('from: resources/bin'), 'Must copy from resources/bin')
     assert.ok(builderYmlRaw.includes('to: bin'), 'Must place in packaged bin directory')
-    console.log('✓ TEST W passed: electron-builder.yml extraResources correctly configured.\n')
+
+    const extractTopLevelYamlBlock = (yamlText, key) => {
+      const lines = yamlText.replace(/\r\n/g, '\n').split('\n')
+      const startIdx = lines.findIndex((line) => line.trim() === `${key}:`)
+      assert.notStrictEqual(startIdx, -1, `electron-builder.yml must define top-level ${key} block`)
+      const blockLines = []
+      for (let i = startIdx + 1; i < lines.length; i += 1) {
+        const line = lines[i]
+        if (/^[A-Za-z0-9_-]+:\s*(#.*)?$/.test(line) || /^[A-Za-z0-9_-]+:\s+\S/.test(line)) {
+          break
+        }
+        const withoutComment = line.replace(/\s+#.*$/, '')
+        if (withoutComment.trim().length > 0) {
+          blockLines.push(withoutComment)
+        }
+      }
+      return blockLines
+    }
+
+    const extractYamlListItems = (blockLines) =>
+      blockLines
+        .map((line) => line.trim())
+        .filter((line) => line.startsWith('- '))
+        .map((line) =>
+          line
+            .slice(2)
+            .trim()
+            .replace(/^['"]|['"]$/g, '')
+        )
+
+    const filesListItems = extractYamlListItems(extractTopLevelYamlBlock(builderYmlRaw, 'files'))
+    const asarUnpackItems = extractYamlListItems(
+      extractTopLevelYamlBlock(builderYmlRaw, 'asarUnpack')
+    )
+    const extraResourcesBlock = extractTopLevelYamlBlock(builderYmlRaw, 'extraResources')
+    const hasExtraResourcesBin =
+      extraResourcesBlock.some(
+        (line) => line.trim() === '- from: resources/bin' || line.trim() === 'from: resources/bin'
+      ) && extraResourcesBlock.some((line) => line.trim() === 'to: bin')
+
+    assert.ok(hasExtraResourcesBin, 'extraResources must map resources/bin to bin')
+    assert.ok(
+      filesListItems.includes('!resources/bin/**'),
+      'files must exclude !resources/bin/** so app.asar and app.asar.unpacked do not duplicate binaries'
+    )
+    assert.ok(
+      asarUnpackItems.includes('resources/icon.png'),
+      'asarUnpack must explicitly unpack resources/icon.png'
+    )
+    assert.ok(
+      !asarUnpackItems.includes('resources/**'),
+      'asarUnpack must not broadly match resources/**'
+    )
+    assert.ok(
+      !asarUnpackItems.some((item) => item.startsWith('resources/bin')),
+      'asarUnpack must not unpack resources/bin binaries alongside extraResources'
+    )
+    assert.ok(
+      !(
+        hasExtraResourcesBin &&
+        (asarUnpackItems.includes('resources/**') ||
+          asarUnpackItems.some((item) => item.startsWith('resources/bin')))
+      ),
+      'resources/bin must not be configured for both extraResources and asarUnpack'
+    )
+    console.log(
+      '✓ TEST W passed: electron-builder.yml extraResources and non-duplicate binary packaging verified.\n'
+    )
 
     // ------------------------------------------------------------------------
     // TEST X: Windows unpacked application build script verification
@@ -604,8 +672,35 @@ async function runAllWindowsPackagingTests() {
   }
 }
 
-runAllWindowsPackagingTests().catch((err) => {
-  console.error('\nWINDOWS PACKAGING TEST SUITE FAILED:')
-  console.error(err)
-  process.exit(1)
-})
+const isElectronRuntime =
+  Boolean(process.versions?.electron) && typeof app?.whenReady === 'function'
+
+async function executeWindowsPackagingSuite() {
+  try {
+    await runAllWindowsPackagingTests()
+  } catch (err) {
+    process.exitCode = 1
+    console.error('\nWINDOWS PACKAGING TEST SUITE FAILED:')
+    console.error(err)
+  } finally {
+    if (isElectronRuntime) {
+      app.quit()
+    } else if (process.exitCode && process.exitCode !== 0) {
+      process.exit(process.exitCode)
+    }
+  }
+}
+
+if (isElectronRuntime) {
+  app
+    .whenReady()
+    .then(executeWindowsPackagingSuite)
+    .catch((err) => {
+      process.exitCode = 1
+      console.error('\nWINDOWS PACKAGING TEST SUITE FAILED TO INITIALIZE ELECTRON:')
+      console.error(err)
+      app.quit()
+    })
+} else {
+  executeWindowsPackagingSuite()
+}
