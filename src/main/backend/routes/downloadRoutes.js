@@ -6,9 +6,12 @@ import {
   getDownloadJobController,
   listDownloadJobsController,
   cancelDownloadJobController,
+  pauseDownloadJobController,
+  resumeDownloadJobController,
   retryDownloadJobController,
   deleteDownloadHistoryController,
-  clearDownloadHistoryController
+  clearDownloadHistoryController,
+  getDownloadSummaryController
 } from '../controllers/downloadController.js'
 
 const router = Router()
@@ -19,13 +22,22 @@ router.post('/', createDownloadJobController)
 // Check whether selected download configuration is already active (read-only)
 router.post('/check-duplicate', checkDownloadDuplicateController)
 
+// Get aggregate download and history summary metrics
+router.get('/summary', getDownloadSummaryController)
+
 // Get recent download history
 router.get('/', listDownloadJobsController)
 
 // Clear explicitly selected terminal download history
 router.delete('/history', clearDownloadHistoryController)
 
-// Cancel a queued or running download job
+// Pause a running, queued, or interrupted download job
+router.post('/:id/pause', pauseDownloadJobController)
+
+// Resume a paused download job
+router.post('/:id/resume', resumeDownloadJobController)
+
+// Cancel a queued, running, paused, or interrupted download job
 router.post('/:id/cancel', cancelDownloadJobController)
 
 // Retry a failed or cancelled download job

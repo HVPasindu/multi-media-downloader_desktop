@@ -1,4 +1,4 @@
-import { app, shell, BrowserWindow, ipcMain, dialog } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, dialog, session } from 'electron'
 
 import { startServer, stopServer } from './backend/server.js'
 import { stopQueueForShutdown } from './backend/services/downloadQueueService.js'
@@ -10,18 +10,14 @@ import {
 
 import { initializeDatabase } from './backend/config/database.js'
 import { recoverInterruptedDownloadJobs } from './backend/services/downloadRecoveryService.js'
+import { getDownloadHistoryDetails } from './backend/services/downloadHistoryService.js'
+import { registerDownloadFileHandlers } from './ipc/downloadFileHandlers.js'
+import { registerSettingsIpcHandlers } from './ipc/settingsHandlers.js'
 
-import { getDatabase } from './backend/config/database.js'
-import { getSavedDownloadPath } from './backend/services/downloadSettingsService.js'
-import { updateDownloadPreferences } from './backend/services/settingsService.js'
-import { getDefaultDownloadPath } from './backend/services/downloadPathService.js'
-import {
-  validateDownloadFolder,
-  verifyDownloadFolderWritable
-} from './backend/services/downloadFileSafetyService.js'
 import { getSessionToken } from './backend/services/localApiSecurityService.js'
 import {
   setStartupWindow,
+  getStartupWindow,
   getStartupStatus,
   updateStartupStatus,
   restartApplication
@@ -45,7 +41,7 @@ function createWindow() {
     autoHideMenuBar: true,
     backgroundColor: '#040B1C',
     title: 'Multi Media Downloader',
-    ...(process.platform === 'linux' ? { icon } : {}),
+    ...(process.platform === 'linux' || process.platform === 'win32' ? { icon } : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false
@@ -89,6 +85,15 @@ app.whenReady().then(async () => {
   // IPC test
   ipcMain.on('ping', () => console.log('pong'))
 
+  // Step 05.14 / Dev Reliability: In development, clear session cache to prevent stale module caching
+  if (is.dev && session.defaultSession) {
+    try {
+      await session.defaultSession.clearCache()
+    } catch {
+      // Non-fatal if clearing cache fails
+    }
+  }
+
   // Create application window early so the branded Splash Screen displays during startup
   createWindow()
 
@@ -126,47 +131,28 @@ app.whenReady().then(async () => {
     // Step 09 Section B - Start background network connectivity monitoring for auto-recovery
     startNetworkMonitoring()
 
-    // Allow the frontend to choose a download folder
-    ipcMain.handle('downloads:choose-folder', async (event) => {
-      const ownerWindow = BrowserWindow.fromWebContents(event.sender)
-
-      if (!ownerWindow) {
-        throw new Error('Application window not found')
-      }
-
-      const result = await dialog.showOpenDialog(ownerWindow, {
-        title: 'Choose Download Folder',
-        properties: ['openDirectory']
-      })
-
-      if (result.canceled || result.filePaths.length === 0) {
-        return null
-      }
-
-      const selectedPath = result.filePaths[0]
-
-      // Validate folder safety and write permissions before persisting
-      const validPath = await validateDownloadFolder(selectedPath)
-      await verifyDownloadFolderWritable(validPath)
-
-      // Reuse Settings API service to enforce active-job safety guard and persistence
-      const updatedPreferences = await updateDownloadPreferences({
-        downloadPath: validPath
-      })
-
-      return updatedPreferences.downloadPath
+    // Register General Settings IPC handlers (choose folder, get folder, start with windows, storage info)
+    registerSettingsIpcHandlers({
+      ipcMain,
+      app,
+      BrowserWindow,
+      dialog,
+      getStartupWindow,
+      isDev: is.dev,
+      rendererUrl: process.env['ELECTRON_RENDERER_URL'],
+      rendererFilePath: join(__dirname, '../renderer/index.html')
     })
 
-    ipcMain.handle('downloads:get-folder', async () => {
-      const AppSetting = getDatabase().models.AppSetting
-
-      const savedPath = await getSavedDownloadPath(AppSetting)
-
-      if (savedPath) {
-        return savedPath
-      }
-
-      return await getDefaultDownloadPath()
+    // Step 05.12 & Task 04 - Secure IPC handlers to open downloaded media file or its folder (FIX 02 & Task 04)
+    registerDownloadFileHandlers({
+      ipcMain,
+      BrowserWindow,
+      shell,
+      getDownloadHistoryDetails,
+      getTrustedWindow: getStartupWindow,
+      isDev: is.dev,
+      rendererUrl: process.env['ELECTRON_RENDERER_URL'],
+      rendererFilePath: join(__dirname, '../renderer/index.html')
     })
 
     // Step 04.41 - Provide a secure, authenticated IPC bridge for renderer API requests
@@ -229,12 +215,10 @@ app.whenReady().then(async () => {
     updateStartupStatus('ready', 'Application backend is ready')
   } catch (error) {
     console.error('Application startup failed:', error)
-    updateStartupStatus(
-      'error',
-      'Application startup failed',
-      error instanceof Error ? error.message : String(error)
-    )
-    dialog.showErrorBox('Startup Error', error instanceof Error ? error.message : String(error))
+    const safeStartupError =
+      'Application startup failed. Please restart the application or check the application logs.'
+    updateStartupStatus('error', 'Application startup failed', safeStartupError)
+    dialog.showErrorBox('Startup Error', safeStartupError)
   }
 
   app.on('activate', function () {

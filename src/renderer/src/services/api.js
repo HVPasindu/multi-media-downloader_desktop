@@ -78,3 +78,41 @@ export async function getDownloadFolder() {
   }
   return await window.api.getDownloadFolder()
 }
+
+/**
+ * Retrieves real filesystem storage information for the drive containing
+ * the current download folder.
+ *
+ * @returns {Promise<{ available: boolean, folderPath?: string, totalBytes?: number, usedBytes?: number, freeBytes?: number, error?: string }>}
+ */
+export async function getStorageInfo() {
+  if (!window.api || typeof window.api.getStorageInfo !== 'function') {
+    throw new Error('Storage information IPC is not available')
+  }
+  return await window.api.getStorageInfo()
+}
+
+/**
+ * Retrieves the current Windows startup configuration (openAtLogin).
+ *
+ * @returns {Promise<{ supported: boolean, enabled: boolean }>}
+ */
+export async function getStartWithWindows() {
+  if (!window.api || typeof window.api.getStartWithWindows !== 'function') {
+    throw new Error('Windows startup setting IPC is not available')
+  }
+  return await window.api.getStartWithWindows()
+}
+
+/**
+ * Updates the Windows startup configuration (openAtLogin).
+ *
+ * @param {boolean} enabled
+ * @returns {Promise<{ supported: boolean, enabled: boolean }>}
+ */
+export async function setStartWithWindows(enabled) {
+  if (!window.api || typeof window.api.setStartWithWindows !== 'function') {
+    throw new Error('Windows startup setting IPC is not available')
+  }
+  return await window.api.setStartWithWindows(enabled)
+}

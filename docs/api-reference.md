@@ -256,7 +256,9 @@ GET /api/downloads
 
 - **Authentication:** Required (`Bearer <token>`).
 - **Query Parameters:**
-  - `status` (_string_, optional): Filter by job status (`queued`, `downloading`, `completed`, `failed`, `cancelled`).
+  - `status` (_string_, optional): Filter by single job status (`queued`, `downloading`, `interrupted`, `completed`, `failed`, `cancelled`).
+  - `statuses` (_string_, optional): Comma-separated list of job statuses (e.g. `failed,cancelled`).
+  - `search` (_string_, optional): Server-side search filter across media title, platform, source URL, filename, and saved path.
   - `outputFormat` (_string_, optional): Filter by format (`mp4`, `mp3`).
   - `sourceType` (_string_, optional): Filter by source type (`link`).
   - `from` (_string_, optional): ISO-8601 date boundary (`YYYY-MM-DD` or full ISO timestamp).

@@ -12,6 +12,7 @@ export async function analyzeMediaController(req, res, next) {
     } catch (validationError) {
       return res.status(400).json({
         success: false,
+        code: validationError.code || 'INVALID_URL',
         message: validationError.userMessage || 'Please provide a valid supported media URL'
       })
     }
@@ -26,7 +27,7 @@ export async function analyzeMediaController(req, res, next) {
         analysisError.userMessage || analysisError.message || 'Failed to analyze media link'
       const retryAfterSeconds = analysisError.retryAfterSeconds || null
 
-      if (code === 'YOUTUBE_RATE_LIMITED') {
+      if (code === 'YOUTUBE_RATE_LIMITED' || code === 'RATE_LIMITED') {
         return res.status(429).json({
           success: false,
           code,

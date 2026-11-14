@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from 'react'
+import { useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import {
   Zap,
   ShieldCheck,
@@ -16,23 +16,31 @@ import {
   Trash2,
   Pause,
   Play,
-  MoreVertical,
   CheckCircle2,
   Clock,
-  CloudUpload
+  CloudUpload,
+  Square,
+  RotateCcw
 } from 'lucide-react'
 import LoadingIndicator from '../components/common/LoadingIndicator'
 import DownloaderHeroIllustration from '../components/ui/DownloaderHeroIllustration'
 import MediaThumbnail from '../components/ui/MediaThumbnail'
 import PlatformBadge from '../components/ui/PlatformBadge'
 import { chooseDownloadFolder, getDownloadFolder } from '../services/api'
-import { createDownload, listDownloads } from '../services/downloadsApi'
+import { getDownloadSettings } from '../services/downloadSettingsApi'
+import { resolvePreferredVideoQuality } from '../utils/downloadPreferenceResolver'
+import { createDownload, listDownloads, deleteDownloadHistory } from '../services/downloadsApi'
+import { useDownloadJobActions } from '../hooks/useDownloadJobActions'
 import { analyzeMedia } from '../services/mediaApi'
 import { normalizeDownloadJob } from '../utils/downloadPresentation'
+import { showConfirm, showToast, showError } from '../utils/notificationService'
+import { getSafeFriendlyErrorInfo } from '../utils/errorPresentation'
 import {
   formatMediaDuration,
   getMediaFormatAvailability,
-  extractMp4Qualities
+  extractMp4Qualities,
+  estimateMp4QualitySize,
+  estimateMp3BitrateSize
 } from '../utils/mediaMetadata'
 import { extractUrlFromDataTransfer, validateMediaUrlInput } from '../utils/mediaUrlInput'
 import { useDownloadDuplicateGuard } from '../hooks/useDownloadDuplicateGuard'
@@ -78,6 +86,7 @@ export default function DownloaderPage() {
   const [selectedFormat, setSelectedFormat] = useState('mp4')
   const [selectedVideoQuality, setSelectedVideoQuality] = useState('best')
   const [selectedAudioBitrate, setSelectedAudioBitrate] = useState(192)
+  const [isPreferencesLoading, setIsPreferencesLoading] = useState(true)
 
   // Download folder settings state
   const [downloadFolder, setDownloadFolder] = useState('')
@@ -96,7 +105,12 @@ export default function DownloaderPage() {
   const activeRequestIdRef = useRef(0)
   const speedTrackerRef = useRef(new Map())
   const isPollingRecentRef = useRef(false)
+  const isSubmittingDownloadRef = useRef(false)
   const hasActiveRecentRef = useRef(false)
+  const savedPreferencesRef = useRef({
+    preferredMp4Quality: 'best',
+    preferredMp3BitrateKbps: 192
+  })
 
   /**
    * Cooldown countdown timer for YouTube rate limit (Step 02).
@@ -384,7 +398,7 @@ export default function DownloaderPage() {
    * 5. Handles structured error codes (429, bot verification, PO token, network errors).
    */
   const handleAnalyzeClick = async () => {
-    if (isAnalyzing || cooldownRemaining > 0) return
+    if (isPreferencesLoading || isAnalyzing || cooldownRemaining > 0) return
 
     const trimmed = url.trim()
     if (!trimmed) {
@@ -455,21 +469,19 @@ export default function DownloaderPage() {
           setSelectedFormat(null)
         }
 
-        // Auto-select valid MP4 quality
+        // Auto-select valid MP4 quality based on saved user preference and available streams
         if (availableMp4Qualities.length > 0) {
-          setSelectedVideoQuality((prev) => {
-            if (prev !== 'best' && availableMp4Qualities.includes(prev)) {
-              return prev
-            }
-            return 'best'
-          })
+          setSelectedVideoQuality(
+            resolvePreferredVideoQuality(
+              savedPreferencesRef.current.preferredMp4Quality,
+              availableMp4Qualities
+            )
+          )
         }
 
-        // Auto-select valid MP3 bitrate
+        // Auto-select valid MP3 bitrate based on saved user preference
         if (availability.mp3Available) {
-          setSelectedAudioBitrate((prev) =>
-            [128, 192, 320].includes(Number(prev)) ? Number(prev) : 192
-          )
+          setSelectedAudioBitrate(savedPreferencesRef.current.preferredMp3BitrateKbps || 192)
         }
       } else {
         const status = response.status
@@ -515,8 +527,16 @@ export default function DownloaderPage() {
           errorMsg = data.message
         }
 
+        const safeErrorInfo = getSafeFriendlyErrorInfo(
+          {
+            code: errCode,
+            message: errorMsg
+          },
+          'Media analysis failed. Please verify the link and try again.'
+        )
+
         setApiErrorCode(errCode)
-        setApiError(errorMsg)
+        setApiError(safeErrorInfo.message)
         setAnalyzedMedia(null)
       }
     } catch (err) {
@@ -525,12 +545,16 @@ export default function DownloaderPage() {
       }
       setApiErrorCode('NETWORK_ERROR')
       const isIpcError = err?.message?.includes('IPC') || err?.message?.includes('bridge')
-      const errorMsg = isIpcError
+      const fallbackMessage = isIpcError
         ? 'Local analyzer service could not be reached via IPC. Please restart the application.'
-        : err instanceof Error
-          ? err.message
-          : 'An unexpected error occurred while analyzing the media link.'
-      setApiError(errorMsg)
+        : 'An unexpected error occurred while analyzing the media link.'
+
+      const safeErrorInfo = getSafeFriendlyErrorInfo(
+        isIpcError ? fallbackMessage : err,
+        fallbackMessage
+      )
+
+      setApiError(safeErrorInfo.message)
       setAnalyzedMedia(null)
     } finally {
       if (currentRequestId === activeRequestIdRef.current) {
@@ -552,7 +576,12 @@ export default function DownloaderPage() {
         }
       } catch (err) {
         if (isMounted) {
-          setFolderError(err?.message || 'Unable to retrieve saved download folder.')
+          const safeErrorInfo = getSafeFriendlyErrorInfo(
+            err,
+            'Unable to retrieve saved download folder.'
+          )
+
+          setFolderError(safeErrorInfo.message)
         }
       } finally {
         if (isMounted) {
@@ -568,6 +597,46 @@ export default function DownloaderPage() {
     }
   }, [])
 
+  // Load saved download preferences on mount to set initial defaults
+  useEffect(() => {
+    let isMounted = true
+
+    async function loadSavedPreferences() {
+      try {
+        const response = await getDownloadSettings()
+        if (!isMounted) return
+
+        if (response.ok && response.data?.success && response.data?.data) {
+          const { preferredMp4Quality, preferredMp3BitrateKbps } = response.data.data
+          const validQuality = preferredMp4Quality || 'best'
+          const validBitrate = [128, 192, 320].includes(Number(preferredMp3BitrateKbps))
+            ? Number(preferredMp3BitrateKbps)
+            : 192
+
+          savedPreferencesRef.current = {
+            preferredMp4Quality: validQuality,
+            preferredMp3BitrateKbps: validBitrate
+          }
+
+          setSelectedVideoQuality(validQuality)
+          setSelectedAudioBitrate(validBitrate)
+        }
+      } catch {
+        // Fall back to existing safe defaults ('best' and 192)
+      } finally {
+        if (isMounted) {
+          setIsPreferencesLoading(false)
+        }
+      }
+    }
+
+    loadSavedPreferences()
+
+    return () => {
+      isMounted = false
+    }
+  }, [])
+
   const handleChooseFolder = async () => {
     setFolderError(null)
     try {
@@ -576,7 +645,9 @@ export default function DownloaderPage() {
         setDownloadFolder(selected)
       }
     } catch (err) {
-      setFolderError(err?.message || 'Failed to update download folder.')
+      const safeErrorInfo = getSafeFriendlyErrorInfo(err, 'Failed to update download folder.')
+
+      setFolderError(safeErrorInfo.message)
     }
   }
 
@@ -592,7 +663,11 @@ export default function DownloaderPage() {
           .map((job) => normalizeDownloadJob(job, speedTrackerRef.current))
           .filter(Boolean)
         hasActiveRecentRef.current = normalized.some(
-          (i) => i.status === 'downloading' || i.status === 'queued'
+          (i) =>
+            i.status === 'downloading' ||
+            i.status === 'queued' ||
+            i.status === 'interrupted' ||
+            i.displayStatus === 'resuming'
         )
         setRecentDownloads(normalized)
       }
@@ -626,7 +701,7 @@ export default function DownloaderPage() {
 
   // Step 04 & Step 05.09: Download Job Creation Handler
   const handleDownloadClick = async () => {
-    if (isSubmittingDownload || isAnalyzing) return
+    if (isSubmittingDownload || isSubmittingDownloadRef.current || isAnalyzing) return
     setDownloadSubmitFeedback(null)
 
     // 1. Validation: Ensure media is analyzed and URL matches
@@ -708,7 +783,8 @@ export default function DownloaderPage() {
       }
     }
 
-    // 2. Submit job creation to backend
+    // 2. Submit job creation to backend (synchronous ref guard prevents same-frame double-click duplicates)
+    isSubmittingDownloadRef.current = true
     setIsSubmittingDownload(true)
 
     try {
@@ -724,38 +800,160 @@ export default function DownloaderPage() {
         })
         await Promise.all([fetchRecentDownloads(), refreshDuplicateStatus()])
       } else if (response.status === 200 && response.data?.duplicate) {
+        const safeDuplicateMsg = getSafeFriendlyErrorInfo(
+          response.data.message,
+          'An equivalent download is already active or in queue.'
+        ).message
         setDownloadSubmitFeedback({
           type: 'info',
-          message: response.data.message || 'An equivalent download is already active or in queue.'
+          message: safeDuplicateMsg
         })
         await Promise.all([fetchRecentDownloads(), refreshDuplicateStatus()])
       } else {
-        const errorMsg =
-          response.data?.message ||
+        const safeErrMsg = getSafeFriendlyErrorInfo(
+          response.data?.message,
           `Download request failed with status ${response.status}. Please try again.`
+        ).message
         setDownloadSubmitFeedback({
           type: 'error',
-          message: errorMsg
+          message: safeErrMsg
         })
       }
     } catch (err) {
       const isIpc = err?.message?.includes('IPC') || err?.message?.includes('bridge')
-      const errorMsg = isIpc
+      const fallbackMsg = isIpc
         ? 'Communication with download service failed. Please restart the application.'
-        : err instanceof Error
-          ? err.message
-          : 'An unexpected error occurred while queuing the download.'
+        : 'An unexpected error occurred while queuing the download.'
+      const safeErrorInfo = getSafeFriendlyErrorInfo(isIpc ? fallbackMsg : err, fallbackMsg)
       setDownloadSubmitFeedback({
         type: 'error',
-        message: errorMsg
+        message: safeErrorInfo.message
       })
     } finally {
+      isSubmittingDownloadRef.current = false
       setIsSubmittingDownload(false)
     }
   }
 
-  const handleClearRecent = () => {
-    setRecentDownloads([])
+  const handleClearRecent = async () => {
+    const terminalItems = recentDownloads.filter((item) =>
+      ['completed', 'failed', 'cancelled'].includes(item.status)
+    )
+
+    if (terminalItems.length === 0) {
+      showToast('No completed or failed downloads to clear', 'info')
+      return
+    }
+
+    const confirmed = await showConfirm(
+      'Clear Recent Downloads?',
+      `Permanently remove ${terminalItems.length} completed/failed record(s) from recent history? Media files on disk will not be deleted. Active downloads will remain untouched.`,
+      {
+        confirmButtonText: 'Clear Recent',
+        isDanger: true
+      }
+    )
+
+    if (!confirmed) return
+
+    try {
+      const results = await Promise.allSettled(
+        terminalItems.map((item) => deleteDownloadHistory(item.id))
+      )
+      const deletedCount = results.filter((r) => r.status === 'fulfilled' && r.value.ok).length
+
+      if (deletedCount > 0) {
+        showToast(`Cleared ${deletedCount} record(s) from recent history`, 'success')
+        await fetchRecentDownloads()
+      } else {
+        showError('Clear Failed', 'Failed to clear recent downloads from database.')
+      }
+    } catch (err) {
+      const safeErrorInfo = getSafeFriendlyErrorInfo(
+        err,
+        'An unexpected error occurred while clearing.'
+      )
+      showError('Clear Error', safeErrorInfo.message)
+    }
+  }
+
+  const [deletingJobId, setDeletingJobId] = useState(null)
+  const deletingLockRef = useRef(false)
+
+  // Centralized action handlers and loading state via custom hook (Phase 7)
+  const {
+    pausingJobId,
+    resumingJobId,
+    cancellingJobId,
+    retryingJobId,
+    handlePauseJob,
+    handleResumeJob,
+    handleCancelJob,
+    handleRetryJob
+  } = useDownloadJobActions({
+    onRefresh: fetchRecentDownloads
+  })
+
+  const handleOpenFile = async (jobId) => {
+    try {
+      if (window?.api?.openFile) {
+        const res = await window.api.openFile(jobId)
+        if (res && res.success === false) {
+          showError('Cannot Open File', res.error || 'The downloaded file could not be opened.')
+        }
+      }
+    } catch (err) {
+      showError('Open File Error', err.message || 'The downloaded file could not be opened.')
+    }
+  }
+
+  const handleOpenFolder = async (jobId) => {
+    try {
+      if (window?.api?.openFolder) {
+        const res = await window.api.openFolder(jobId)
+        if (res && res.success === false) {
+          showError('Cannot Open Folder', res.error || 'The enclosing folder could not be opened.')
+        }
+      }
+    } catch (err) {
+      showError('Open Folder Error', err.message || 'The enclosing folder could not be opened.')
+    }
+  }
+
+  const handleDeleteRecord = async (jobId) => {
+    if (deletingJobId !== null || deletingLockRef.current) return
+    deletingLockRef.current = true
+
+    try {
+      const confirmed = await showConfirm(
+        'Delete History Record?',
+        'Are you sure you want to delete this download from history? (The downloaded media file will remain on your computer).',
+        {
+          confirmButtonText: 'Delete Record',
+          isDanger: true
+        }
+      )
+      if (!confirmed) return
+
+      setDeletingJobId(jobId)
+      const res = await deleteDownloadHistory(jobId)
+      if (res.ok && res.data?.success) {
+        showToast('Download record deleted from history', 'success')
+        await fetchRecentDownloads()
+      } else {
+        const errorInfo = getSafeFriendlyErrorInfo(res.data, 'Failed to delete record.')
+        showError('Delete Failed', errorInfo.message)
+      }
+    } catch (err) {
+      const errorInfo = getSafeFriendlyErrorInfo(
+        err,
+        'An unexpected error occurred while deleting record.'
+      )
+      showError('Delete Error', errorInfo.message)
+    } finally {
+      deletingLockRef.current = false
+      setDeletingJobId(null)
+    }
   }
 
   // Derive explicit validation condition
@@ -769,7 +967,8 @@ export default function DownloaderPage() {
   // Step 03 & 04: Format & Quality availability extraction (using verified MP4 qualities)
   const formatAvailability = getMediaFormatAvailability(analyzedMedia)
   const { mp4Available, mp3Available } = formatAvailability
-  const mp4Qualities = extractMp4Qualities(analyzedMedia)
+  // eslint-disable-next-line react-hooks/preserve-manual-memoization
+  const mp4Qualities = useMemo(() => extractMp4Qualities(analyzedMedia), [analyzedMedia])
   const highestAvailableQuality = mp4Qualities.length > 0 ? mp4Qualities[0] : null
 
   // Visual isolation states between MP4 and MP3 configurations
@@ -799,7 +998,7 @@ export default function DownloaderPage() {
       {/* ----------------- TOP HEADER & HERO ILLUSTRATION ----------------- */}
       <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
         <div>
-          <h1 className="text-3xl lg:text-4xl font-extrabold text-white tracking-tight">
+          <h1 className="text-3xl lg:text-4xl font-extrabold text-text tracking-tight">
             Downloader
           </h1>
           <p className="text-sm text-text-muted mt-1 font-medium">
@@ -808,15 +1007,15 @@ export default function DownloaderPage() {
 
           {/* Feature Badges */}
           <div className="flex flex-wrap items-center gap-4 mt-3">
-            <div className="flex items-center gap-1.5 text-xs font-bold text-[#19D8FF]">
+            <div className="flex items-center gap-1.5 text-xs font-bold text-primary">
               <Zap className="w-3.5 h-3.5 fill-current" />
               <span>Fast & Reliable</span>
             </div>
-            <div className="flex items-center gap-1.5 text-xs font-bold text-[#19D8FF]">
+            <div className="flex items-center gap-1.5 text-xs font-bold text-primary">
               <ShieldCheck className="w-3.5 h-3.5" />
               <span>High Quality</span>
             </div>
-            <div className="flex items-center gap-1.5 text-xs font-bold text-[#19D8FF]">
+            <div className="flex items-center gap-1.5 text-xs font-bold text-primary">
               <Globe2 className="w-3.5 h-3.5" />
               <span>Supports Multiple Platforms</span>
             </div>
@@ -832,9 +1031,9 @@ export default function DownloaderPage() {
         {/* ================= LEFT COLUMN: DOWNLOAD OPTIONS (7 COLS) ================= */}
         <div className="lg:col-span-7 flex flex-col gap-5">
           {/* Section 1: Enter Media Link & Media Preview */}
-          <div className="p-5 lg:p-6 rounded-2xl bg-[#07152E]/90 border border-primary/20 shadow-[0_4px_24px_rgba(0,0,0,0.35)] backdrop-blur-md flex flex-col gap-4">
+          <div className="p-5 lg:p-6 rounded-2xl bg-surface/90 border border-primary/20 shadow-[0_4px_24px_rgba(0,0,0,0.35)] backdrop-blur-md flex flex-col gap-4">
             <div className="flex items-center justify-between">
-              <h2 className="text-sm font-extrabold text-white tracking-wide">
+              <h2 className="text-sm font-extrabold text-text tracking-wide">
                 1. Enter Media Link
               </h2>
             </div>
@@ -867,11 +1066,11 @@ export default function DownloaderPage() {
                           ? 'media-url-status'
                           : undefined
                   }
-                  className={`w-full bg-[#040B1C] border rounded-xl py-3 pl-10 pr-20 text-xs font-medium text-white placeholder:text-text-muted/50 focus:outline-none transition-all font-mono select-text ${
+                  className={`w-full bg-background border rounded-xl py-3 pl-10 pr-20 text-xs font-medium text-text placeholder:text-text-muted/50 focus:outline-none transition-all font-mono select-text ${
                     urlError || apiError
                       ? 'border-rose-500/60 focus:border-rose-500 focus:ring-1 focus:ring-rose-500/40'
                       : urlStatus || analyzedMedia
-                        ? 'border-cyan-400/50 focus:border-cyan-400 focus:ring-1 focus:ring-cyan-400/40'
+                        ? 'border-primary/50 focus:border-primary focus:ring-1 focus:ring-primary/40'
                         : 'border-primary/20 focus:border-primary focus:ring-1 focus:ring-primary/40'
                   }`}
                 />
@@ -882,7 +1081,7 @@ export default function DownloaderPage() {
                     <button
                       type="button"
                       onClick={handleClearUrl}
-                      className="p-1 text-text-muted/60 hover:text-white transition-colors cursor-pointer"
+                      className="p-1 text-text-muted/60 hover:text-text transition-colors cursor-pointer"
                       title="Clear link"
                       aria-label="Clear link"
                     >
@@ -892,7 +1091,7 @@ export default function DownloaderPage() {
                   <button
                     type="button"
                     onClick={handlePasteFromClipboard}
-                    className="p-1 text-text-muted/70 hover:text-[#19D8FF] transition-colors cursor-pointer"
+                    className="p-1 text-text-muted/70 hover:text-primary transition-colors cursor-pointer"
                     title="Paste link from clipboard"
                     aria-label="Paste link from clipboard"
                   >
@@ -905,13 +1104,17 @@ export default function DownloaderPage() {
               <button
                 type="button"
                 onClick={handleAnalyzeClick}
-                disabled={isAnalyzing || !url.trim() || cooldownRemaining > 0}
-                title={
-                  cooldownRemaining > 0
-                    ? `Rate limit cooldown: ${cooldownRemaining}s remaining`
-                    : 'Analyze media URL'
+                disabled={
+                  isPreferencesLoading || isAnalyzing || !url.trim() || cooldownRemaining > 0
                 }
-                className="flex items-center gap-2 px-5 py-3 rounded-xl font-bold text-xs bg-gradient-to-r from-[#19D8FF] to-[#3388FF] text-white shadow-[0_0_16px_rgba(25,216,255,0.35)] hover:shadow-[0_0_24px_rgba(25,216,255,0.55)] transition-all cursor-pointer flex-shrink-0 disabled:opacity-60 disabled:cursor-not-allowed"
+                title={
+                  isPreferencesLoading
+                    ? 'Loading download preferences...'
+                    : cooldownRemaining > 0
+                      ? `Rate limit cooldown: ${cooldownRemaining}s remaining`
+                      : 'Analyze media URL'
+                }
+                className="flex items-center gap-2 px-5 py-3 rounded-xl font-bold text-xs theme-accent-gradient-2 text-on-gradient theme-accent-glow-sm theme-accent-hover-glow transition-all cursor-pointer flex-shrink-0 disabled:opacity-60 disabled:cursor-not-allowed"
               >
                 {isAnalyzing ? (
                   <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -956,7 +1159,8 @@ export default function DownloaderPage() {
                   <button
                     type="button"
                     onClick={handleAnalyzeClick}
-                    className="px-3 py-1 rounded-lg text-[11px] font-bold bg-rose-500/20 hover:bg-rose-500/30 text-rose-200 transition-colors cursor-pointer flex-shrink-0"
+                    disabled={isPreferencesLoading || isAnalyzing || cooldownRemaining > 0}
+                    className="px-3 py-1 rounded-lg text-[11px] font-bold bg-rose-500/20 hover:bg-rose-500/30 text-rose-200 transition-colors cursor-pointer flex-shrink-0 disabled:opacity-60 disabled:cursor-not-allowed"
                   >
                     Retry
                   </button>
@@ -967,23 +1171,23 @@ export default function DownloaderPage() {
               <div
                 id="media-url-status"
                 role="status"
-                className="flex items-center gap-2 text-xs text-cyan-300 bg-cyan-500/10 border border-cyan-500/20 px-3.5 py-2.5 rounded-xl animate-fadeIn"
+                className="flex items-center gap-2 text-xs text-primary bg-primary/10 border border-primary/20 px-3.5 py-2.5 rounded-xl animate-fadeIn"
               >
-                <CheckCircle2 className="w-4 h-4 flex-shrink-0 text-[#19D8FF]" />
+                <CheckCircle2 className="w-4 h-4 flex-shrink-0 text-primary" />
                 <span>{urlStatus}</span>
               </div>
             )}
 
             {/* Analyzed Media Preview Card */}
             {isAnalyzing ? (
-              <div className="flex flex-col items-center justify-center p-8 rounded-xl bg-[#040B1C]/80 border border-primary/20 animate-fadeIn min-h-[140px]">
+              <div className="flex flex-col items-center justify-center p-8 rounded-xl bg-background/80 border border-primary/20 animate-fadeIn min-h-[140px]">
                 <LoadingIndicator
                   type="spinner"
                   label="Connecting to media source and retrieving format details..."
                 />
               </div>
             ) : analyzedMedia ? (
-              <div className="flex flex-col sm:flex-row items-center gap-4 p-3.5 rounded-xl bg-[#040B1C]/80 border border-primary/15 animate-fadeIn">
+              <div className="flex flex-col sm:flex-row items-center gap-4 p-3.5 rounded-xl bg-background/80 border border-primary/15 animate-fadeIn">
                 <div className="w-full sm:w-44 flex-shrink-0">
                   <MediaThumbnail
                     src={analyzedMedia.thumbnailUrl}
@@ -994,7 +1198,7 @@ export default function DownloaderPage() {
                 </div>
 
                 <div className="flex-1 flex flex-col justify-center min-w-0">
-                  <h3 className="text-sm font-bold text-white truncate" title={analyzedMedia.title}>
+                  <h3 className="text-sm font-bold text-text truncate" title={analyzedMedia.title}>
                     {analyzedMedia.title}
                   </h3>
                   <div className="mt-1 flex items-center gap-3">
@@ -1016,14 +1220,14 @@ export default function DownloaderPage() {
                 </div>
               </div>
             ) : isCurrentUrlValidated ? (
-              <div className="flex flex-col sm:flex-row items-center gap-4 p-3.5 rounded-xl bg-[#040B1C]/80 border border-primary/15 animate-fadeIn">
+              <div className="flex flex-col sm:flex-row items-center gap-4 p-3.5 rounded-xl bg-background/80 border border-primary/15 animate-fadeIn">
                 <div className="w-full sm:w-44 aspect-video rounded-lg bg-surface flex flex-col items-center justify-center text-text-muted/60 border border-primary/10 flex-shrink-0">
-                  <Video className="w-8 h-8 text-[#19D8FF]/70 mb-1" />
+                  <Video className="w-8 h-8 text-primary/70 mb-1" />
                   <span className="text-[10px] font-mono tracking-wider">READY</span>
                 </div>
 
                 <div className="flex-1 flex flex-col justify-center min-w-0">
-                  <h3 className="text-sm font-bold text-white truncate">Link Ready for Analysis</h3>
+                  <h3 className="text-sm font-bold text-text truncate">Link Ready for Analysis</h3>
                   <div className="mt-1">
                     <PlatformBadge platform={detectedPlatform?.id || 'web'} />
                   </div>
@@ -1063,10 +1267,10 @@ export default function DownloaderPage() {
                 onClick={() => mp4Available && setSelectedFormat('mp4')}
                 className={`flex items-center justify-between p-4 rounded-2xl border transition-all text-left ${
                   !analyzedMedia || !mp4Available
-                    ? 'opacity-40 cursor-not-allowed bg-[#07152E]/40 border-primary/10'
+                    ? 'opacity-40 cursor-not-allowed bg-surface/40 border-primary/10'
                     : selectedFormat === 'mp4'
-                      ? 'bg-[#0B1C38] border-cyan-400 shadow-[0_0_20px_rgba(25,216,255,0.3)] cursor-pointer'
-                      : 'bg-[#07152E]/80 border-primary/15 hover:border-primary/30 cursor-pointer'
+                      ? 'bg-surface-elevated border-primary shadow-[0_0_20px_rgba(var(--theme-primary-rgb),0.3)] cursor-pointer'
+                      : 'bg-surface/80 border-primary/15 hover:border-primary/30 cursor-pointer'
                 }`}
               >
                 <div className="flex items-center gap-3">
@@ -1075,14 +1279,14 @@ export default function DownloaderPage() {
                       !analyzedMedia || !mp4Available
                         ? 'bg-surface text-text-muted/50'
                         : selectedFormat === 'mp4'
-                          ? 'bg-cyan-500/20 text-[#19D8FF]'
+                          ? 'bg-primary/20 text-primary'
                           : 'bg-surface text-text-muted'
                     }`}
                   >
                     <Video className="w-5 h-5" />
                   </div>
                   <div>
-                    <span className="text-sm font-extrabold text-white block">MP4</span>
+                    <span className="text-sm font-extrabold text-text block">MP4</span>
                     <span className="text-[11px] text-text-muted">
                       {!analyzedMedia
                         ? 'Video (Best Quality)'
@@ -1099,12 +1303,12 @@ export default function DownloaderPage() {
                     !analyzedMedia || !mp4Available
                       ? 'border-text-muted/20'
                       : selectedFormat === 'mp4'
-                        ? 'border-[#19D8FF] bg-[#040B1C]'
+                        ? 'border-primary bg-background'
                         : 'border-text-muted/40'
                   }`}
                 >
                   {selectedFormat === 'mp4' && analyzedMedia && mp4Available && (
-                    <div className="w-2.5 h-2.5 rounded-full bg-[#19D8FF]" />
+                    <div className="w-2.5 h-2.5 rounded-full bg-primary" />
                   )}
                 </div>
               </button>
@@ -1116,10 +1320,10 @@ export default function DownloaderPage() {
                 onClick={() => mp3Available && setSelectedFormat('mp3')}
                 className={`flex items-center justify-between p-4 rounded-2xl border transition-all text-left ${
                   !analyzedMedia || !mp3Available
-                    ? 'opacity-40 cursor-not-allowed bg-[#07152E]/40 border-primary/10'
+                    ? 'opacity-40 cursor-not-allowed bg-surface/40 border-primary/10'
                     : selectedFormat === 'mp3'
-                      ? 'bg-[#0B1C38] border-cyan-400 shadow-[0_0_20px_rgba(25,216,255,0.3)] cursor-pointer'
-                      : 'bg-[#07152E]/80 border-primary/15 hover:border-primary/30 cursor-pointer'
+                      ? 'bg-surface-elevated border-primary shadow-[0_0_20px_rgba(var(--theme-primary-rgb),0.3)] cursor-pointer'
+                      : 'bg-surface/80 border-primary/15 hover:border-primary/30 cursor-pointer'
                 }`}
               >
                 <div className="flex items-center gap-3">
@@ -1128,14 +1332,14 @@ export default function DownloaderPage() {
                       !analyzedMedia || !mp3Available
                         ? 'bg-surface text-text-muted/50'
                         : selectedFormat === 'mp3'
-                          ? 'bg-cyan-500/20 text-[#19D8FF]'
+                          ? 'bg-primary/20 text-primary'
                           : 'bg-surface text-text-muted'
                     }`}
                   >
                     <Music className="w-5 h-5" />
                   </div>
                   <div>
-                    <span className="text-sm font-extrabold text-white block">MP3</span>
+                    <span className="text-sm font-extrabold text-text block">MP3</span>
                     <span className="text-[11px] text-text-muted">
                       {!analyzedMedia
                         ? 'Audio Only'
@@ -1152,12 +1356,12 @@ export default function DownloaderPage() {
                     !analyzedMedia || !mp3Available
                       ? 'border-text-muted/20'
                       : selectedFormat === 'mp3'
-                        ? 'border-[#19D8FF] bg-[#040B1C]'
+                        ? 'border-primary bg-background'
                         : 'border-text-muted/40'
                   }`}
                 >
                   {selectedFormat === 'mp3' && analyzedMedia && mp3Available && (
-                    <div className="w-2.5 h-2.5 rounded-full bg-[#19D8FF]" />
+                    <div className="w-2.5 h-2.5 rounded-full bg-primary" />
                   )}
                 </div>
               </button>
@@ -1181,13 +1385,13 @@ export default function DownloaderPage() {
                   3. Video Quality
                 </h2>
                 {isMp4Active && (
-                  <span className="text-[10px] text-cyan-400 font-semibold">Active</span>
+                  <span className="text-[10px] text-primary font-semibold">Active</span>
                 )}
               </div>
 
               <div className="flex flex-wrap gap-2">
                 {!analyzedMedia ? (
-                  <div className="w-full py-3 px-3 rounded-xl border border-dashed border-primary/15 bg-[#040B1C]/50 text-center text-text-muted/50 text-xs">
+                  <div className="w-full py-3 px-3 rounded-xl border border-dashed border-primary/15 bg-background/50 text-center text-text-muted/50 text-xs">
                     Paste and analyze a video link to view available MP4 qualities.
                   </div>
                 ) : mp4Qualities.length === 0 ? (
@@ -1201,12 +1405,14 @@ export default function DownloaderPage() {
                       title: 'Best',
                       sub: highestAvailableQuality
                         ? `${highestAvailableQuality} 👑`
-                        : 'Available 👑'
+                        : 'Available 👑',
+                      size: estimateMp4QualitySize(analyzedMedia, 'best')
                     },
                     ...mp4Qualities.map((q) => ({
                       id: q,
                       title: q,
-                      sub: getQualitySubLabel(q)
+                      sub: getQualitySubLabel(q),
+                      size: estimateMp4QualitySize(analyzedMedia, q)
                     }))
                   ].map((q) => {
                     const isSelected = selectedVideoQuality === q.id
@@ -1219,14 +1425,19 @@ export default function DownloaderPage() {
                         onClick={() => isMp4Active && setSelectedVideoQuality(q.id)}
                         className={`flex-1 min-w-[76px] py-2 px-2 rounded-xl text-center border transition-all ${
                           !isMp4Active
-                            ? 'opacity-35 cursor-not-allowed bg-[#07152E]/30 border-primary/10 text-text-muted/40 pointer-events-none'
+                            ? 'opacity-35 cursor-not-allowed bg-surface/30 border-primary/10 text-text-muted/40 pointer-events-none'
                             : isSelected
-                              ? 'bg-[#0B1C38] border-cyan-400 text-white shadow-[0_0_14px_rgba(25,216,255,0.3)] cursor-pointer'
-                              : 'bg-[#07152E]/80 border-primary/15 text-text-muted hover:border-primary/30 hover:text-white cursor-pointer'
+                              ? 'bg-surface-elevated border-primary text-text shadow-[0_0_14px_rgba(var(--theme-primary-rgb),0.3)] cursor-pointer'
+                              : 'bg-surface/80 border-primary/15 text-text-muted hover:border-primary/30 hover:text-text cursor-pointer'
                         }`}
                       >
                         <div className="text-xs font-extrabold">{q.title}</div>
                         <div className="text-[10px] text-text-muted/80">{q.sub}</div>
+                        {q.size && (
+                          <div className="text-[10px] text-primary/90 font-medium mt-0.5">
+                            {q.size}
+                          </div>
+                        )}
                       </button>
                     )
                   })
@@ -1241,13 +1452,13 @@ export default function DownloaderPage() {
                   4. Audio Bitrate (for MP3)
                 </h2>
                 {isMp3Active && (
-                  <span className="text-[10px] text-cyan-400 font-semibold">Active</span>
+                  <span className="text-[10px] text-primary font-semibold">Active</span>
                 )}
               </div>
 
               <div className="grid grid-cols-3 gap-2">
                 {!analyzedMedia ? (
-                  <div className="col-span-3 py-3 px-3 rounded-xl border border-dashed border-primary/15 bg-[#040B1C]/50 text-center text-text-muted/50 text-xs">
+                  <div className="col-span-3 py-3 px-3 rounded-xl border border-dashed border-primary/15 bg-background/50 text-center text-text-muted/50 text-xs">
                     Paste and analyze a media link to choose audio bitrate.
                   </div>
                 ) : !mp3Available ? (
@@ -1261,6 +1472,7 @@ export default function DownloaderPage() {
                     { bitrate: 320, label: '320', unit: 'kbps' }
                   ].map((b) => {
                     const isSelected = selectedAudioBitrate === b.bitrate
+                    const sizeLabel = estimateMp3BitrateSize(analyzedMedia, b.bitrate)
 
                     return (
                       <button
@@ -1270,14 +1482,19 @@ export default function DownloaderPage() {
                         onClick={() => isMp3Active && setSelectedAudioBitrate(b.bitrate)}
                         className={`py-2.5 px-2 rounded-xl text-center border transition-all ${
                           !isMp3Active
-                            ? 'opacity-35 cursor-not-allowed bg-[#07152E]/30 border-primary/10 text-text-muted/40 pointer-events-none'
+                            ? 'opacity-35 cursor-not-allowed bg-surface/30 border-primary/10 text-text-muted/40 pointer-events-none'
                             : isSelected
-                              ? 'bg-[#0B1C38] border-cyan-400 text-white shadow-[0_0_14px_rgba(25,216,255,0.3)] cursor-pointer'
-                              : 'bg-[#07152E]/80 border-primary/15 text-text-muted hover:border-primary/30 hover:text-white cursor-pointer'
+                              ? 'bg-surface-elevated border-primary text-text shadow-[0_0_14px_rgba(var(--theme-primary-rgb),0.3)] cursor-pointer'
+                              : 'bg-surface/80 border-primary/15 text-text-muted hover:border-primary/30 hover:text-text cursor-pointer'
                         }`}
                       >
                         <div className="text-xs font-extrabold">{b.label}</div>
                         <div className="text-[10px] text-text-muted/80">{b.unit}</div>
+                        {sizeLabel && (
+                          <div className="text-[10px] text-primary/90 font-medium mt-0.5">
+                            {sizeLabel}
+                          </div>
+                        )}
                       </button>
                     )
                   })
@@ -1299,13 +1516,13 @@ export default function DownloaderPage() {
                   readOnly
                   value={isLoadingFolder ? 'Loading saved folder...' : downloadFolder}
                   placeholder="Select download folder..."
-                  className="w-full bg-[#040B1C] border border-primary/20 rounded-xl py-2.5 pl-10 pr-3 text-xs text-text-muted font-mono focus:outline-none focus:border-primary select-text"
+                  className="w-full bg-background border border-primary/20 rounded-xl py-2.5 pl-10 pr-3 text-xs text-text-muted font-mono focus:outline-none focus:border-primary select-text"
                 />
               </div>
               <button
                 type="button"
                 onClick={handleChooseFolder}
-                className="px-4 py-2.5 rounded-xl text-xs font-bold bg-[#07152E] hover:bg-[#0B1C38] border border-primary/25 text-white transition-all cursor-pointer flex-shrink-0"
+                className="px-4 py-2.5 rounded-xl text-xs font-bold bg-surface hover:bg-surface-elevated border border-primary/25 text-text transition-all cursor-pointer flex-shrink-0"
               >
                 Choose...
               </button>
@@ -1334,7 +1551,7 @@ export default function DownloaderPage() {
               (selectedFormat === 'mp4' && !mp4Available) ||
               (selectedFormat === 'mp3' && !mp3Available)
             }
-            className="w-full py-4 rounded-2xl font-black text-sm lg:text-base tracking-wide bg-gradient-to-r from-[#19D8FF] via-[#3388FF] to-[#514BFF] text-white shadow-[0_0_28px_rgba(25,216,255,0.45)] hover:shadow-[0_0_36px_rgba(25,216,255,0.65)] hover:scale-[1.01] active:scale-[0.99] transition-all flex items-center justify-center gap-2.5 cursor-pointer mt-1 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100 disabled:shadow-none"
+            className="w-full py-4 rounded-2xl font-black text-sm lg:text-base tracking-wide theme-accent-gradient text-on-gradient theme-accent-glow theme-accent-hover-glow hover:scale-[1.01] active:scale-[0.99] transition-all flex items-center justify-center gap-2.5 cursor-pointer mt-1 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100 disabled:shadow-none"
           >
             {isSubmittingDownload ? (
               <>
@@ -1381,14 +1598,14 @@ export default function DownloaderPage() {
                 downloadSubmitFeedback.type === 'success'
                   ? 'text-[#00DEA5] bg-emerald-500/10 border-emerald-500/25'
                   : downloadSubmitFeedback.type === 'info'
-                    ? 'text-cyan-300 bg-cyan-500/10 border-cyan-500/25'
+                    ? 'text-primary bg-primary/10 border-primary/25'
                     : 'text-rose-400 bg-rose-500/10 border-rose-500/25'
               }`}
             >
               {downloadSubmitFeedback.type === 'success' ? (
                 <CheckCircle2 className="w-4 h-4 flex-shrink-0 text-[#00DEA5]" />
               ) : downloadSubmitFeedback.type === 'info' ? (
-                <CheckCircle2 className="w-4 h-4 flex-shrink-0 text-cyan-400" />
+                <CheckCircle2 className="w-4 h-4 flex-shrink-0 text-primary" />
               ) : (
                 <AlertCircle className="w-4 h-4 flex-shrink-0 text-rose-400" />
               )}
@@ -1400,14 +1617,14 @@ export default function DownloaderPage() {
         {/* ================= RIGHT COLUMN: RECENT DOWNLOADS & DROPZONE (5 COLS) ================= */}
         <div className="lg:col-span-5 flex flex-col gap-4">
           {/* Recent Downloads Card */}
-          <div className="p-5 rounded-2xl bg-[#07152E]/90 border border-primary/20 shadow-[0_4px_24px_rgba(0,0,0,0.35)] backdrop-blur-md flex flex-col gap-4">
+          <div className="p-5 rounded-2xl bg-surface/90 border border-primary/20 shadow-[0_4px_24px_rgba(0,0,0,0.35)] backdrop-blur-md flex flex-col gap-4">
             <div className="flex items-center justify-between pb-2 border-b border-primary/10">
-              <h2 className="text-sm font-extrabold text-white">Recent Downloads</h2>
+              <h2 className="text-sm font-extrabold text-text">Recent Downloads</h2>
               <button
                 type="button"
                 onClick={handleClearRecent}
                 disabled={recentDownloads.length === 0}
-                className="flex items-center gap-1 text-[11px] font-semibold text-text-muted hover:text-white transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                className="flex items-center gap-1 text-[11px] font-semibold text-text-muted hover:text-text transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 <Trash2 className="w-3.5 h-3.5" />
                 <span>Clear All</span>
@@ -1425,14 +1642,19 @@ export default function DownloaderPage() {
               ) : (
                 recentDownloads.map((item) => {
                   const isDownloading = item.status === 'downloading'
-                  const isQueued = item.status === 'queued'
+                  const isPaused = item.status === 'paused'
+                  const isInterrupted = item.status === 'interrupted'
+                  const isResuming = item.displayStatus === 'resuming'
+                  const isQueued = item.status === 'queued' && !isResuming
                   const isCompleted = item.status === 'completed'
                   const isFailed = item.status === 'failed'
+                  const isCancelled = item.status === 'cancelled'
+                  const showProgress = isDownloading || isPaused || isInterrupted || isResuming
 
                   return (
                     <div
                       key={item.id}
-                      className="flex items-center gap-3 p-2.5 rounded-xl bg-[#040B1C]/70 border border-primary/10 hover:border-primary/25 transition-all"
+                      className="flex items-center gap-3 p-2.5 rounded-xl bg-background/70 border border-primary/10 hover:border-primary/25 transition-all"
                     >
                       {/* Thumbnail */}
                       <div className="w-16 h-11 flex-shrink-0">
@@ -1446,30 +1668,70 @@ export default function DownloaderPage() {
                       {/* Metadata & Progress */}
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center justify-between gap-1">
-                          <span className="text-xs font-bold text-white truncate block">
+                          <span className="text-xs font-bold text-text truncate block">
                             {item.title}
                           </span>
                         </div>
 
-                        <div className="text-[10px] text-text-muted mt-0.5">
-                          {item.format} • {item.quality} • {item.fileSize || item.size}
+                        <div className="text-[10px] text-text-muted mt-0.5 flex items-center justify-between">
+                          <span>
+                            {item.format} • {item.quality}
+                          </span>
+                          {isDownloading && item.speedText && item.speedText !== '—' && (
+                            <span className="text-primary font-semibold">{item.speedText}</span>
+                          )}
+                          {isInterrupted && (
+                            <span className="text-amber-400 font-semibold">0 KB/s</span>
+                          )}
+                          {isPaused && (
+                            <span className="text-purple-400 font-semibold">0 KB/s</span>
+                          )}
                         </div>
 
-                        {/* Downloading state: active progress bar */}
-                        {isDownloading && (
+                        {/* Downloading, Paused, Interrupted & Resuming state: active progress bar */}
+                        {showProgress && (
                           <div className="mt-1.5 flex flex-col gap-1">
                             <div className="flex items-center justify-between text-[10px]">
-                              <span className="text-[#19D8FF] font-semibold">
-                                {item.statusText || `Downloading... ${item.progress}%`}
+                              <span className="text-text-muted">
+                                {item.progressText !== '0 B'
+                                  ? item.progressText
+                                  : item.fileSize || item.size}
                               </span>
-                              <span className="text-white font-bold">{item.progress}%</span>
+                              <span className="text-text font-bold">{item.progress}%</span>
                             </div>
-                            <div className="w-full h-1.5 rounded-full bg-[#0B1C38] overflow-hidden">
+                            <div className="w-full h-1.5 rounded-full bg-surface-elevated overflow-hidden">
                               <div
-                                className="h-full bg-gradient-to-r from-[#19D8FF] to-[#3388FF] rounded-full transition-all duration-300"
+                                className={`h-full rounded-full transition-all duration-300 ${
+                                  isPaused
+                                    ? 'bg-purple-500/80'
+                                    : isInterrupted
+                                      ? 'bg-amber-400/80'
+                                      : 'theme-accent-gradient-2'
+                                }`}
                                 style={{ width: `${item.progress}%` }}
                               />
                             </div>
+                            {isPaused ? (
+                              <div className="text-[10px] text-purple-400 font-medium flex items-center gap-1.5">
+                                <Pause className="w-3 h-3" />
+                                Paused ({item.progress}%)
+                              </div>
+                            ) : isInterrupted ? (
+                              <div className="text-[10px] text-amber-400 font-medium flex items-center gap-1.5">
+                                <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+                                Waiting for connection
+                              </div>
+                            ) : isResuming ? (
+                              <div className="text-[10px] text-primary font-medium flex items-center gap-1.5">
+                                <span className="inline-block w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />
+                                Resuming...
+                              </div>
+                            ) : item.etaDisplay ? (
+                              <div className="text-[10px] text-text-muted/80">
+                                Estimated time remaining:{' '}
+                                <span className="text-text font-medium">{item.etaDisplay}</span>
+                              </div>
+                            ) : null}
                           </div>
                         )}
 
@@ -1489,6 +1751,14 @@ export default function DownloaderPage() {
                           </div>
                         )}
 
+                        {/* Cancelled state */}
+                        {isCancelled && (
+                          <div className="mt-1 flex items-center gap-1.5 text-[10px] text-zinc-400 font-semibold truncate">
+                            <AlertCircle className="w-3 h-3 flex-shrink-0" />
+                            <span>Cancelled</span>
+                          </div>
+                        )}
+
                         {/* Failed state */}
                         {isFailed && (
                           <div className="mt-1 flex items-center gap-1.5 text-[10px] text-rose-400 font-semibold truncate">
@@ -1498,49 +1768,186 @@ export default function DownloaderPage() {
                         )}
                       </div>
 
-                      {/* Quick Action Button (Disabled pending Step 05.11 implementation) */}
-                      <div className="flex items-center gap-1 flex-shrink-0">
+                      {/* Action Buttons */}
+                      <div className="flex items-center gap-1.5 flex-shrink-0">
+                        {/* Downloading: Pause + Cancel */}
                         {isDownloading && (
-                          <button
-                            type="button"
-                            disabled
-                            className="w-8 h-8 rounded-lg bg-surface flex items-center justify-center text-text-muted/40 border border-primary/10 cursor-not-allowed"
-                            title="Pause control will be connected in Step 05.11"
-                          >
-                            <Pause className="w-3.5 h-3.5" />
-                          </button>
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => handlePauseJob(item.id)}
+                              disabled={pausingJobId === item.id || cancellingJobId === item.id}
+                              className="w-8 h-8 rounded-lg bg-background/80 hover:bg-surface-elevated border border-primary/20 hover:border-primary/40 text-text-muted hover:text-text flex items-center justify-center transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
+                              title="Pause download"
+                            >
+                              {pausingJobId === item.id ? (
+                                <Loader2 className="w-3.5 h-3.5 animate-spin text-primary" />
+                              ) : (
+                                <Pause className="w-3.5 h-3.5" />
+                              )}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleCancelJob(item.id)}
+                              disabled={cancellingJobId === item.id || pausingJobId === item.id}
+                              className="w-8 h-8 rounded-lg bg-background/80 hover:bg-red-500/20 border border-primary/20 hover:border-red-500/40 text-text-muted hover:text-red-400 flex items-center justify-center transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
+                              title="Cancel download"
+                            >
+                              {cancellingJobId === item.id ? (
+                                <Loader2 className="w-3.5 h-3.5 animate-spin text-red-400" />
+                              ) : (
+                                <Square className="w-3 h-3 fill-current" />
+                              )}
+                            </button>
+                          </>
                         )}
 
+                        {/* Paused: Resume + Cancel */}
+                        {isPaused && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => handleResumeJob(item.id)}
+                              disabled={resumingJobId === item.id || cancellingJobId === item.id}
+                              className="w-8 h-8 rounded-lg bg-background/80 hover:bg-surface-elevated border border-primary/20 hover:border-primary/40 text-text-muted hover:text-text flex items-center justify-center transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
+                              title="Resume download"
+                            >
+                              {resumingJobId === item.id ? (
+                                <Loader2 className="w-3.5 h-3.5 animate-spin text-primary" />
+                              ) : (
+                                <Play className="w-3.5 h-3.5 ml-0.5 text-primary" />
+                              )}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleCancelJob(item.id)}
+                              disabled={cancellingJobId === item.id || resumingJobId === item.id}
+                              className="w-8 h-8 rounded-lg bg-background/80 hover:bg-red-500/20 border border-primary/20 hover:border-red-500/40 text-text-muted hover:text-red-400 flex items-center justify-center transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
+                              title="Cancel download"
+                            >
+                              {cancellingJobId === item.id ? (
+                                <Loader2 className="w-3.5 h-3.5 animate-spin text-red-400" />
+                              ) : (
+                                <Square className="w-3 h-3 fill-current" />
+                              )}
+                            </button>
+                          </>
+                        )}
+
+                        {/* Interrupted: Manual Pause + Cancel */}
+                        {isInterrupted && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => handlePauseJob(item.id)}
+                              disabled={pausingJobId === item.id || cancellingJobId === item.id}
+                              className="w-8 h-8 rounded-lg bg-background/80 hover:bg-surface-elevated border border-primary/20 hover:border-primary/40 text-text-muted hover:text-text flex items-center justify-center transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
+                              title="Pause download (prevent auto-resume)"
+                            >
+                              {pausingJobId === item.id ? (
+                                <Loader2 className="w-3.5 h-3.5 animate-spin text-primary" />
+                              ) : (
+                                <Pause className="w-3.5 h-3.5" />
+                              )}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleCancelJob(item.id)}
+                              disabled={cancellingJobId === item.id || pausingJobId === item.id}
+                              className="w-8 h-8 rounded-lg bg-background/80 hover:bg-red-500/20 border border-primary/20 hover:border-red-500/40 text-text-muted hover:text-red-400 flex items-center justify-center transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
+                              title="Cancel download"
+                            >
+                              {cancellingJobId === item.id ? (
+                                <Loader2 className="w-3.5 h-3.5 animate-spin text-red-400" />
+                              ) : (
+                                <Square className="w-3 h-3 fill-current" />
+                              )}
+                            </button>
+                          </>
+                        )}
+
+                        {/* Queued: Cancel only */}
                         {isQueued && (
                           <button
                             type="button"
-                            disabled
-                            className="w-8 h-8 rounded-lg bg-surface flex items-center justify-center text-text-muted/40 border border-primary/10 cursor-not-allowed"
-                            title="Start queue control will be connected in Step 05.11"
+                            onClick={() => handleCancelJob(item.id)}
+                            disabled={cancellingJobId === item.id}
+                            className="w-8 h-8 rounded-lg bg-background/80 hover:bg-red-500/20 border border-primary/20 hover:border-red-500/40 text-text-muted hover:text-red-400 flex items-center justify-center transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
+                            title="Cancel queued download"
                           >
-                            <Play className="w-3.5 h-3.5 ml-0.5" />
+                            {cancellingJobId === item.id ? (
+                              <Loader2 className="w-3.5 h-3.5 animate-spin text-red-400" />
+                            ) : (
+                              <Square className="w-3 h-3 fill-current" />
+                            )}
                           </button>
                         )}
 
+                        {/* Completed: Play + Folder + Delete */}
                         {isCompleted && (
-                          <button
-                            type="button"
-                            disabled
-                            className="w-8 h-8 rounded-lg bg-surface flex items-center justify-center text-text-muted/40 border border-primary/10 cursor-not-allowed"
-                            title="Open folder will be connected in Step 05.11"
-                          >
-                            <FolderOpen className="w-3.5 h-3.5" />
-                          </button>
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => handleOpenFile(item.id)}
+                              className="w-8 h-8 rounded-lg bg-background/80 hover:bg-surface-elevated border border-primary/20 hover:border-primary/40 text-text-muted hover:text-[#00DEA5] flex items-center justify-center transition-all cursor-pointer shadow-sm"
+                              title="Play / Open file"
+                            >
+                              <Play className="w-3.5 h-3.5 ml-0.5 fill-current" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleOpenFolder(item.id)}
+                              className="w-8 h-8 rounded-lg bg-background/80 hover:bg-surface-elevated border border-primary/20 hover:border-primary/40 text-text-muted hover:text-text flex items-center justify-center transition-all cursor-pointer shadow-sm"
+                              title="Open containing folder"
+                            >
+                              <FolderOpen className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteRecord(item.id)}
+                              disabled={deletingJobId === item.id}
+                              className="w-8 h-8 rounded-lg bg-background/80 hover:bg-red-500/20 border border-primary/20 hover:border-red-500/40 text-text-muted hover:text-red-400 flex items-center justify-center transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
+                              title="Delete from history (keeps file on disk)"
+                            >
+                              {deletingJobId === item.id ? (
+                                <Loader2 className="w-3.5 h-3.5 animate-spin text-red-400" />
+                              ) : (
+                                <Trash2 className="w-3.5 h-3.5" />
+                              )}
+                            </button>
+                          </>
                         )}
 
-                        <button
-                          type="button"
-                          disabled
-                          className="w-7 h-8 flex items-center justify-center text-text-muted/30 cursor-not-allowed"
-                          title="Actions menu will be connected in Step 05.11"
-                        >
-                          <MoreVertical className="w-3.5 h-3.5" />
-                        </button>
+                        {/* Failed or Cancelled: Retry + Delete */}
+                        {(isFailed || isCancelled) && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => handleRetryJob(item.id)}
+                              disabled={retryingJobId === item.id}
+                              className="px-2.5 py-1 rounded-lg bg-background/80 hover:bg-surface-elevated border border-primary/20 hover:border-primary/40 text-text-muted hover:text-text flex items-center gap-1.5 transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
+                              title="Retry download"
+                            >
+                              <RotateCcw
+                                className={`w-3.5 h-3.5 text-primary ${retryingJobId === item.id ? 'animate-spin' : ''}`}
+                              />
+                              <span className="text-[11px] font-bold">Retry</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteRecord(item.id)}
+                              disabled={deletingJobId === item.id || retryingJobId === item.id}
+                              className="w-8 h-8 rounded-lg bg-background/80 hover:bg-red-500/20 border border-primary/20 hover:border-red-500/40 text-text-muted hover:text-red-400 flex items-center justify-center transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
+                              title="Delete from history (keeps file on disk)"
+                            >
+                              {deletingJobId === item.id ? (
+                                <Loader2 className="w-3.5 h-3.5 animate-spin text-red-400" />
+                              ) : (
+                                <Trash2 className="w-3.5 h-3.5" />
+                              )}
+                            </button>
+                          </>
+                        )}
                       </div>
                     </div>
                   )
@@ -1557,18 +1964,18 @@ export default function DownloaderPage() {
             onClick={handleDropzoneClick}
             className={`p-4 rounded-2xl border-2 border-dashed transition-all flex flex-col items-center justify-center text-center gap-1.5 py-5 cursor-pointer select-none ${
               isDraggingOver
-                ? 'border-[#19D8FF] bg-[#19D8FF]/10 shadow-[0_0_24px_rgba(25,216,255,0.35)] scale-[1.01]'
-                : 'border-primary/30 bg-[#07152E]/50 hover:border-primary/60 hover:bg-[#07152E]/70'
+                ? 'border-primary bg-primary/10 shadow-[0_0_24px_rgba(var(--theme-primary-rgb),0.35)] scale-[1.01]'
+                : 'border-primary/30 bg-surface/50 hover:border-primary/60 hover:bg-surface/70'
             }`}
             role="region"
             aria-label="Drag and drop media link zone"
           >
             <CloudUpload
               className={`w-7 h-7 transition-colors ${
-                isDraggingOver ? 'text-white scale-110' : 'text-[#19D8FF]'
+                isDraggingOver ? 'text-white scale-110' : 'text-primary'
               }`}
             />
-            <span className="text-xs font-bold text-white tracking-wide">
+            <span className="text-xs font-bold text-text tracking-wide">
               {isDraggingOver ? 'Drop Link Here' : 'Drag & drop a link here'}
             </span>
             <span className="text-[10px] text-text-muted">

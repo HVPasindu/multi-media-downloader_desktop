@@ -1,26 +1,7 @@
-import { formatMediaDuration } from './mediaMetadata'
+import { formatMediaDuration, formatBytes } from './mediaMetadata.js'
+import { getFriendlyErrorInfo } from './errorPresentation.js'
 
-/**
- * Formats a raw number of bytes into a human-readable string with units (e.g. 452 MB, 1.2 GB).
- *
- * @param {number|null|undefined} bytes - Total bytes
- * @param {number} [decimals=1] - Decimal precision
- * @returns {string|null} Formatted size string or null if invalid
- */
-export function formatBytes(bytes, decimals = 1) {
-  if (bytes === null || bytes === undefined || !Number.isFinite(bytes) || bytes < 0) {
-    return null
-  }
-  if (bytes === 0) return '0 B'
-
-  const k = 1024
-  const dm = decimals < 0 ? 0 : decimals
-  const sizes = ['B', 'KB', 'MB', 'GB', 'TB']
-  const i = Math.floor(Math.log(bytes) / Math.log(k))
-  const clampedIndex = Math.min(i, sizes.length - 1)
-
-  return `${parseFloat((bytes / Math.pow(k, clampedIndex)).toFixed(dm))} ${sizes[clampedIndex]}`
-}
+export { formatBytes } from './mediaMetadata.js'
 
 /**
  * Formats download speed into readable string (e.g. "12.5 MB/s", "450 KB/s").
@@ -104,14 +85,13 @@ export function calculateDownloadSpeed(currentBytes, prevSample) {
 }
 
 /**
- * Calculates estimated remaining time (ETA) based on remaining bytes and speed.
- * Only returns a string when genuine total-size and speed exist.
+ * Calculates remaining seconds based on remaining bytes and download speed.
  *
  * @param {number|null|undefined} remainingBytes - Bytes left to download
  * @param {number|null|undefined} speedBps - Current speed in bytes per second
- * @returns {string|null} Formatted ETA (e.g. "2m 45s left") or null
+ * @returns {number|null} Estimated seconds remaining or null if unavailable
  */
-export function calculateEta(remainingBytes, speedBps) {
+export function calculateEtaSeconds(remainingBytes, speedBps) {
   if (
     !Number.isFinite(remainingBytes) ||
     remainingBytes <= 0 ||
@@ -120,20 +100,53 @@ export function calculateEta(remainingBytes, speedBps) {
   ) {
     return null
   }
+  return Math.round(remainingBytes / speedBps)
+}
 
-  const totalSeconds = Math.round(remainingBytes / speedBps)
-
-  if (totalSeconds <= 0) return '0s left'
-  if (totalSeconds < 60) return `${totalSeconds}s left`
-  if (totalSeconds < 3600) {
-    const mins = Math.floor(totalSeconds / 60)
-    const secs = totalSeconds % 60
-    return `${mins}m ${secs}s left`
+/**
+ * Formats an ETA duration in seconds into a user-friendly string (e.g. "~23 seconds", "~2m 15s").
+ *
+ * @param {number|null|undefined} etaSeconds - Seconds remaining
+ * @returns {string|null} Formatted duration or null
+ */
+export function formatEta(etaSeconds) {
+  if (!Number.isFinite(etaSeconds) || etaSeconds <= 0) return null
+  if (etaSeconds < 60) {
+    return `~${etaSeconds} seconds`
   }
+  if (etaSeconds < 3600) {
+    const mins = Math.floor(etaSeconds / 60)
+    const secs = etaSeconds % 60
+    return secs > 0 ? `~${mins}m ${secs}s` : `~${mins}m`
+  }
+  const hours = Math.floor(etaSeconds / 3600)
+  const mins = Math.floor((etaSeconds % 3600) / 60)
+  return mins > 0 ? `~${hours}h ${mins}m` : `~${hours}h`
+}
 
-  const hours = Math.floor(totalSeconds / 3600)
-  const mins = Math.floor((totalSeconds % 3600) / 60)
-  return `${hours}h ${mins}m left`
+/**
+ * Calculates estimated remaining time (ETA) based on remaining bytes and speed.
+ * Returns a human-friendly remaining string (e.g. "~23 seconds remaining" or "2m 45s left").
+ *
+ * @param {number|null|undefined} remainingBytes - Bytes left to download
+ * @param {number|null|undefined} speedBps - Current speed in bytes per second
+ * @returns {string|null} Formatted ETA or null
+ */
+export function calculateEta(remainingBytes, speedBps) {
+  const seconds = calculateEtaSeconds(remainingBytes, speedBps)
+  if (seconds === null) {
+    return null
+  }
+  if (seconds <= 0) return '0s remaining'
+  if (seconds < 60) return `~${seconds} seconds remaining`
+  if (seconds < 3600) {
+    const mins = Math.floor(seconds / 60)
+    const secs = seconds % 60
+    return secs > 0 ? `~${mins}m ${secs}s remaining` : `~${mins}m remaining`
+  }
+  const hours = Math.floor(seconds / 3600)
+  const mins = Math.floor((seconds % 3600) / 60)
+  return mins > 0 ? `~${hours}h ${mins}m remaining` : `~${hours}h remaining`
 }
 
 /**
@@ -153,6 +166,12 @@ export function normalizeDownloadJob(job, speedTracker = null) {
   const isCompleted = job.status === 'completed'
   const isFailed = job.status === 'failed'
   const isCancelled = job.status === 'cancelled'
+  const isPaused = job.status === 'paused'
+
+  // Clear speed tracker samples when not actively downloading to avoid stale speeds on resume
+  if (!isDownloading && speedTracker && typeof speedTracker.delete === 'function') {
+    speedTracker.delete(job.id)
+  }
 
   // Format label: 'MP4' or 'MP3'
   const formatLabel = (job.output_format || 'mp4').toUpperCase()
@@ -165,57 +184,151 @@ export function normalizeDownloadJob(job, speedTracker = null) {
     qualityLabel = job.quality
   }
 
+  // Determine total bytes (preferring actual output file_size once completed,
+  // otherwise live total_bytes from yt-dlp streams, falling back to file_size)
+  const hasLiveTotal =
+    job.total_bytes !== null &&
+    job.total_bytes !== undefined &&
+    Number.isFinite(Number(job.total_bytes)) &&
+    Number(job.total_bytes) > 0
+
+  const validFileSizeFallback =
+    job.file?.file_size !== null &&
+    job.file?.file_size !== undefined &&
+    Number.isFinite(Number(job.file.file_size)) &&
+    Number(job.file.file_size) > 0
+      ? Number(job.file.file_size)
+      : null
+
+  const hasCompletedOutputFileSize = isCompleted && validFileSizeFallback !== null
+
+  const totalBytes = hasCompletedOutputFileSize
+    ? validFileSizeFallback
+    : hasLiveTotal
+      ? Number(job.total_bytes)
+      : validFileSizeFallback
+
+  const totalBytesIsEstimate =
+    !hasCompletedOutputFileSize &&
+    hasLiveTotal &&
+    (job.total_bytes_is_estimate === true ||
+      job.total_bytes_is_estimate === 1 ||
+      job.total_bytes_is_estimate === '1')
+
+  const downloadedBytes =
+    job.downloaded_bytes !== null &&
+    job.downloaded_bytes !== undefined &&
+    Number.isFinite(Number(job.downloaded_bytes))
+      ? Number(job.downloaded_bytes)
+      : 0
+
+  const downloadedBytesFormatted = formatBytes(downloadedBytes)
+  const totalBytesFormatted = totalBytes
+    ? `${totalBytesIsEstimate ? '~' : ''}${formatBytes(totalBytes)}`
+    : null
+
   // Size display
   const fileSizeFormatted =
-    formatBytes(job.file?.file_size) ||
-    (job.downloaded_bytes ? formatBytes(job.downloaded_bytes) : '—')
+    totalBytesFormatted || (downloadedBytes > 0 ? downloadedBytesFormatted : '—')
 
-  // Progress text (e.g. "452 MB / 668 MB" or "452 MB downloaded" or "0 B")
+  // Progress text (e.g. "25 MB / ~52 MB" or "25 MB downloaded" or "0 B" or "52 MB" on completion)
   let progressText = '0 B'
-  if (job.file?.file_size && job.downloaded_bytes) {
-    progressText = `${formatBytes(job.downloaded_bytes)} / ${formatBytes(job.file.file_size)}`
-  } else if (job.downloaded_bytes && job.downloaded_bytes > 0) {
-    progressText = `${formatBytes(job.downloaded_bytes)} downloaded`
-  } else if (job.file?.file_size) {
-    progressText = formatBytes(job.file.file_size)
+  if (isCancelled) {
+    progressText = '0 B'
+  } else if (hasCompletedOutputFileSize) {
+    progressText = formatBytes(validFileSizeFallback)
+  } else if (totalBytes && downloadedBytes > 0) {
+    progressText = `${downloadedBytesFormatted} / ${totalBytesFormatted}`
+  } else if (downloadedBytes > 0) {
+    progressText = `${downloadedBytesFormatted} downloaded`
+  } else if (totalBytes) {
+    progressText = totalBytesFormatted
   }
 
-  // Progress percentage (0 - 100)
-  const progress = Math.min(100, Math.max(0, Math.round(Number(job.progress) || 0)))
+  // Progress percentage (0 - 100) — cancelled jobs are strictly normalized to 0%
+  const progress = isCancelled
+    ? 0
+    : Math.min(100, Math.max(0, Math.round(Number(job.progress) || 0)))
 
-  // Step 09.J - Distinguish resuming state for recovered downloads waiting in queue
-  const isResuming = isQueued && progress > 0
+  // Distinguish resuming state for recovered downloads waiting in queue or reporting resuming status
+  const isResuming = !isCancelled && (job.status === 'resuming' || (isQueued && progress > 0))
+  const isInterrupted = !isCancelled && job.status === 'interrupted'
 
   // Download speed & ETA computation (only when downloading)
   let speedText = null
   let etaText = null
+  let etaDisplay = null
 
-  if (isDownloading && speedTracker && typeof speedTracker.get === 'function') {
-    const prevSample = speedTracker.get(job.id)
-    const speedResult = calculateDownloadSpeed(job.downloaded_bytes, prevSample)
-    speedTracker.set(job.id, speedResult.sample)
-    speedText = speedResult.speedText
+  if (isDownloading) {
+    if (speedTracker && typeof speedTracker.get === 'function') {
+      const prevSample = speedTracker.get(job.id)
+      const speedResult = calculateDownloadSpeed(downloadedBytes, prevSample)
+      speedTracker.set(job.id, speedResult.sample)
+      speedText = speedResult.speedText
 
-    // Check if total file size is known for ETA
-    if (job.file?.file_size && job.downloaded_bytes && speedResult.speedBps) {
-      const remainingBytes = job.file.file_size - job.downloaded_bytes
-      etaText = calculateEta(remainingBytes, speedResult.speedBps)
+      if (downloadedBytes >= totalBytes && totalBytes > 0) {
+        // Transfer phase complete; muxing or final file processing in progress
+        etaText = 'Finalizing...'
+        etaDisplay = 'Finalizing...'
+      } else if (totalBytes && downloadedBytes && speedResult.speedBps) {
+        const remainingBytes = totalBytes - downloadedBytes
+        etaText = calculateEta(remainingBytes, speedResult.speedBps)
+        const seconds = calculateEtaSeconds(remainingBytes, speedResult.speedBps)
+        etaDisplay = formatEta(seconds)
+      } else if (!speedResult.speedBps || !speedText || speedText === '—') {
+        etaText = 'Calculating...'
+        etaDisplay = 'Calculating...'
+      } else if (!totalBytes) {
+        etaText = 'ETA unavailable'
+        etaDisplay = 'ETA unavailable'
+      }
+    } else {
+      etaText = 'Calculating...'
+      etaDisplay = 'Calculating...'
+    }
+  } else {
+    // Invalidate stale speed samples when not actively downloading so recovery/restart recalculates cleanly
+    if (speedTracker && typeof speedTracker.delete === 'function') {
+      speedTracker.delete(job.id)
+    }
+    if (isCancelled) {
+      speedText = null
+      etaText = null
+      etaDisplay = null
+    } else if (isInterrupted) {
+      speedText = '0 KB/s'
+      etaText = 'Waiting for connection'
+      etaDisplay = 'Waiting for connection'
+    } else if (isPaused) {
+      speedText = '0 KB/s'
+      etaText = 'Paused'
+      etaDisplay = 'Paused'
+    } else if (isResuming) {
+      speedText = null
+      etaText = 'Resuming...'
+      etaDisplay = 'Resuming...'
     }
   }
 
   // Build user-friendly status text and display status
   let statusText = job.status
   let displayStatus = job.status
+  let errorInfo = null
   if (isDownloading) {
     const details = []
-    if (speedText && speedText !== '—') details.push(speedText)
-    if (etaText) details.push(etaText)
+    if (speedText && speedText !== '—' && speedText !== 'Calculating...') details.push(speedText)
+    if (etaText && !['Finalizing...', 'Calculating...', 'ETA unavailable'].includes(etaText)) {
+      details.push(etaText)
+    }
     statusText = details.length > 0 ? `Downloading (${details.join(' • ')})` : 'Downloading'
     displayStatus = 'downloading'
+  } else if (isPaused) {
+    statusText = `Paused (${progress}%)`
+    displayStatus = 'paused'
   } else if (isResuming) {
     statusText = `Resuming (${progress}% saved)`
     displayStatus = 'resuming'
-  } else if (job.status === 'interrupted') {
+  } else if (isInterrupted) {
     statusText = job.error_message || 'Interrupted – Waiting for internet connection'
     displayStatus = 'interrupted'
   } else if (isQueued) {
@@ -225,7 +338,9 @@ export function normalizeDownloadJob(job, speedTracker = null) {
     statusText = 'Completed'
     displayStatus = 'completed'
   } else if (isFailed) {
-    statusText = job.error_message || 'Failed'
+    errorInfo = getFriendlyErrorInfo(job.error_message)
+    const reason = errorInfo.guidance || errorInfo.message
+    statusText = errorInfo.title ? `${errorInfo.title} – ${reason}` : job.error_message || 'Failed'
     displayStatus = 'failed'
   } else if (isCancelled) {
     statusText = 'Cancelled'
@@ -246,15 +361,23 @@ export function normalizeDownloadJob(job, speedTracker = null) {
     quality: qualityLabel,
     size: fileSizeFormatted,
     fileSize: fileSizeFormatted,
+    fileBytes: job.file?.file_size || null,
     filePath: job.file?.file_path || null,
-    progress,
-    progressText,
-    speedText,
-    etaText,
+    totalBytes,
+    totalBytesFormatted,
+    totalBytesIsEstimate,
+    downloadedBytes: isCancelled ? 0 : downloadedBytes,
+    downloadedBytesFormatted: isCancelled ? '0 B' : downloadedBytesFormatted,
+    progress: isCancelled ? 0 : progress,
+    progressText: isCancelled ? '0 B' : progressText,
+    speedText: isCancelled ? null : speedText,
+    etaText: isCancelled ? null : etaText,
+    etaDisplay: isCancelled ? null : etaDisplay,
     displayStatus,
     status: job.status,
     statusText,
     errorMessage: job.error_message,
+    errorInfo,
     fileStatus: job.file_status || null,
     createdAt: job.createdAt
   }

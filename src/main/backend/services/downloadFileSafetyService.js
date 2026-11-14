@@ -394,7 +394,7 @@ export async function assertRealPathInsideDirectory(childPath, parentDir) {
  * @param {number} jobId - Download job ID
  * @throws {DownloadError} if a conflicting file already exists
  */
-export async function assertNoJobOutputFileConflict(downloadPath, jobId) {
+export async function assertNoJobOutputFileConflict(downloadPath, jobId, options = {}) {
   if (!Number.isSafeInteger(jobId) || jobId <= 0) {
     throw new Error('A valid Download Job ID is required')
   }
@@ -405,11 +405,13 @@ export async function assertNoJobOutputFileConflict(downloadPath, jobId) {
     entries = await readdir(cleanPath)
   } catch {
     // If directory cannot be read, directory validation will catch it
-    return
+    return null
   }
 
   const jobMarker = `[job-${jobId}]`
   const matchingEntries = entries.filter((name) => name.includes(jobMarker))
+
+  let existingCandidate = null
 
   for (const entryName of matchingEntries) {
     const fullEntryPath = path.join(cleanPath, entryName)
@@ -448,12 +450,84 @@ export async function assertNoJobOutputFileConflict(downloadPath, jobId) {
       continue
     }
 
-    // Any existing completed final output file matching this job ID is a conflict
+    // Non-partial file matching [job-ID] found.
+    // If empty (0 bytes) or corrupted orphan from a prior aborted execution, remove it safely.
+    if (entryStat.size <= 0) {
+      await removeJobOwnedOutputFile(fullEntryPath, cleanPath, jobId)
+      continue
+    }
+
+    // Check if expected format matches
+    if (options.expectedFormat) {
+      const ext = path.extname(entryName).slice(1).toLowerCase()
+      if (ext !== options.expectedFormat.toLowerCase()) {
+        await removeJobOwnedOutputFile(fullEntryPath, cleanPath, jobId)
+        continue
+      }
+    }
+
+    // If caller allows adoption of valid existing job-owned output
+    if (options.allowAdoption) {
+      existingCandidate = fullEntryPath
+      continue
+    }
+
+    // Any existing completed final output file matching this job ID is a conflict if adoption not requested
     throw new DownloadError(
       DOWNLOAD_ERROR_CODES.OUTPUT_VERIFICATION_FAILED,
       `Destination file conflict: An existing file for job ${jobId} already exists in the download folder.`
     )
   }
+
+  return existingCandidate
+}
+
+/**
+ * Safely removes an invalid or failed job-owned final output file.
+ * Strictly verifies that the target file belongs to the exact Download Job ID,
+ * is located inside the download directory without symlink escape, and is a regular file.
+ *
+ * @param {string} filePath - Absolute path to the candidate output file
+ * @param {string} downloadPath - The validated download directory
+ * @param {number} jobId - The Download Job ID
+ * @returns {Promise<boolean>} True if removed, false otherwise
+ */
+export async function removeJobOwnedOutputFile(filePath, downloadPath, jobId) {
+  if (
+    !Number.isSafeInteger(jobId) ||
+    jobId <= 0 ||
+    typeof filePath !== 'string' ||
+    !filePath.trim() ||
+    typeof downloadPath !== 'string' ||
+    !downloadPath.trim()
+  ) {
+    return false
+  }
+
+  const safePath = path.resolve(filePath.trim())
+  const marker = `[job-${jobId}]`
+
+  if (!path.basename(safePath).includes(marker)) {
+    return false
+  }
+
+  let info
+  try {
+    info = await lstat(safePath)
+  } catch (err) {
+    if (err.code === 'ENOENT') {
+      return false
+    }
+    throw err
+  }
+
+  if (info.isSymbolicLink() || !info.isFile()) {
+    return false
+  }
+
+  await assertRealPathInsideDirectory(safePath, downloadPath)
+  await unlink(safePath)
+  return true
 }
 
 /**

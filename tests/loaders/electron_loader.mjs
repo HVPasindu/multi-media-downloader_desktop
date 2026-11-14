@@ -33,7 +33,7 @@ export async function resolve(specifier, context, nextResolve) {
   if ((specifier.startsWith('./') || specifier.startsWith('../')) && context.parentURL) {
     try {
       const parentDir = path.dirname(
-        new URL(context.parentURL).pathname.replace(/^\/([A-Za-z]:)/, '')
+        new URL(context.parentURL).pathname.replace(/^\/([A-Za-z]:)/, '$1')
       )
       const candidatePath = path.resolve(parentDir, specifier)
       if (!path.extname(candidatePath)) {
@@ -44,10 +44,42 @@ export async function resolve(specifier, context, nextResolve) {
             url: pathToFileURL(candidatePath + '.js').href
           }
         }
+        if (fs.existsSync(candidatePath + '.jsx')) {
+          return {
+            format: 'module',
+            shortCircuit: true,
+            url: pathToFileURL(candidatePath + '.jsx').href
+          }
+        }
+      } else if (candidatePath.endsWith('.jsx')) {
+        return {
+          format: 'module',
+          shortCircuit: true,
+          url: pathToFileURL(candidatePath).href
+        }
       }
     } catch (err) {
       void err
     }
   }
   return nextResolve(specifier, context)
+}
+
+export async function load(url, context, nextLoad) {
+  if (url.endsWith('.jsx')) {
+    const filePath = new URL(url).pathname.replace(/^\/([A-Za-z]:)/, '$1')
+    const rawCode = fs.readFileSync(filePath, 'utf8')
+    const { transformSync } = await import('esbuild')
+    const transformed = transformSync(rawCode, {
+      loader: 'jsx',
+      format: 'esm',
+      jsx: 'automatic'
+    })
+    return {
+      format: 'module',
+      shortCircuit: true,
+      source: transformed.code
+    }
+  }
+  return nextLoad(url, context)
 }

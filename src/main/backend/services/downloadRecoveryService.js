@@ -1,8 +1,11 @@
 import { Op } from 'sequelize'
 import { getDatabase } from '../config/database.js'
-import { getSavedDownloadPath } from './downloadSettingsService.js'
-import { getDefaultDownloadPath } from './downloadPathService.js'
-import { cleanupJobTemporaryFiles, verifyJobPartialDownload } from './downloadCleanupService.js'
+import { resolveValidatedDownloadPath } from './downloadPathService.js'
+import {
+  cleanupJobTemporaryFiles,
+  verifyJobPartialDownload,
+  isPartialDownloadResumable
+} from './downloadCleanupService.js'
 import { enqueueDownloadJob, getQueueStatus } from './downloadQueueService.js'
 import { checkNetworkConnectivity } from './networkRecoveryService.js'
 
@@ -48,11 +51,10 @@ export async function recoverInterruptedDownloadJobs(options = {}) {
       ? options.isOnline
       : await checkNetworkConnectivity({ timeoutMs: 4000 })
 
-  // 1. Resolve configured download folder for verifying partial files
+  // 1. Resolve and validate configured download folder for verifying partial files
   let downloadPath = null
   try {
-    const savedPath = await getSavedDownloadPath(AppSetting)
-    downloadPath = savedPath || (await getDefaultDownloadPath())
+    downloadPath = await resolveValidatedDownloadPath(AppSetting)
   } catch {
     downloadPath = null
   }
@@ -90,8 +92,19 @@ export async function recoverInterruptedDownloadJobs(options = {}) {
 
     // Handle offline startup
     if (!isOnline) {
+      if (!downloadPath) {
+        await job.update({
+          status: 'failed',
+          error_message: 'Recovery failed: Unable to resolve valid download folder path'
+        })
+        console.warn(
+          `[recovery] Offline job ${job.id} failed: Unable to resolve valid download folder path.`
+        )
+        continue
+      }
+
       let hasValidPartial = false
-      let reconciledBytes = job.downloaded_bytes || 0
+      let reconciledBytes = 0
 
       if (downloadPath) {
         try {
@@ -99,8 +112,8 @@ export async function recoverInterruptedDownloadJobs(options = {}) {
             savedDownloadedBytes: job.downloaded_bytes,
             savedProgress: job.progress
           })
-          hasValidPartial = Boolean(partialResult.isValid && !partialResult.isUnsafe)
-          if (hasValidPartial && partialResult.reconciledBytes > 0) {
+          hasValidPartial = isPartialDownloadResumable(partialResult)
+          if (hasValidPartial) {
             reconciledBytes = partialResult.reconciledBytes
           }
         } catch {
@@ -115,6 +128,27 @@ export async function recoverInterruptedDownloadJobs(options = {}) {
       if (hasValidPartial) {
         updatePayload.downloaded_bytes = reconciledBytes
       } else {
+        let cleanupFailed = false
+        let cleanupErrorMsg = null
+        if (downloadPath) {
+          try {
+            const cleanResult = await cleanupJobTemporaryFiles(job.id, downloadPath)
+            if (cleanResult && cleanResult.success === false) {
+              cleanupFailed = true
+              cleanupErrorMsg = cleanResult.error || 'Failed to cleanup temporary files'
+            }
+          } catch (cleanErr) {
+            cleanupFailed = true
+            cleanupErrorMsg = cleanErr.message
+          }
+        }
+        if (cleanupFailed) {
+          await job.update({
+            status: 'failed',
+            error_message: `Recovery cleanup failed: ${cleanupErrorMsg}`
+          })
+          continue
+        }
         updatePayload.progress = 0
         updatePayload.downloaded_bytes = 0
       }
@@ -132,8 +166,19 @@ export async function recoverInterruptedDownloadJobs(options = {}) {
 
     // Online recovery flow:
     if (job.status === 'downloading' || job.status === 'interrupted') {
+      if (!downloadPath) {
+        await job.update({
+          status: 'failed',
+          error_message: 'Recovery failed: Unable to resolve valid download folder path'
+        })
+        console.warn(
+          `[recovery] Job ${job.id} failed: Unable to resolve valid download folder path.`
+        )
+        continue
+      }
+
       let hasValidPartial = false
-      let reconciledBytes = job.downloaded_bytes || 0
+      let reconciledBytes = 0
 
       if (downloadPath) {
         try {
@@ -141,8 +186,8 @@ export async function recoverInterruptedDownloadJobs(options = {}) {
             savedDownloadedBytes: job.downloaded_bytes,
             savedProgress: job.progress
           })
-          hasValidPartial = Boolean(partialResult.isValid && !partialResult.isUnsafe)
-          if (hasValidPartial && partialResult.reconciledBytes > 0) {
+          hasValidPartial = isPartialDownloadResumable(partialResult)
+          if (hasValidPartial) {
             reconciledBytes = partialResult.reconciledBytes
           }
         } catch {
@@ -162,12 +207,30 @@ export async function recoverInterruptedDownloadJobs(options = {}) {
         )
       } else {
         // No valid partial download: safely clean unusable fragments and restart from 0 with same Job ID
+        let cleanupFailed = false
+        let cleanupErrorMsg = null
         if (downloadPath) {
           try {
-            await cleanupJobTemporaryFiles(job.id, downloadPath)
-          } catch {
-            // Ignore fallback cleanup errors
+            const cleanResult = await cleanupJobTemporaryFiles(job.id, downloadPath)
+            if (cleanResult && cleanResult.success === false) {
+              cleanupFailed = true
+              cleanupErrorMsg = cleanResult.error || 'Failed to cleanup temporary files'
+            }
+          } catch (cleanErr) {
+            cleanupFailed = true
+            cleanupErrorMsg = cleanErr.message
           }
+        }
+
+        if (cleanupFailed) {
+          await job.update({
+            status: 'failed',
+            error_message: `Recovery cleanup failed: ${cleanupErrorMsg}`
+          })
+          console.warn(
+            `[recovery] Job ${job.id} cleanup failed: ${cleanupErrorMsg}. Marked as failed.`
+          )
+          continue
         }
 
         await job.update({
@@ -182,6 +245,17 @@ export async function recoverInterruptedDownloadJobs(options = {}) {
       recoveredDownloadsCount++
       recoveredJobIds.push(job.id)
     } else if (job.status === 'queued') {
+      if (!downloadPath) {
+        await job.update({
+          status: 'failed',
+          error_message: 'Recovery failed: Unable to resolve valid download folder path'
+        })
+        console.warn(
+          `[recovery] Queued job ${job.id} failed: Unable to resolve valid download folder path.`
+        )
+        continue
+      }
+
       await job.update({
         status: 'queued',
         error_message: null

@@ -62,6 +62,15 @@ export function listDownloads(filters = {}) {
   const params = new URLSearchParams()
 
   if (filters.status) params.set('status', filters.status)
+  if (filters.statuses) {
+    const statusesStr = Array.isArray(filters.statuses)
+      ? filters.statuses.join(',')
+      : String(filters.statuses)
+    params.set('statuses', statusesStr)
+  }
+  if (filters.search && typeof filters.search === 'string' && filters.search.trim()) {
+    params.set('search', filters.search.trim())
+  }
   if (filters.outputFormat) params.set('outputFormat', filters.outputFormat)
   if (filters.sourceType) params.set('sourceType', filters.sourceType)
   if (filters.from) params.set('from', filters.from)
@@ -79,6 +88,18 @@ export function listDownloads(filters = {}) {
 }
 
 /**
+ * Retrieves aggregate summary counts and metrics from SQLite across all downloads and history.
+ *
+ * @returns {Promise<{ status: number, ok: boolean, data: { success: boolean, data?: { downloads: object, history: object } } }>}
+ */
+export function getDownloadSummary() {
+  return apiRequest({
+    path: '/api/downloads/summary',
+    method: 'GET'
+  })
+}
+
+/**
  * Retrieves full details and status for a single download job.
  *
  * @param {number|string} id - Download job ID
@@ -88,6 +109,38 @@ export function getDownload(id) {
   return apiRequest({
     path: `/api/downloads/${id}`,
     method: 'GET'
+  })
+}
+
+/**
+ * Pauses a currently running, queued, or interrupted download job.
+ *
+ * @param {number|string} id - Download job ID
+ * @returns {Promise<{ status: number, ok: boolean, data: { success: boolean, data?: object } }>}
+ */
+export function pauseDownload(id) {
+  return apiRequest({
+    path: `/api/downloads/${id}/pause`,
+    method: 'POST'
+  }).then((res) => {
+    if (res.ok) notifyDownloadStateChanged()
+    return res
+  })
+}
+
+/**
+ * Resumes a paused download job from its saved checkpoint.
+ *
+ * @param {number|string} id - Download job ID
+ * @returns {Promise<{ status: number, ok: boolean, data: { success: boolean, data?: object } }>}
+ */
+export function resumeDownload(id) {
+  return apiRequest({
+    path: `/api/downloads/${id}/resume`,
+    method: 'POST'
+  }).then((res) => {
+    if (res.ok) notifyDownloadStateChanged()
+    return res
   })
 }
 
@@ -134,6 +187,9 @@ export function deleteDownloadHistory(id) {
   return apiRequest({
     path: `/api/downloads/${id}`,
     method: 'DELETE'
+  }).then((res) => {
+    if (res.ok) notifyDownloadStateChanged()
+    return res
   })
 }
 
@@ -152,6 +208,9 @@ export function clearDownloadHistory(options = {}) {
     path: '/api/downloads/history',
     method: 'DELETE',
     body: { confirm, statuses }
+  }).then((res) => {
+    if (res.ok) notifyDownloadStateChanged()
+    return res
   })
 }
 
@@ -207,5 +266,67 @@ export async function getActiveDownloadsCount() {
       queued: 0,
       error: err
     }
+  }
+}
+
+/**
+ * Polls the backend for a download job's status until it reaches one of the expected statuses
+ * or times out.
+ *
+ * @param {number|string} jobId - Download job ID
+ * @param {string|Array<string>} expectedStatuses - Status or list of statuses to wait for
+ * @param {number} [timeoutMs=5000] - Maximum duration in milliseconds to poll
+ * @param {number} [pollIntervalMs=250] - Interval between polling requests
+ * @returns {Promise<{ ok: boolean, matched: boolean, status: string|null, job?: object }>}
+ */
+export async function waitForJobStatus(
+  jobId,
+  expectedStatuses,
+  timeoutMs = 5000,
+  pollIntervalMs = 250
+) {
+  const targetStatuses = Array.isArray(expectedStatuses) ? expectedStatuses : [expectedStatuses]
+  const startTime = Date.now()
+
+  while (Date.now() - startTime < timeoutMs) {
+    try {
+      const res = await getDownload(jobId)
+      if (res.ok && res.data?.data?.job) {
+        const currentStatus = res.data.data.job.status
+        if (targetStatuses.includes(currentStatus)) {
+          return {
+            ok: true,
+            matched: true,
+            status: currentStatus,
+            job: res.data.data.job
+          }
+        }
+      }
+    } catch {
+      // Ignore transient polling failure
+    }
+    await new Promise((resolve) => setTimeout(resolve, pollIntervalMs))
+  }
+
+  // Final check at expiration
+  try {
+    const finalRes = await getDownload(jobId)
+    if (finalRes.ok && finalRes.data?.data?.job) {
+      const currentStatus = finalRes.data.data.job.status
+      return {
+        ok: true,
+        matched: targetStatuses.includes(currentStatus),
+        status: currentStatus,
+        job: finalRes.data.data.job
+      }
+    }
+  } catch {
+    // Ignore error
+  }
+
+  return {
+    ok: false,
+    matched: false,
+    status: null
   }
 }

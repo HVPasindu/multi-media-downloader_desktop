@@ -74,7 +74,7 @@ async function runDownloadLifecycleTests() {
       testDownloadDir,
       `test-video [dQw4w9WgXcQ] [1080p] [job-${resumableJob.id}].mp4.part`
     )
-    await writeFile(partFilePath, Buffer.alloc(1024 * 1024, 0xaa))
+    await writeFile(partFilePath, Buffer.alloc(12000000, 0xaa))
 
     // Seed Job 2: downloading job WITHOUT partial file (missing file)
     const freshRestartJob = await createDownloadJob({
@@ -117,6 +117,7 @@ async function runDownloadLifecycleTests() {
     const enqueuedJobs = []
     const recoveryResult1 = await recoverInterruptedDownloadJobs({
       autoEnqueue: true,
+      isOnline: true,
       enqueue: (id) => enqueuedJobs.push(id)
     })
     assert.equal(recoveryResult1.interruptedDownloads, 2, '1.1: Two downloading jobs recovered')
@@ -167,7 +168,10 @@ async function runDownloadLifecycleTests() {
     assert.equal(reloadedCancelled.status, 'cancelled', '1.18: Cancelled job remained cancelled')
 
     // Idempotency: repeating recovery immediately finds 0 jobs to recover
-    const recoveryResult2 = await recoverInterruptedDownloadJobs({ autoEnqueue: false })
+    const recoveryResult2 = await recoverInterruptedDownloadJobs({
+      autoEnqueue: false,
+      isOnline: true
+    })
     assert.equal(
       recoveryResult2.interruptedDownloads,
       0,

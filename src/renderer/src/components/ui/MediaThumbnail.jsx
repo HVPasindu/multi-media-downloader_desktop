@@ -175,7 +175,7 @@ export default function MediaThumbnail({
 
   return (
     <div
-      className={`relative overflow-hidden rounded-lg bg-[#07152E] border border-primary/20 flex-shrink-0 group ${aspectRatio} ${className}`}
+      className={`relative overflow-hidden rounded-lg bg-surface border border-primary/20 flex-shrink-0 group ${aspectRatio} ${className}`}
     >
       {/* Base Thumbnail Image or Fallback */}
       {isImageAvailable ? (
@@ -187,8 +187,8 @@ export default function MediaThumbnail({
           loading="lazy"
         />
       ) : (
-        <div className="w-full h-full flex flex-col items-center justify-center bg-[#040B1C]/80 text-text-muted/50 p-2 select-none">
-          <Video className="w-6 h-6 text-[#19D8FF]/60 mb-1" />
+        <div className="w-full h-full flex flex-col items-center justify-center bg-background/80 text-text-muted/50 p-2 select-none">
+          <Video className="w-6 h-6 text-primary/60 mb-1" />
           <span className="text-[9px] font-mono tracking-wider text-text-muted/70 uppercase">
             {hasError ? 'Unavailable' : 'No Preview'}
           </span>

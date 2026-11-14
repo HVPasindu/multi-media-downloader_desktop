@@ -11,6 +11,7 @@ export const TERMINAL_JOB_STATUSES = Object.freeze(['completed', 'failed', 'canc
 export const VALID_JOB_STATUSES = Object.freeze([
   'queued',
   'downloading',
+  'paused',
   'interrupted',
   'completed',
   'failed',
@@ -209,6 +210,36 @@ export function validateHistoryFilters(query = {}) {
     }
   }
 
+  // 1b. Multi-status filter (e.g. 'failed,cancelled' or array)
+  let statuses = null
+  if ('statuses' in query && query.statuses !== undefined && query.statuses !== null) {
+    const rawStatuses = Array.isArray(query.statuses)
+      ? query.statuses
+      : String(query.statuses).split(',')
+
+    const parsedStatuses = rawStatuses.map((s) => String(s).trim().toLowerCase()).filter(Boolean)
+
+    if (parsedStatuses.length > 0) {
+      const invalid = parsedStatuses.filter((s) => !VALID_JOB_STATUSES.includes(s))
+      if (invalid.length > 0) {
+        errors.statuses = `Invalid statuses filter: "${invalid.join(', ')}". Allowed values: ${VALID_JOB_STATUSES.join(', ')}`
+      } else {
+        statuses = [...new Set(parsedStatuses)]
+      }
+    }
+  }
+
+  // 1c. Search query filter (trimmed, max 200 characters)
+  let search = null
+  if ('search' in query && query.search !== undefined && query.search !== null) {
+    const rawSearch = String(query.search).trim()
+    if (rawSearch.length > 200) {
+      errors.search = 'Search query cannot exceed 200 characters'
+    } else if (rawSearch.length > 0) {
+      search = rawSearch
+    }
+  }
+
   // 2. Output format filter
   if ('outputFormat' in query && query.outputFormat !== undefined && query.outputFormat !== null) {
     const val = String(query.outputFormat).trim().toLowerCase()
@@ -293,6 +324,8 @@ export function validateHistoryFilters(query = {}) {
     errors,
     normalized: {
       status,
+      statuses,
+      search,
       outputFormat,
       sourceType,
       fromDate,
@@ -319,7 +352,11 @@ export async function listDownloadHistory(filters = {}) {
   // Construct Sequelize where clause
   const where = {}
 
-  if (filters.status) {
+  if (filters.statuses && filters.statuses.length > 0) {
+    where.status = {
+      [Op.in]: filters.statuses
+    }
+  } else if (filters.status) {
     where.status = filters.status
   }
 
@@ -329,6 +366,48 @@ export async function listDownloadHistory(filters = {}) {
 
   if (filters.sourceType) {
     where.source_type = filters.sourceType
+  }
+
+  if (filters.search) {
+    const searchPattern = `%${filters.search}%`
+    const [matchingMedia, matchingFiles] = await Promise.all([
+      MediaItem.findAll({
+        where: {
+          [Op.or]: [
+            { title: { [Op.like]: searchPattern } },
+            { platform: { [Op.like]: searchPattern } },
+            { source_url: { [Op.like]: searchPattern } }
+          ]
+        },
+        attributes: ['id']
+      }),
+      DownloadFile.findAll({
+        where: {
+          [Op.or]: [
+            { file_name: { [Op.like]: searchPattern } },
+            { file_path: { [Op.like]: searchPattern } }
+          ]
+        },
+        attributes: ['download_job_id']
+      })
+    ])
+
+    const matchedMediaIds = matchingMedia.map((m) => m.id)
+    const matchedJobIds = matchingFiles.map((f) => f.download_job_id)
+
+    if (matchedMediaIds.length > 0 && matchedJobIds.length > 0) {
+      where[Op.or] = [
+        { media_id: { [Op.in]: matchedMediaIds } },
+        { id: { [Op.in]: matchedJobIds } }
+      ]
+    } else if (matchedMediaIds.length > 0) {
+      where.media_id = { [Op.in]: matchedMediaIds }
+    } else if (matchedJobIds.length > 0) {
+      where.id = { [Op.in]: matchedJobIds }
+    } else {
+      // Nothing matched
+      where.id = -1
+    }
   }
 
   if (filters.fromDate && filters.toDate) {
@@ -632,4 +711,108 @@ export async function clearDownloadHistory({ confirm, statuses }) {
       }
     )
   })
+}
+
+/**
+ * Computes lightweight aggregate summary metrics across all SQLite records
+ * for Downloads Manager and History Page.
+ *
+ * @returns {Promise<{
+ *   downloads: {
+ *     total: number,
+ *     downloading: number,
+ *     queued: number,
+ *     interrupted: number,
+ *     completed: number,
+ *     failed: number,
+ *     cancelled: number
+ *   },
+ *   history: {
+ *     totalFiles: number,
+ *     videos: number,
+ *     audio: number,
+ *     completed: number,
+ *     failed: number,
+ *     storageBytes: number
+ *   }
+ * }>}
+ */
+export async function getDownloadSummary() {
+  const { DownloadJob, DownloadFile } = getDatabase().models
+
+  const [statusCounts, formatCounts, storageResult] = await Promise.all([
+    DownloadJob.findAll({
+      attributes: ['status', [getDatabase().fn('COUNT', getDatabase().col('id')), 'count']],
+      group: ['status'],
+      raw: true
+    }),
+
+    DownloadJob.findAll({
+      where: {
+        status: {
+          [Op.in]: TERMINAL_JOB_STATUSES
+        }
+      },
+      attributes: ['output_format', [getDatabase().fn('COUNT', getDatabase().col('id')), 'count']],
+      group: ['output_format'],
+      raw: true
+    }),
+
+    DownloadFile.findOne({
+      include: [
+        {
+          model: DownloadJob,
+          as: 'downloadJob',
+          required: true,
+          where: { status: 'completed' },
+          attributes: []
+        }
+      ],
+      attributes: [[getDatabase().fn('SUM', getDatabase().col('file_size')), 'totalStorage']],
+      raw: true
+    })
+  ])
+
+  const statusMap = {}
+  let totalJobs = 0
+  for (const row of statusCounts) {
+    const count = Number(row.count) || 0
+    statusMap[row.status] = count
+    totalJobs += count
+  }
+
+  let terminalVideos = 0
+  let terminalAudio = 0
+  for (const row of formatCounts) {
+    const count = Number(row.count) || 0
+    if (row.output_format === 'mp4') terminalVideos = count
+    if (row.output_format === 'mp3') terminalAudio = count
+  }
+
+  const completed = statusMap['completed'] || 0
+  const failed = statusMap['failed'] || 0
+  const cancelled = statusMap['cancelled'] || 0
+  const totalFiles = completed + failed + cancelled
+  const storageBytes = Number(storageResult?.totalStorage) || 0
+
+  return {
+    downloads: {
+      total: totalJobs,
+      downloading: statusMap['downloading'] || 0,
+      queued: statusMap['queued'] || 0,
+      paused: statusMap['paused'] || 0,
+      interrupted: statusMap['interrupted'] || 0,
+      completed,
+      failed: failed + cancelled,
+      cancelled
+    },
+    history: {
+      totalFiles,
+      videos: terminalVideos,
+      audio: terminalAudio,
+      completed,
+      failed: failed + cancelled,
+      storageBytes
+    }
+  }
 }

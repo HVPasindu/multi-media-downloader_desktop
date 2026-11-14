@@ -46,6 +46,15 @@ export default function defineDownloadJob(sequelize) {
         allowNull: false,
         defaultValue: 0
       },
+      total_bytes: {
+        type: DataTypes.BIGINT,
+        allowNull: true
+      },
+      total_bytes_is_estimate: {
+        type: DataTypes.BOOLEAN,
+        allowNull: false,
+        defaultValue: false
+      },
       error_message: {
         type: DataTypes.TEXT
       }

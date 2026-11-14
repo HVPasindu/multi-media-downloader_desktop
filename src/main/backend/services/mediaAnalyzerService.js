@@ -76,13 +76,30 @@ export function getRateLimitCooldown(platform) {
  * @param {string} [platform] - The target platform ('youtube', etc.)
  * @returns {{ code: string, userMessage: string, retryAfterSeconds: number|null }}
  */
+export function redactSensitiveText(str) {
+  if (!str) return ''
+  return String(str)
+    .replace(
+      /(?:api[-_]?key|token|auth|password|cookie|secret|visitor[-_]?data)=([^\s&"'<>]+)/gi,
+      '$1=[REDACTED]'
+    )
+    .replace(/(?:Bearer\s+)[a-zA-Z0-9_.-]+/gi, 'Bearer [REDACTED]')
+}
+
 export function classifyAnalysisError(error, platform) {
   const message = String(error?.message || '')
   const stderr = String(error?.stderr || '')
-  const combined = `${message} ${stderr} ${platform || ''}`
+  const combined = `${message} ${stderr}`
+  const isYouTube =
+    String(platform || '')
+      .toLowerCase()
+      .trim() === 'youtube'
 
-  // 1. YouTube PO Token / Visitor Data Required (Priority 1)
-  if (/po[-_ ]token|proof[- ]of[- ]origin|visitor[-_ ]data|visitorData/i.test(combined)) {
+  // 1. YouTube PO Token / Visitor Data Required (Priority 1 - Strictly YouTube)
+  if (
+    isYouTube &&
+    /po[-_ ]token|proof[- ]of[- ]origin|visitor[-_ ]data|visitorData/i.test(combined)
+  ) {
     return {
       code: 'YOUTUBE_PO_TOKEN_REQUIRED',
       userMessage:
@@ -91,34 +108,93 @@ export function classifyAnalysisError(error, platform) {
     }
   }
 
-  // 2. YouTube Bot Verification / Authentication Required (Priority 2)
+  // 2. Bot Verification / Authentication Required (Priority 2)
   if (
     /sign in to confirm (?:you(?:'|’)?re not a bot|your age)|confirm you(?:'|’)?re not a bot|bot verification|this video is private|private video|sign in to view this video|requires authentication|login required|members-only/i.test(
       combined
     )
   ) {
+    if (isYouTube) {
+      return {
+        code: 'YOUTUBE_AUTH_REQUIRED',
+        userMessage:
+          'YouTube requires authentication or bot verification. This video cannot be analyzed directly.',
+        retryAfterSeconds: null
+      }
+    }
     return {
-      code: 'YOUTUBE_AUTH_REQUIRED',
-      userMessage:
-        'YouTube requires authentication or bot verification. This video cannot be analyzed directly.',
+      code: 'AUTH_REQUIRED',
+      userMessage: 'This media requires authentication, login, or is private.',
       retryAfterSeconds: null
     }
   }
 
-  // 3. YouTube HTTP 429 Rate Limiting (Priority 3 - Must match explicit HTTP 429 / Rate limit, not arbitrary 429 numbers)
+  // 3. HTTP 429 Rate Limiting (Priority 3 - Must match explicit HTTP 429 / Rate limit, not arbitrary 429 numbers)
   if (
     /(?:http\s*error\s*429|429\s*too\s*many\s*requests|too\s*many\s*requests|\brate[- ]limit(?:ed|ing)?\b|\b429\s+error\b)/i.test(
       combined
     )
   ) {
+    if (isYouTube) {
+      return {
+        code: 'YOUTUBE_RATE_LIMITED',
+        userMessage: 'YouTube rate limit encountered (HTTP 429). Please wait before retrying.',
+        retryAfterSeconds: 60
+      }
+    }
     return {
-      code: 'YOUTUBE_RATE_LIMITED',
-      userMessage: 'YouTube rate limit encountered (HTTP 429). Please wait before retrying.',
+      code: 'RATE_LIMITED',
+      userMessage: 'Rate limit encountered (HTTP 429). Please wait before retrying.',
       retryAfterSeconds: 60
     }
   }
 
-  // 4. Network / Connectivity Error (Priority 4)
+  // 4. JavaScript Challenge / EJS Failure
+  if (
+    /missing ejs|ejs component|javascript challenge|no javascript runtime|js challenge provider/i.test(
+      combined
+    )
+  ) {
+    return {
+      code: 'JS_CHALLENGE_FAILED',
+      userMessage:
+        'A JavaScript challenge solver is required but unavailable. Please check the runtime configuration.',
+      retryAfterSeconds: null
+    }
+  }
+
+  // 5. HTTP 403 Forbidden
+  if (/http\s*error\s*403|403\s*forbidden/i.test(combined)) {
+    return {
+      code: 'HTTP_FORBIDDEN',
+      userMessage: 'Access to this media resource was forbidden by the server (HTTP 403).',
+      retryAfterSeconds: null
+    }
+  }
+
+  // 6. Removed / unavailable video specifics (distinct from generic "Video unavailable")
+  if (
+    /this video has been removed|account.*terminated|not available in your country|geo[- ]?blocked/i.test(
+      combined
+    )
+  ) {
+    return {
+      code: 'VIDEO_REMOVED',
+      userMessage: 'This video has been removed, terminated, or is geo-blocked in your region.',
+      retryAfterSeconds: null
+    }
+  }
+
+  // 7. Unsupported / Missing formats
+  if (/no video formats found|no formats available/i.test(combined)) {
+    return {
+      code: 'NO_FORMATS_FOUND',
+      userMessage: 'No downloadable media formats were found for this URL.',
+      retryAfterSeconds: null
+    }
+  }
+
+  // 8. Network / Connectivity Error (Priority 8)
   if (
     /\b(?:ENOTFOUND|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH)\b|network is unreachable|timed out|Temporary failure in name resolution|getaddrinfo\s+(?:ENOTFOUND|failed)|unable to connect/i.test(
       combined
@@ -131,7 +207,7 @@ export function classifyAnalysisError(error, platform) {
     }
   }
 
-  // 5. Default analysis failure
+  // 9. Default analysis failure
   return {
     code: 'ANALYSIS_FAILED',
     userMessage:
@@ -140,7 +216,20 @@ export function classifyAnalysisError(error, platform) {
   }
 }
 
+let testAnalyzer = null
+
+export function setAnalyzerForTesting(analyzer) {
+  testAnalyzer = analyzer
+}
+
+export function resetAnalyzerForTesting() {
+  testAnalyzer = null
+}
+
 export async function analyzeMedia(sourceUrl) {
+  if (testAnalyzer) {
+    return await testAnalyzer(sourceUrl)
+  }
   const platform = detectPlatform(sourceUrl)
 
   if (!platform) {
@@ -167,9 +256,17 @@ export async function analyzeMedia(sourceUrl) {
   const cooldownUntil = rateLimitCooldowns.get(platform) || 0
   if (Date.now() < cooldownUntil) {
     const remainingSeconds = Math.max(1, Math.ceil((cooldownUntil - Date.now()) / 1000))
-    const err = new Error('YouTube rate limit cooldown active. Please wait before retrying.')
-    err.code = 'YOUTUBE_RATE_LIMITED'
-    err.userMessage = 'YouTube rate limit cooldown active. Please wait before retrying.'
+    const isYt =
+      String(platform || '')
+        .toLowerCase()
+        .trim() === 'youtube'
+    const err = new Error(
+      isYt
+        ? 'YouTube rate limit cooldown active. Please wait before retrying.'
+        : 'Rate limit cooldown active. Please wait before retrying.'
+    )
+    err.code = isYt ? 'YOUTUBE_RATE_LIMITED' : 'RATE_LIMITED'
+    err.userMessage = err.message
     err.retryAfterSeconds = remainingSeconds
     throw err
   }
@@ -218,7 +315,11 @@ export async function analyzeMedia(sourceUrl) {
 
       if (!stdout) {
         const classified = classifyAnalysisError(lastExecError, platform)
-        if (classified.code === 'YOUTUBE_RATE_LIMITED') {
+        console.warn(
+          `[analyzer] Extraction failed for platform ${platform} (${classified.code}):`,
+          redactSensitiveText(lastExecError?.stderr || lastExecError?.message || '')
+        )
+        if (classified.code === 'YOUTUBE_RATE_LIMITED' || classified.code === 'RATE_LIMITED') {
           rateLimitCooldowns.set(platform, Date.now() + 60_000)
         }
         const err = new Error(classified.userMessage)
@@ -260,6 +361,436 @@ export async function analyzeMedia(sourceUrl) {
 }
 
 /**
+ * Safely parses and validates a positive numeric value.
+ * Rejects null, undefined, empty strings, NaN, Infinity, and numbers <= 0.
+ *
+ * @param {any} val
+ * @returns {number|null}
+ */
+export function validPositiveNumber(val) {
+  if (val === null || val === undefined || val === '') return null
+  const num = Number(val)
+  if (!Number.isFinite(num) || num <= 0) return null
+  return num
+}
+
+/**
+ * Safely parses a media duration string (e.g. "16:10", "0:30", "1:05:30") into total seconds.
+ *
+ * @param {string|any} durationStr
+ * @returns {number|null} Total seconds or null if invalid
+ */
+export function parseDurationString(durationStr) {
+  if (typeof durationStr !== 'string') return null
+  const trimmed = durationStr.trim()
+  if (!trimmed) return null
+
+  const parts = trimmed.split(':')
+  if (parts.length < 2 || parts.length > 3) return null
+
+  const numbers = []
+  for (const part of parts) {
+    const p = part.trim()
+    if (!/^\d+$/.test(p)) return null
+    numbers.push(parseInt(p, 10))
+  }
+
+  if (parts.length === 2) {
+    const [minutes, seconds] = numbers
+    if (seconds >= 60 && minutes > 0) return null
+    return minutes * 60 + seconds
+  }
+
+  if (parts.length === 3) {
+    const [hours, minutes, seconds] = numbers
+    if (minutes >= 60 || seconds >= 60) return null
+    return hours * 3600 + minutes * 60 + seconds
+  }
+
+  return null
+}
+
+/**
+ * Safely extracts a valid positive duration in integer seconds from a candidate value.
+ * Accepts numbers > 0, numeric strings > 0, and colon-separated duration strings ("0:30", "16:10").
+ * Rejects 0, negative values, null, undefined, and unparseable strings.
+ *
+ * @param {any} cand
+ * @returns {number|null}
+ */
+function extractValidPositiveDuration(cand) {
+  if (cand === null || cand === undefined || cand === '') return null
+
+  // 1. Direct finite positive number
+  if (typeof cand === 'number' && Number.isFinite(cand) && cand > 0) {
+    return Math.floor(cand)
+  }
+
+  // 2. String representation
+  if (typeof cand === 'string') {
+    const trimmed = cand.trim()
+    if (!trimmed) return null
+
+    // Numeric string e.g. "74.304" or "970"
+    if (/^\d+(?:\.\d+)?$/.test(trimmed)) {
+      const num = parseFloat(trimmed)
+      if (Number.isFinite(num) && num > 0) {
+        return Math.floor(num)
+      }
+    }
+
+    // Colon-separated string e.g. "16:10", "0:30", "1:05:30"
+    const parsed = parseDurationString(trimmed)
+    if (parsed !== null && parsed > 0) {
+      return parsed
+    }
+  }
+
+  return null
+}
+
+/**
+ * Safely extracts and normalizes media duration into total integer seconds.
+ * Priority:
+ * 1. Valid numeric duration (metadata.durationSeconds)
+ * 2. Valid numeric duration (metadata.duration)
+ * 3. Valid duration_string (metadata.duration_string, e.g. "16:10", "0:30", "1:05:30")
+ * 4. Format-level duration across all available formats
+ * 5. Format-level duration_string across all available formats
+ * 6. Duration extracted from Meta CDN efg in available format URLs
+ * 7. null if no reliable duration exists.
+ *
+ * @param {object} metadata
+ * @returns {number|null} Total seconds or null
+ */
+export function resolveMediaDuration(metadata) {
+  if (!metadata || typeof metadata !== 'object') return null
+
+  // Priority 1: Top-level durationSeconds
+  const topSeconds = extractValidPositiveDuration(metadata.durationSeconds)
+  if (topSeconds !== null) return topSeconds
+
+  // Priority 2: Top-level duration (number or numeric string)
+  const topDuration = extractValidPositiveDuration(metadata.duration)
+  if (topDuration !== null) return topDuration
+
+  // Priority 3: Top-level duration_string
+  const topDurStr = extractValidPositiveDuration(metadata.duration_string)
+  if (topDurStr !== null) return topDurStr
+
+  // Priority 4 & 5: Format-level duration and duration_string across all available formats
+  if (Array.isArray(metadata.formats)) {
+    for (const format of metadata.formats) {
+      if (!format || typeof format !== 'object') continue
+      const formatDuration = extractValidPositiveDuration(format.duration)
+      if (formatDuration !== null) return formatDuration
+      const formatDurStr = extractValidPositiveDuration(format.duration_string)
+      if (formatDurStr !== null) return formatDurStr
+    }
+  }
+
+  // Priority 6: Duration extracted from efg in available format URLs
+  if (Array.isArray(metadata.formats)) {
+    for (const format of metadata.formats) {
+      if (!format || typeof format !== 'object') continue
+      const urlMeta = extractUrlMetadata(format.url)
+      if (urlMeta && Number.isFinite(urlMeta.durationSeconds) && urlMeta.durationSeconds > 0) {
+        return urlMeta.durationSeconds
+      }
+    }
+  }
+
+  // Fallback: If metadata has a url property directly containing efg
+  if (typeof metadata.url === 'string') {
+    const topUrlMeta = extractUrlMetadata(metadata.url)
+    if (
+      topUrlMeta &&
+      Number.isFinite(topUrlMeta.durationSeconds) &&
+      topUrlMeta.durationSeconds > 0
+    ) {
+      return topUrlMeta.durationSeconds
+    }
+  }
+
+  return null
+}
+
+/**
+ * Resolves vertical resolution (height) in pixels across platforms and formats.
+ * Checks format.height, format.resolution, format_note, format_id, and URL query tags.
+ *
+ * @param {object} format
+ * @returns {number|null} Height integer or null
+ */
+export function resolveFormatHeight(format) {
+  if (!format || typeof format !== 'object') return null
+
+  // 1. Explicit numeric height
+  if (Number.isInteger(format.height) && format.height > 0) {
+    return format.height
+  }
+
+  // 2. From resolution string e.g. "1280x720", "320x568"
+  if (typeof format.resolution === 'string') {
+    const resMatch = format.resolution.match(/(\d+)\s*[xX]\s*(\d+)/)
+    if (resMatch) {
+      const h = parseInt(resMatch[2], 10)
+      if (h > 0) return h
+    }
+    const pMatch = format.resolution.match(/(\d{3,4})p/i)
+    if (pMatch) {
+      const h = parseInt(pMatch[1], 10)
+      if (h > 0) return h
+    }
+  }
+
+  // 3. From format_note or format_id e.g. "1080p", "720p", "hd", "sd"
+  const identifiers = [format.format_note, format.format_id].filter(
+    (v) => typeof v === 'string' && v.trim()
+  )
+  for (const id of identifiers) {
+    const pMatch = id.match(/(?:^|[._-])(\d{3,4})p?(?:[._-]|$)/i)
+    if (pMatch) {
+      const val = parseInt(pMatch[1], 10)
+      if (val >= 144 && val <= 4320) return val
+    }
+    const lower = id.toLowerCase()
+    if (lower === 'hd' || lower.includes('_hd') || lower.includes('-hd')) {
+      return 720
+    }
+    if (lower === 'sd' || lower.includes('_sd') || lower.includes('-sd')) {
+      return 360
+    }
+  }
+
+  // 4. From URL query params (e.g. tag=hd, tag=sd)
+  if (typeof format.url === 'string') {
+    if (/[?&]tag=hd\b/i.test(format.url)) return 720
+    if (/[?&]tag=sd\b/i.test(format.url)) return 360
+  }
+
+  return null
+}
+
+/**
+ * Resolves horizontal resolution (width) in pixels across platforms and formats.
+ *
+ * @param {object} format
+ * @returns {number|null} Width integer or null
+ */
+export function resolveFormatWidth(format) {
+  if (!format || typeof format !== 'object') return null
+
+  if (Number.isInteger(format.width) && format.width > 0) {
+    return format.width
+  }
+
+  if (typeof format.resolution === 'string') {
+    const resMatch = format.resolution.match(/(\d+)\s*[xX]\s*(\d+)/)
+    if (resMatch) {
+      const w = parseInt(resMatch[1], 10)
+      if (w > 0) return w
+    }
+  }
+
+  return null
+}
+
+/**
+ * Safely extracts duration and fallback bitrate metadata encoded in Meta CDN URLs (efg query param).
+ * Handles Base64 and Base64URL encoding safely.
+ *
+ * @param {string|any} url
+ * @returns {{ durationSeconds: number|null, bitrateKbps: number|null } | null}
+ */
+export function extractUrlMetadata(url) {
+  try {
+    if (!url || typeof url !== 'string') return null
+
+    const parsedUrl = new URL(url)
+    const encoded = parsedUrl.searchParams.get('efg')
+
+    if (!encoded) return null
+
+    const normalized = encoded.replace(/-/g, '+').replace(/_/g, '/')
+    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=')
+    const decoded = Buffer.from(padded, 'base64').toString('utf8')
+
+    const data = JSON.parse(decoded)
+    if (!data || typeof data !== 'object') return null
+
+    const rawDuration = Number(data.duration_s ?? data.duration)
+    const durationSeconds =
+      Number.isFinite(rawDuration) && rawDuration > 0
+        ? Number.isInteger(rawDuration)
+          ? rawDuration
+          : Math.floor(rawDuration)
+        : null
+
+    const rawBitrate = Number(data.bitrate)
+    const bitrateKbps =
+      Number.isFinite(rawBitrate) && rawBitrate > 0
+        ? rawBitrate > 10000
+          ? Math.round(rawBitrate / 1000)
+          : rawBitrate
+        : null
+
+    return {
+      durationSeconds,
+      bitrateKbps
+    }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Extracts bitrate encoded in media URLs (e.g. Meta / Facebook / Instagram / CDN query params).
+ * Supports bitrate=<bps|kbps> and br=<bps|kbps>, as well as Meta CDN efg query parameter.
+ * Values > 10,000 are treated as bits per second and converted to kbps.
+ *
+ * @param {string|any} url
+ * @returns {number|null} Bitrate in kbps or null
+ */
+export function extractUrlBitrateKbps(url) {
+  if (typeof url !== 'string') return null
+  const match = url.match(/[?&](?:bitrate|br)=(\d+)/i)
+  if (match) {
+    const raw = parseInt(match[1], 10)
+    if (Number.isFinite(raw) && raw > 0) {
+      if (raw > 10000) {
+        return Math.round(raw / 1000)
+      }
+      return raw
+    }
+  }
+
+  // Fallback to Meta CDN efg metadata
+  const meta = extractUrlMetadata(url)
+  if (meta && Number.isFinite(meta.bitrateKbps) && meta.bitrateKbps > 0) {
+    return meta.bitrateKbps
+  }
+
+  return null
+}
+
+/**
+ * Determines whether a media format is an audio-only stream.
+ *
+ * @param {object} format
+ * @returns {boolean}
+ */
+export function isAudioOnlyFormat(format) {
+  if (!format || typeof format !== 'object') return false
+  const vcodec = typeof format.vcodec === 'string' ? format.vcodec.toLowerCase() : ''
+  const acodec = typeof format.acodec === 'string' ? format.acodec.toLowerCase() : ''
+  const resolution = typeof format.resolution === 'string' ? format.resolution.toLowerCase() : ''
+  const formatNote = typeof format.format_note === 'string' ? format.format_note.toLowerCase() : ''
+  const formatId = typeof format.format_id === 'string' ? format.format_id.toLowerCase() : ''
+
+  const height = resolveFormatHeight(format)
+  if (Number.isInteger(height) && height > 0 && vcodec !== 'none') {
+    return false
+  }
+
+  if (resolution === 'audio only') return true
+  if (formatId.startsWith('hls-audio-')) return true
+  if (format.audio_ext === 'mp4' && (!vcodec || vcodec === 'none')) return true
+
+  const hasNoVideo = !vcodec || vcodec === 'none'
+  const hasAudio =
+    (acodec && acodec !== 'none') ||
+    formatNote.includes('audio') ||
+    (Number.isFinite(format.abr) && format.abr > 0)
+
+  return hasNoVideo && hasAudio
+}
+
+/**
+ * Determines whether a format includes an audio track.
+ *
+ * @param {object} format
+ * @param {boolean} [hasSeparateAudio=false]
+ * @returns {boolean}
+ */
+export function hasAudioTrack(format, hasSeparateAudio = false) {
+  if (!format || typeof format !== 'object') return false
+  if (isAudioOnlyFormat(format)) return true
+  const acodec = typeof format.acodec === 'string' ? format.acodec.toLowerCase().trim() : ''
+  const audioExt = typeof format.audio_ext === 'string' ? format.audio_ext.toLowerCase().trim() : ''
+
+  // 1. Explicit no-audio indicator
+  if (acodec === 'none') return false
+
+  // 2. Explicit valid audio codec present
+  if (acodec && acodec !== 'none') return true
+
+  // 3. Fallback when valid audio codec is unavailable
+  if (hasSeparateAudio && audioExt === 'none') return false
+  if (audioExt && audioExt !== 'none') return true
+  if (Number.isFinite(format.abr) && format.abr > 0) return true
+  if (
+    !hasSeparateAudio &&
+    (format.ext === 'mp4' || format.protocol === 'https' || format.protocol === 'http')
+  ) {
+    return true
+  }
+  return false
+}
+
+/**
+ * Determines whether an MP4 format contains an audio track in its container.
+ *
+ * @param {object} format
+ * @param {boolean} [hasSeparateAudio=false]
+ * @returns {boolean}
+ */
+export function isAudioIncluded(format, hasSeparateAudio = false) {
+  if (!format || typeof format !== 'object') return false
+  const acodec = typeof format.acodec === 'string' ? format.acodec.toLowerCase().trim() : ''
+  const audioExt = typeof format.audio_ext === 'string' ? format.audio_ext.toLowerCase().trim() : ''
+
+  // 1. Explicit no-audio indicators strictly take precedence
+  if (acodec === 'none') {
+    return false
+  }
+
+  // 2. Explicit valid audio codec present (and not 'none')
+  if (acodec && acodec !== 'none') {
+    return true
+  }
+
+  // 3. If valid audio codec is unavailable, separate audio streams and audio_ext determine video-only role
+  // (e.g. X/Twitter HTTP streams with audio_ext === 'none' when separate audio exists)
+  if (hasSeparateAudio && audioExt === 'none') {
+    return false
+  }
+
+  // 4. Explicit audio extension present (and not 'none')
+  if (audioExt && audioExt !== 'none') {
+    return true
+  }
+
+  // 5. Audio bitrate present
+  if (Number.isFinite(format.abr) && format.abr > 0) {
+    return true
+  }
+
+  // 6. Progressive stream fallback when no separate audio streams exist
+  if (
+    !hasSeparateAudio &&
+    (format.ext === 'mp4' ||
+      format.protocol === 'https' ||
+      format.protocol === 'http' ||
+      !format.protocol)
+  ) {
+    return true
+  }
+
+  return false
+}
+
+/**
  * Parses and validates raw yt-dlp metadata JSON object into structured media metadata.
  *
  * @param {object} metadata - Raw yt-dlp metadata object
@@ -288,121 +819,120 @@ export function parseMediaMetadata(metadata, platform, sourceUrl) {
 
   const formats = Array.isArray(metadata.formats) ? metadata.formats : []
 
-  //quality_video
-  const qualityHeights = new Set()
-
-  for (const format of formats) {
-    const isTwitterHttp =
-      platform === 'twitter' &&
-      format &&
-      typeof format === 'object' &&
-      typeof format.format_id === 'string' &&
-      format.format_id.startsWith('http-')
-
-    if (
-      format &&
-      typeof format === 'object' &&
-      ((typeof format.vcodec === 'string' && format.vcodec !== 'none') || isTwitterHttp) &&
-      Number.isInteger(format.height) &&
-      format.height > 0
-    ) {
-      qualityHeights.add(format.height)
-    }
-  }
-
-  const videoQualities = [...qualityHeights].sort((a, b) => b - a).map((height) => `${height}p`)
-
-  const isTwitterAudioFormat = (format) =>
-    platform === 'twitter' &&
-    format &&
-    typeof format === 'object' &&
-    format.vcodec === 'none' &&
-    (format.resolution === 'audio only' ||
-      (typeof format.format_id === 'string' && format.format_id.startsWith('hls-audio-')) ||
-      format.audio_ext === 'mp4' ||
-      (typeof format.format_note === 'string' &&
-        format.format_note.toLowerCase().includes('audio')) ||
-      (Number.isFinite(format.abr) && format.abr > 0))
-
-  //MP3 option
-  const hasAudioStream = formats.some(
-    (format) =>
-      format &&
-      typeof format === 'object' &&
-      ((typeof format.acodec === 'string' && format.acodec !== 'none') ||
-        isTwitterAudioFormat(format))
-  )
-
-  const audioOptions = hasAudioStream ? ['mp3'] : []
-
   // Identify actual downloadable source formats
   const validFormats = formats.filter(
     (format) => format && typeof format === 'object' && !Array.isArray(format)
   )
 
-  // Audio-only source formats
+  // Audio-only source formats (separate audio tracks)
   const audioFormats = validFormats
-    .filter(
-      (format) =>
-        (format.vcodec === 'none' &&
-          typeof format.acodec === 'string' &&
-          format.acodec !== 'none') ||
-        isTwitterAudioFormat(format)
-    )
-    .map((format) => ({
-      formatId: format.format_id ?? null,
-      extension: format.ext ?? null,
-      audioCodec:
+    .filter((format) => isAudioOnlyFormat(format))
+    .map((format) => {
+      const audioCodec =
         typeof format.acodec === 'string' && format.acodec !== 'none'
           ? format.acodec
-          : platform === 'twitter'
+          : format.audio_ext === 'mp4' || format.ext === 'mp4' || format.ext === 'm4a'
             ? 'aac'
-            : null,
-      fileSize: format.filesize ?? format.filesize_approx ?? null
-    }))
+            : null
 
-  // Our current MP4 download selector uses M4A audio
-  const hasM4aAudio = audioFormats.some((format) => format.extension === 'm4a')
-  const hasTwitterAudio = platform === 'twitter' && audioFormats.length > 0
-
-  // Find MP4 video sources compatible with our selector
-  const mp4Formats = validFormats
-    .filter((format) => {
-      const isTwitterHttp =
-        platform === 'twitter' &&
-        typeof format.format_id === 'string' &&
-        format.format_id.startsWith('http-')
-
-      const hasVideo =
-        (typeof format.vcodec === 'string' && format.vcodec !== 'none') || isTwitterHttp
-
-      const hasAudio =
-        (typeof format.acodec === 'string' && format.acodec !== 'none') ||
-        (isTwitterHttp && hasAudioStream)
-
-      return (
-        format.ext === 'mp4' &&
-        hasVideo &&
-        Number.isInteger(format.height) &&
-        format.height > 0 &&
-        (hasAudio || hasM4aAudio || hasTwitterAudio)
-      )
-    })
-    .map((format) => {
-      const isTwitterHttp =
-        platform === 'twitter' &&
-        typeof format.format_id === 'string' &&
-        format.format_id.startsWith('http-')
+      const exactSize = validPositiveNumber(format.filesize)
+      const approximateSize = validPositiveNumber(format.filesize_approx)
+      const fileSize = exactSize ?? approximateSize
+      const isApproximate = !exactSize && Boolean(approximateSize)
+      const urlBitrate = extractUrlBitrateKbps(format.url)
 
       return {
         formatId: format.format_id ?? null,
-        quality: `${format.height}p`,
-        height: format.height,
-        videoCodec: format.vcodec ?? (isTwitterHttp ? 'h264' : null),
-        audioIncluded:
-          (typeof format.acodec === 'string' && format.acodec !== 'none') ||
-          (isTwitterHttp && hasAudioStream),
-        fileSize: format.filesize ?? format.filesize_approx ?? null
+        extension: format.ext ?? null,
+        audioCodec,
+        fileSize,
+        isApproximate,
+        audioBitrateKbps:
+          validPositiveNumber(format.abr) ?? validPositiveNumber(format.tbr) ?? urlBitrate,
+        totalBitrateKbps:
+          validPositiveNumber(format.tbr) ?? validPositiveNumber(format.abr) ?? urlBitrate,
+        protocol: format.protocol ?? null
+      }
+    })
+
+  const hasSeparateAudio = audioFormats.length > 0
+
+  const isVideoFormat = (format) => {
+    if (!format || typeof format !== 'object') return false
+    const vcodec = typeof format.vcodec === 'string' ? format.vcodec.toLowerCase() : ''
+    if (vcodec === 'none') return false
+    const height = resolveFormatHeight(format)
+    if (Number.isInteger(height) && height > 0) return true
+    if (vcodec && vcodec !== 'none') return true
+    if (format.video_ext && format.video_ext !== 'none') return true
+    if (format.ext === 'mp4' && !isAudioOnlyFormat(format)) return true
+    return false
+  }
+
+  // Quality heights
+  const qualityHeights = new Set()
+
+  for (const format of formats) {
+    if (isVideoFormat(format)) {
+      const h = resolveFormatHeight(format)
+      if (Number.isInteger(h) && h > 0) {
+        qualityHeights.add(h)
+      }
+    }
+  }
+
+  const videoQualities = [...qualityHeights].sort((a, b) => b - a).map((height) => `${height}p`)
+
+  // MP3 option
+  const hasAudioStream = formats.some((format) => hasAudioTrack(format, hasSeparateAudio))
+
+  const audioOptions = hasAudioStream ? ['mp3'] : []
+
+  // Find MP4 video sources compatible with universal selector
+  const mp4Formats = validFormats
+    .filter((format) => {
+      if (format.ext !== 'mp4') return false
+      if (!isVideoFormat(format)) return false
+      const height = resolveFormatHeight(format)
+      if (!Number.isInteger(height) || height <= 0) return false
+
+      const audioIncluded = isAudioIncluded(format, hasSeparateAudio)
+      return audioIncluded || hasSeparateAudio
+    })
+    .map((format) => {
+      const height = resolveFormatHeight(format)
+      const width = resolveFormatWidth(format)
+      const audioIncluded = isAudioIncluded(format, hasSeparateAudio)
+
+      const exactSize = validPositiveNumber(format.filesize)
+      const approximateSize = validPositiveNumber(format.filesize_approx)
+      const fileSize = exactSize ?? approximateSize
+      const isApproximate = !exactSize && Boolean(approximateSize)
+
+      const tbr = validPositiveNumber(format.tbr)
+      const vbr = validPositiveNumber(format.vbr)
+      const abr = validPositiveNumber(format.abr)
+      const urlBitrate = validPositiveNumber(extractUrlBitrateKbps(format.url))
+
+      const combinedBitrate = vbr !== null && abr !== null ? validPositiveNumber(vbr + abr) : null
+
+      const totalBitrateKbps = tbr ?? combinedBitrate ?? vbr ?? urlBitrate
+
+      return {
+        formatId: format.format_id ?? null,
+        quality: `${height}p`,
+        height,
+        width,
+        extension: format.ext ?? null,
+        videoCodec: format.vcodec ?? null,
+        audioCodec: format.acodec ?? null,
+        audioIncluded,
+        fileSize,
+        isApproximate,
+        videoBitrateKbps: validPositiveNumber(format.vbr),
+        audioBitrateKbps: validPositiveNumber(format.abr),
+        totalBitrateKbps,
+        protocol: format.protocol ?? null
       }
     })
 
@@ -423,10 +953,7 @@ export function parseMediaMetadata(metadata, platform, sourceUrl) {
     sourceUrl: typeof sourceUrl === 'string' ? sourceUrl.trim() : '',
     title: metadata.title.trim(),
     thumbnailUrl: typeof metadata.thumbnail === 'string' ? metadata.thumbnail : null,
-    durationSeconds:
-      Number.isFinite(metadata.duration) && metadata.duration >= 0
-        ? Math.floor(metadata.duration)
-        : null,
+    durationSeconds: resolveMediaDuration(metadata),
     videoQualities,
     audioOptions,
     availableFormats

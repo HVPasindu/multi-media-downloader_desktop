@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process'
+import { spawn, execFileSync } from 'node:child_process'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -77,15 +77,82 @@ const TEST_SUITES = [
   {
     name: 'Corrective Step 02: Duplicate Download Guard Test Suite (A–N)',
     file: 'tests/duplicate_download_guard_tests.js'
+  },
+  {
+    name: 'Phase 05: Step 10 Error Classification & User Notifications Suite',
+    file: 'tests/step10_error_presentation_tests.js'
+  },
+  {
+    name: 'Phase 05: Step 11 Clear All / Clear Completed Persistence Suite',
+    file: 'tests/step11_clear_history_persistence_tests.js'
+  },
+  {
+    name: 'Phase 05: Step 12 Downloads Manager Pagination & Search Suite',
+    file: 'tests/step12_pagination_search_tests.js'
+  },
+  {
+    name: 'Phase 05: Step 13 Summary Dynamic Counts & Large Dataset Suite',
+    file: 'tests/step13_summary_large_dataset_tests.js'
+  },
+  {
+    name: 'Phase 05: Step 14 Desktop Frontend & E2E Integration Suite',
+    file: 'tests/step14_frontend_download_api_tests.js'
+  },
+  {
+    name: 'Order 10: Progress, ETA, File Size, Same-Job Retry & Clear Failed Suite',
+    file: 'tests/download_progress_eta_retry_tests.js'
+  },
+  {
+    name: 'Order 11: Real Pause/Resume, Cancel, Retry & Completed File Actions Suite',
+    file: 'tests/download_pause_resume_tests.js'
+  },
+  {
+    name: 'Order 12: Real Windows yt-dlp Process Integration Tests (Tests A–L)',
+    file: 'tests/windows_real_pause_cancel_integration_tests.js'
+  },
+  {
+    name: 'Order 13: React Download Actions Hook Integration Test (Simulated Desktop UI Workflow)',
+    file: 'tests/electron_download_actions_e2e_tests.js'
+  },
+  {
+    name: 'Security: Settings IPC Sender Hardening & Multi-Window Isolation',
+    file: 'tests/settings_ipc_security_tests.js'
+  },
+  {
+    name: 'Appearance: Global Theme & Accessibility',
+    file: 'tests/appearance_theme_tests.mjs'
+  },
+  {
+    name: 'Stage 05.14: Frontend React DOM & StrictMode E2E',
+    file: 'tests/step0514_frontend_dom_e2e_tests.mjs'
+  },
+  {
+    name: 'Stage 05.14: Layer A <-> Express Live API Integration E2E',
+    file: 'tests/step0514_api_integration_e2e_tests.js'
+  },
+  {
+    name: 'Stage 05.14: Frontend Performance, Leak & 250-Row Pagination E2E',
+    file: 'tests/step0514_performance_smoke_tests.mjs'
   }
 ]
 
 async function runSingleSuite(suite) {
   const loaderPath = './tests/loaders/electron_loader.mjs'
   const testFile = suite.file
+  const timeoutMs = suite.timeoutMs || (suite.file.includes('integration') ? 240000 : 120000)
 
   const startTime = Date.now()
   return new Promise((resolve) => {
+    let settled = false
+    let timedOut = false
+
+    const settle = (result) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timeoutTimer)
+      resolve(result)
+    }
+
     const child = spawn(process.execPath, ['--loader', loaderPath, testFile], {
       cwd: projectRoot,
       stdio: 'inherit',
@@ -95,23 +162,105 @@ async function runSingleSuite(suite) {
       }
     })
 
-    child.on('close', (exitCode) => {
-      const durationMs = Date.now() - startTime
-      resolve({
+    const timeoutTimer = setTimeout(() => {
+      timedOut = true
+      console.error(
+        `\n[TIMEOUT] Test suite "${suite.name}" exceeded ${timeoutMs}ms. Terminating process tree...`
+      )
+      if (child.pid) {
+        if (process.platform === 'win32') {
+          try {
+            execFileSync('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], {
+              stdio: 'ignore'
+            })
+          } catch (tkErr) {
+            console.warn(`[runner] taskkill warning for PID ${child.pid}:`, tkErr.message)
+            try {
+              child.kill('SIGKILL')
+            } catch {
+              // Ignore fallback error
+            }
+          }
+
+          // Defensive termination of any remaining descendant processes via PowerShell Get-CimInstance
+          try {
+            const cleanupScript = `
+              $targetPid = ${child.pid}
+              $children = Get-CimInstance Win32_Process | Where-Object { $_.ParentProcessId -eq $targetPid }
+              foreach ($proc in $children) {
+                try { Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue } catch {}
+              }
+            `
+            execFileSync(
+              'powershell.exe',
+              ['-NoProfile', '-NonInteractive', '-Command', cleanupScript],
+              {
+                stdio: 'ignore'
+              }
+            )
+          } catch {
+            // Best-effort descendant sweep
+          }
+
+          // Verify process exit with bounded polling loop
+          let stillRunning = true
+          for (let attempt = 0; attempt < 20; attempt++) {
+            try {
+              process.kill(child.pid, 0)
+              const waitBuffer = new Int32Array(new SharedArrayBuffer(4))
+              Atomics.wait(waitBuffer, 0, 0, 50)
+            } catch {
+              stillRunning = false
+              break
+            }
+          }
+
+          if (stillRunning) {
+            console.error(
+              `[runner] FATAL: Process tree for PID ${child.pid} could not be confirmed terminated.`
+            )
+          }
+        } else {
+          try {
+            process.kill(-child.pid, 'SIGKILL')
+          } catch {
+            child.kill('SIGKILL')
+          }
+        }
+      }
+
+      settle({
         suite: suite.name,
         file: suite.file,
-        passed: exitCode === 0,
-        exitCode,
-        durationMs
+        passed: false,
+        blocked: false,
+        exitCode: 124,
+        durationMs: Date.now() - startTime,
+        error: `Suite timed out after ${timeoutMs}ms`
+      })
+    }, timeoutMs)
+
+    child.on('close', (exitCode) => {
+      const durationMs = Date.now() - startTime
+      const isBlocked = !timedOut && exitCode === 2
+      settle({
+        suite: suite.name,
+        file: suite.file,
+        passed: !timedOut && exitCode === 0,
+        blocked: isBlocked,
+        exitCode: timedOut ? 124 : exitCode,
+        durationMs,
+        error: timedOut ? `Suite timed out after ${timeoutMs}ms` : undefined
       })
     })
 
     child.on('error', (err) => {
       const durationMs = Date.now() - startTime
-      resolve({
+      settle({
         suite: suite.name,
         file: suite.file,
         passed: false,
+        blocked: false,
         exitCode: 1,
         durationMs,
         error: err.message
@@ -124,7 +273,7 @@ async function main() {
   console.log(
     '\n╔════════════════════════════════════════════════════════════════════════════════╗'
   )
-  console.log('║        APPLAN2 — Automated Backend Test Runner (Step 04.44)                    ║')
+  console.log('║        APPLAN2 — Automated Backend & Appearance Test Runner                    ║')
   console.log(
     '╚════════════════════════════════════════════════════════════════════════════════╝\n'
   )
@@ -140,34 +289,52 @@ async function main() {
 
   const totalDuration = ((Date.now() - suiteStartTime) / 1000).toFixed(2)
   const passedCount = results.filter((r) => r.passed).length
-  const failedCount = results.filter((r) => !r.passed).length
+  const blockedCount = results.filter((r) => r.blocked).length
+  const failedCount = results.filter((r) => !r.passed && !r.blocked).length
 
   console.log(
     '\n\n════════════════════════════════════════════════════════════════════════════════'
   )
-  console.log('                       BACKEND TEST SUITE SUMMARY                               ')
+  console.log('                BACKEND & APPEARANCE TEST SUITE SUMMARY                         ')
   console.log('════════════════════════════════════════════════════════════════════════════════')
-  console.log('Status  | Duration | Suite Name')
-  console.log('--------+----------+------------------------------------------------------------')
+  console.log('Status      | Duration | Suite Name')
+  console.log(
+    '------------+----------+------------------------------------------------------------'
+  )
 
   for (const res of results) {
-    const statusIcon = res.passed ? '✓ PASS ' : '❌ FAIL '
+    let statusIcon = '❌ FAIL    '
+    if (res.passed) {
+      statusIcon = '✓ PASS    '
+    } else if (res.blocked) {
+      statusIcon = '⚠️ BLOCKED '
+    }
     const duration = `${(res.durationMs / 1000).toFixed(2)}s`.padStart(8)
     console.log(`${statusIcon} | ${duration} | ${res.suite}`)
   }
 
-  console.log('--------+----------+------------------------------------------------------------')
+  console.log(
+    '------------+----------+------------------------------------------------------------'
+  )
   console.log(`Total Suites : ${results.length}`)
   console.log(`Passed       : ${passedCount}`)
+  if (blockedCount > 0) {
+    console.log(`Blocked      : ${blockedCount}`)
+  }
   console.log(`Failed       : ${failedCount}`)
   console.log(`Total Time   : ${totalDuration}s`)
   console.log('════════════════════════════════════════════════════════════════════════════════\n')
 
   if (failedCount > 0) {
-    console.error(`❌ Backend test run completed with ${failedCount} failing suite(s).\n`)
+    console.error(`❌ Test run completed with ${failedCount} failing suite(s).\n`)
     process.exit(1)
+  } else if (blockedCount > 0) {
+    console.log(
+      `⚠️ All executable test suites passed (${passedCount} passed, ${blockedCount} blocked by external challenge).\n`
+    )
+    process.exit(0)
   } else {
-    console.log('🎉 ALL BACKEND TEST SUITES PASSED SUCCESSFULLY (100% PASS)!\n')
+    console.log('🎉 ALL BACKEND & APPEARANCE TEST SUITES PASSED SUCCESSFULLY (100% PASS)!\n')
     process.exit(0)
   }
 }

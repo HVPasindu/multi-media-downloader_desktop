@@ -9,10 +9,16 @@ import {
   validateHistoryFilters,
   getDownloadHistoryDetails,
   deleteDownloadHistoryRecord,
-  clearDownloadHistory
+  clearDownloadHistory,
+  getDownloadSummary
 } from '../services/downloadHistoryService.js'
 
-import { enqueueDownloadJob, cancelDownloadJob } from '../services/downloadQueueService.js'
+import {
+  enqueueDownloadJob,
+  cancelDownloadJob,
+  pauseDownloadJob,
+  resumeDownloadJob
+} from '../services/downloadQueueService.js'
 
 import { retryDownloadJob } from '../services/downloadRetryService.js'
 
@@ -393,6 +399,14 @@ export async function cancelDownloadJobController(req, res, next) {
       })
     }
 
+    if (result.outcome === 'cleanup_failed') {
+      return res.status(500).json({
+        success: false,
+        message: result.message || 'Failed to clean partial files during cancellation',
+        status: result.status
+      })
+    }
+
     if (result.outcome === 'cancellation_requested') {
       return res.status(202).json({
         success: true,
@@ -422,6 +436,194 @@ export async function cancelDownloadJobController(req, res, next) {
         id: jobId,
         status: 'cancelled',
         message: result.message || 'Download cancelled successfully'
+      }
+    })
+  } catch (error) {
+    next(error)
+  }
+}
+
+export async function pauseDownloadJobController(req, res, next) {
+  try {
+    const rawJobId = req.params.id
+
+    if (typeof rawJobId !== 'string' || !/^[1-9]\d*$/.test(rawJobId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'A valid Download Job ID is required'
+      })
+    }
+
+    const jobId = Number(rawJobId)
+
+    if (!Number.isSafeInteger(jobId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'A valid Download Job ID is required'
+      })
+    }
+
+    const result = await pauseDownloadJob(jobId)
+
+    if (result.outcome === 'not_found') {
+      return res.status(404).json({
+        success: false,
+        message: 'Download Job not found'
+      })
+    }
+
+    if (result.outcome === 'conflict') {
+      return res.status(409).json({
+        success: false,
+        message: result.message || 'This download job cannot be paused',
+        status: result.status
+      })
+    }
+
+    if (result.outcome === 'interruption_failed') {
+      return res.status(500).json({
+        success: false,
+        message: result.message || 'Failed to pause download process',
+        status: result.status || 'downloading'
+      })
+    }
+
+    if (result.outcome === 'pause_pending') {
+      return res.status(202).json({
+        success: true,
+        data: {
+          id: jobId,
+          status: 'pause_pending',
+          message: result.message || 'Download pause is in progress'
+        }
+      })
+    }
+
+    if (result.outcome === 'already_paused') {
+      return res.status(200).json({
+        success: true,
+        data: {
+          id: jobId,
+          status: 'paused',
+          message: result.message || 'Download is already paused'
+        }
+      })
+    }
+
+    if (result.outcome === 'already_finishing') {
+      return res.status(200).json({
+        success: true,
+        data: {
+          id: jobId,
+          status: 'already_finishing',
+          message:
+            result.message ||
+            'Download is finishing — it will complete momentarily and cannot be paused now'
+        }
+      })
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        id: jobId,
+        status: 'paused',
+        message: result.message || 'Download paused successfully'
+      }
+    })
+  } catch (error) {
+    next(error)
+  }
+}
+
+export async function resumeDownloadJobController(req, res, next) {
+  try {
+    const rawJobId = req.params.id
+
+    if (typeof rawJobId !== 'string' || !/^[1-9]\d*$/.test(rawJobId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'A valid Download Job ID is required'
+      })
+    }
+
+    const jobId = Number(rawJobId)
+
+    if (!Number.isSafeInteger(jobId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'A valid Download Job ID is required'
+      })
+    }
+
+    const result = await resumeDownloadJob(jobId)
+
+    if (result.outcome === 'not_found') {
+      return res.status(404).json({
+        success: false,
+        message: 'Download Job not found'
+      })
+    }
+
+    if (result.outcome === 'conflict') {
+      return res.status(409).json({
+        success: false,
+        message: result.message || 'This download job cannot be resumed',
+        status: result.status
+      })
+    }
+
+    if (result.outcome === 'checkpoint_invalid') {
+      return res.status(409).json({
+        success: false,
+        message:
+          result.message ||
+          'Cannot resume: saved partial download checkpoint is missing or invalid',
+        status: 'paused'
+      })
+    }
+
+    if (result.outcome === 'already_running') {
+      return res.status(200).json({
+        success: true,
+        data: {
+          id: jobId,
+          status: 'downloading',
+          message: result.message || 'Download is already running'
+        }
+      })
+    }
+
+    if (result.outcome === 'already_queued') {
+      return res.status(200).json({
+        success: true,
+        data: {
+          id: jobId,
+          status: 'queued',
+          message: result.message || 'Download is already queued'
+        }
+      })
+    }
+
+    if (result.outcome === 'interrupted') {
+      return res.status(200).json({
+        success: true,
+        data: {
+          id: jobId,
+          status: 'interrupted',
+          message:
+            result.message ||
+            'Internet connection unavailable. Job will resume once connection is restored.'
+        }
+      })
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        id: jobId,
+        status: 'queued',
+        message: result.message || 'Download resumed successfully'
       }
     })
   } catch (error) {
@@ -488,6 +690,13 @@ export async function retryDownloadJobController(req, res, next) {
       return res.status(400).json({
         success: false,
         message: result.message || 'Media source URL failed security validation'
+      })
+    }
+
+    if (result.outcome === 'cleanup_failed') {
+      return res.status(500).json({
+        success: false,
+        message: result.message || 'Failed to clean partial files before retry'
       })
     }
 
@@ -626,6 +835,18 @@ export async function clearDownloadHistoryController(req, res, next) {
         message: error.message
       })
     }
+    next(error)
+  }
+}
+
+export async function getDownloadSummaryController(req, res, next) {
+  try {
+    const summary = await getDownloadSummary()
+    return res.status(200).json({
+      success: true,
+      data: summary
+    })
+  } catch (error) {
     next(error)
   }
 }

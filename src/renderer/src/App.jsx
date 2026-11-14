@@ -12,6 +12,7 @@ import {
   verifyBackendHealth,
   restartApplication
 } from './services/startupService'
+import { getSafeFriendlyErrorInfo, sanitizeStartupStatus } from './utils/errorPresentation'
 
 /**
  * Main Application Component
@@ -78,20 +79,28 @@ export default function App() {
         }, 550)
       } else {
         setIsHealthError(true)
+        const safeInfo = getSafeFriendlyErrorInfo(
+          health.message,
+          'The local backend could not be verified.'
+        )
         setStartupStatus((prev) => ({
           ...prev,
           state: 'error',
-          message: `API Health Check Failed: ${health.message}`,
-          error: health.message
+          message: safeInfo.message,
+          error: safeInfo.message
         }))
       }
     } catch (err) {
       setIsHealthError(true)
+      const safeInfo = getSafeFriendlyErrorInfo(
+        err,
+        'Connection to local services could not be established.'
+      )
       setStartupStatus((prev) => ({
         ...prev,
         state: 'error',
-        message: `API Health Check Error: ${err.message || 'Unknown error'}`,
-        error: err.message
+        message: safeInfo.message,
+        error: safeInfo.message
       }))
     } finally {
       isCheckingHealthRef.current = false
@@ -103,12 +112,12 @@ export default function App() {
     let isMounted = true
 
     async function init() {
-      const initial = await getInitialStartupStatus()
+      const initial = sanitizeStartupStatus(await getInitialStartupStatus())
       if (!isMounted) return
 
       setStartupStatus(initial)
 
-      if (initial.state === 'ready') {
+      if (initial?.state === 'ready') {
         await checkHealth()
       }
     }
@@ -117,9 +126,10 @@ export default function App() {
 
     const unsubscribe = subscribeStartupStatus((newStatus) => {
       if (!isMounted) return
-      setStartupStatus(newStatus)
+      const safeStatus = sanitizeStartupStatus(newStatus)
+      setStartupStatus(safeStatus)
 
-      if (newStatus.state === 'ready') {
+      if (safeStatus?.state === 'ready') {
         checkHealth()
       }
     })

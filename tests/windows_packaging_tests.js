@@ -1,3 +1,4 @@
+import { app } from 'electron'
 import assert from 'node:assert/strict'
 import path from 'node:path'
 import os from 'node:os'
@@ -30,6 +31,7 @@ import {
 
 import { initializeDatabase, closeDatabase } from '../src/main/backend/config/database.js'
 import { verifyStagedBinaries } from '../scripts/verify-windows-binaries.mjs'
+import { extractAndVerifyArchive, computeSha256 } from '../scripts/provision-windows-binaries.mjs'
 
 /**
  * ============================================================================
@@ -379,7 +381,7 @@ async function runAllWindowsPackagingTests() {
     console.log('✓ TEST V passed: Preload IPC bridge confirmed.\n')
 
     // ------------------------------------------------------------------------
-    // TEST W: Packaging includes executable resources OUTSIDE app.asar
+    // TEST W: Packaging includes executable resources OUTSIDE app.asar without duplication
     // ------------------------------------------------------------------------
     console.log('--- TEST W: electron-builder.yml extraResources Configuration ---')
     const builderYmlPath = path.resolve(process.cwd(), 'electron-builder.yml')
@@ -387,7 +389,74 @@ async function runAllWindowsPackagingTests() {
     assert.ok(builderYmlRaw.includes('extraResources:'), 'Must specify extraResources block')
     assert.ok(builderYmlRaw.includes('from: resources/bin'), 'Must copy from resources/bin')
     assert.ok(builderYmlRaw.includes('to: bin'), 'Must place in packaged bin directory')
-    console.log('✓ TEST W passed: electron-builder.yml extraResources correctly configured.\n')
+
+    const extractTopLevelYamlBlock = (yamlText, key) => {
+      const lines = yamlText.replace(/\r\n/g, '\n').split('\n')
+      const startIdx = lines.findIndex((line) => line.trim() === `${key}:`)
+      assert.notStrictEqual(startIdx, -1, `electron-builder.yml must define top-level ${key} block`)
+      const blockLines = []
+      for (let i = startIdx + 1; i < lines.length; i += 1) {
+        const line = lines[i]
+        if (/^[A-Za-z0-9_-]+:\s*(#.*)?$/.test(line) || /^[A-Za-z0-9_-]+:\s+\S/.test(line)) {
+          break
+        }
+        const withoutComment = line.replace(/\s+#.*$/, '')
+        if (withoutComment.trim().length > 0) {
+          blockLines.push(withoutComment)
+        }
+      }
+      return blockLines
+    }
+
+    const extractYamlListItems = (blockLines) =>
+      blockLines
+        .map((line) => line.trim())
+        .filter((line) => line.startsWith('- '))
+        .map((line) =>
+          line
+            .slice(2)
+            .trim()
+            .replace(/^['"]|['"]$/g, '')
+        )
+
+    const filesListItems = extractYamlListItems(extractTopLevelYamlBlock(builderYmlRaw, 'files'))
+    const asarUnpackItems = extractYamlListItems(
+      extractTopLevelYamlBlock(builderYmlRaw, 'asarUnpack')
+    )
+    const extraResourcesBlock = extractTopLevelYamlBlock(builderYmlRaw, 'extraResources')
+    const hasExtraResourcesBin =
+      extraResourcesBlock.some(
+        (line) => line.trim() === '- from: resources/bin' || line.trim() === 'from: resources/bin'
+      ) && extraResourcesBlock.some((line) => line.trim() === 'to: bin')
+
+    assert.ok(hasExtraResourcesBin, 'extraResources must map resources/bin to bin')
+    assert.ok(
+      filesListItems.includes('!resources/bin/**'),
+      'files must exclude !resources/bin/** so app.asar and app.asar.unpacked do not duplicate binaries'
+    )
+    assert.ok(
+      asarUnpackItems.includes('resources/icon.png'),
+      'asarUnpack must explicitly unpack resources/icon.png'
+    )
+    assert.ok(
+      !asarUnpackItems.includes('resources/**'),
+      'asarUnpack must not broadly match resources/**'
+    )
+    assert.ok(
+      !asarUnpackItems.some((item) => item.startsWith('resources/bin')),
+      'asarUnpack must not unpack resources/bin binaries alongside extraResources'
+    )
+    assert.ok(
+      !(
+        hasExtraResourcesBin &&
+        (asarUnpackItems.includes('resources/**') ||
+          asarUnpackItems.some((item) => item.startsWith('resources/bin')))
+      ),
+      'resources/bin must not be configured for both extraResources and asarUnpack'
+    )
+    console.log(
+      '✓ TEST W passed: electron-builder.yml extraResources and non-duplicate binary packaging verified.\n'
+    )
 
     // ------------------------------------------------------------------------
     // TEST X: Windows unpacked application build script verification
@@ -461,6 +530,132 @@ async function runAllWindowsPackagingTests() {
 
     console.log('✓ TEST AA passed: Binary verifier strictly enforces existence and versions.\n')
 
+    // ==========================================================================
+    // TEST AB: Binary Provisioning & Immutable Archive Verification
+    // ==========================================================================
+    console.log('--- TEST AB: Binary Provisioning & Archive Verification ---')
+
+    const provTestDir = path.join(testTempDir, 'prov_test')
+    await fs.mkdir(provTestDir, { recursive: true })
+
+    const mockSourceDir = path.join(provTestDir, 'mock_src')
+    await fs.mkdir(path.join(mockSourceDir, 'bin'), { recursive: true })
+    const mockFfmpegContent = 'MOCK_FFMPEG_BINARY_CONTENT'
+    const mockFfprobeContent = 'MOCK_FFPROBE_BINARY_CONTENT'
+    await fs.writeFile(path.join(mockSourceDir, 'bin', 'ffmpeg.exe'), mockFfmpegContent)
+    await fs.writeFile(path.join(mockSourceDir, 'bin', 'ffprobe.exe'), mockFfprobeContent)
+
+    const expectedFfmpegHash = computeSha256(path.join(mockSourceDir, 'bin', 'ffmpeg.exe'))
+    const expectedFfprobeHash = computeSha256(path.join(mockSourceDir, 'bin', 'ffprobe.exe'))
+
+    const mockZipPath = path.join(provTestDir, 'mock_ffmpeg.zip')
+    execFileSync('powershell.exe', [
+      '-NoProfile',
+      '-Command',
+      `Compress-Archive -Path "${path.join(mockSourceDir, '*')}" -DestinationPath "${mockZipPath}" -Force`
+    ])
+    const validArchiveHash = computeSha256(mockZipPath)
+
+    const targetBinDir = path.join(provTestDir, 'target_bin')
+    await fs.mkdir(targetBinDir, { recursive: true })
+
+    // 1. Invalid archive checksum is rejected
+    await assert.rejects(
+      async () => {
+        await extractAndVerifyArchive({
+          archivePath: mockZipPath,
+          expectedArchiveSha256: 'INVALID_ARCHIVE_CHECKSUM_0000000000000000000000000000000000',
+          extractDir: path.join(provTestDir, 'ext_1'),
+          targetDir: targetBinDir,
+          requiredBinaries: [
+            { name: 'ffmpeg.exe', expectedSha256: expectedFfmpegHash },
+            { name: 'ffprobe.exe', expectedSha256: expectedFfprobeHash }
+          ]
+        })
+      },
+      /archive SHA-256 verification failed/i,
+      'TEST AB.1: Invalid archive checksum must throw error'
+    )
+
+    // 2. Missing FFprobe executable is rejected
+    const partialSourceDir = path.join(provTestDir, 'partial_src')
+    await fs.mkdir(path.join(partialSourceDir, 'bin'), { recursive: true })
+    await fs.writeFile(path.join(partialSourceDir, 'bin', 'ffmpeg.exe'), mockFfmpegContent)
+    const partialZipPath = path.join(provTestDir, 'partial_ffmpeg.zip')
+    execFileSync('powershell.exe', [
+      '-NoProfile',
+      '-Command',
+      `Compress-Archive -Path "${path.join(partialSourceDir, '*')}" -DestinationPath "${partialZipPath}" -Force`
+    ])
+    const partialZipHash = computeSha256(partialZipPath)
+
+    await assert.rejects(
+      async () => {
+        await extractAndVerifyArchive({
+          archivePath: partialZipPath,
+          expectedArchiveSha256: partialZipHash,
+          extractDir: path.join(provTestDir, 'ext_2'),
+          targetDir: targetBinDir,
+          requiredBinaries: [
+            { name: 'ffmpeg.exe', expectedSha256: expectedFfmpegHash },
+            { name: 'ffprobe.exe', expectedSha256: expectedFfprobeHash }
+          ]
+        })
+      },
+      /Required executable ffprobe.exe not found/i,
+      'TEST AB.2: Missing ffprobe.exe must throw error'
+    )
+
+    // 3. Invalid extracted executable checksum is rejected
+    await assert.rejects(
+      async () => {
+        await extractAndVerifyArchive({
+          archivePath: mockZipPath,
+          expectedArchiveSha256: validArchiveHash,
+          extractDir: path.join(provTestDir, 'ext_3'),
+          targetDir: targetBinDir,
+          requiredBinaries: [
+            { name: 'ffmpeg.exe', expectedSha256: 'WRONG_CHECKSUM_FOR_FFMPEG_EXE' },
+            { name: 'ffprobe.exe', expectedSha256: expectedFfprobeHash }
+          ]
+        })
+      },
+      /checksum mismatch/i,
+      'TEST AB.3: Checksum mismatch on extracted executable must throw error'
+    )
+
+    // 4. Failed provisioning does not leave invalid executable in target directory
+    assert.equal(
+      fsSync.existsSync(path.join(targetBinDir, 'ffmpeg.exe')),
+      false,
+      'TEST AB.4: Failed provisioning must not leave invalid final executable in target directory'
+    )
+
+    // 5. Valid pinned binary configuration is accepted
+    const extractSuccess = await extractAndVerifyArchive({
+      archivePath: mockZipPath,
+      expectedArchiveSha256: validArchiveHash,
+      extractDir: path.join(provTestDir, 'ext_5'),
+      targetDir: targetBinDir,
+      requiredBinaries: [
+        { name: 'ffmpeg.exe', expectedSha256: expectedFfmpegHash },
+        { name: 'ffprobe.exe', expectedSha256: expectedFfprobeHash }
+      ]
+    })
+    assert.equal(extractSuccess, true, 'TEST AB.5: Valid archive extraction must return true')
+    assert.equal(
+      fsSync.existsSync(path.join(targetBinDir, 'ffmpeg.exe')),
+      true,
+      'TEST AB.6: ffmpeg.exe must be copied after successful verification'
+    )
+    assert.equal(
+      fsSync.existsSync(path.join(targetBinDir, 'ffprobe.exe')),
+      true,
+      'TEST AB.7: ffprobe.exe must be copied after successful verification'
+    )
+
+    console.log('✓ TEST AB passed: Pinned binary provisioning & archive verification confirmed.\n')
+
     console.log('================================================================')
     console.log(' ALL WINDOWS PACKAGING TESTS (TESTS A - Z) PASSED SUCCESSFULLY!')
     console.log('================================================================\n')
@@ -477,8 +672,35 @@ async function runAllWindowsPackagingTests() {
   }
 }
 
-runAllWindowsPackagingTests().catch((err) => {
-  console.error('\nWINDOWS PACKAGING TEST SUITE FAILED:')
-  console.error(err)
-  process.exit(1)
-})
+const isElectronRuntime =
+  Boolean(process.versions?.electron) && typeof app?.whenReady === 'function'
+
+async function executeWindowsPackagingSuite() {
+  try {
+    await runAllWindowsPackagingTests()
+  } catch (err) {
+    process.exitCode = 1
+    console.error('\nWINDOWS PACKAGING TEST SUITE FAILED:')
+    console.error(err)
+  } finally {
+    if (isElectronRuntime) {
+      app.quit()
+    } else if (process.exitCode && process.exitCode !== 0) {
+      process.exit(process.exitCode)
+    }
+  }
+}
+
+if (isElectronRuntime) {
+  app
+    .whenReady()
+    .then(executeWindowsPackagingSuite)
+    .catch((err) => {
+      process.exitCode = 1
+      console.error('\nWINDOWS PACKAGING TEST SUITE FAILED TO INITIALIZE ELECTRON:')
+      console.error(err)
+      app.quit()
+    })
+} else {
+  executeWindowsPackagingSuite()
+}

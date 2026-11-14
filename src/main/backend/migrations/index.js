@@ -1,6 +1,7 @@
 import { Umzug, SequelizeStorage } from 'umzug'
 
 import * as initialSchema from './001-initial-schema.js'
+import * as downloadProgressTotals from './002-add-download-progress-totals.js'
 
 export async function runMigrations(sequelize) {
   const migrator = new Umzug({
@@ -9,6 +10,11 @@ export async function runMigrations(sequelize) {
         name: '001-initial-schema',
         up: initialSchema.up,
         down: initialSchema.down
+      },
+      {
+        name: '002-add-download-progress-totals',
+        up: downloadProgressTotals.up,
+        down: downloadProgressTotals.down
       }
     ],
 
