@@ -7,3 +7,7 @@ out
 
 # Staged binary executables (>100MB binaries staged locally for packaging)
 resources/bin/**/*.exe
+
+# Local-only APPLAN2 reports
+APPLAN2_*REPORT.md
+STEP_*REPORT.md
