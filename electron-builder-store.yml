@@ -1,0 +1,26 @@
+extends: ./electron-builder.yml
+
+directories:
+  output: dist-store
+
+win:
+  target:
+    - appx
+
+appx:
+  minVersion: "10.0.17763.0"
+  maxVersionTested: "10.0.26100.0"
+  applicationId: MultiMediaDownloader
+  identityName: "H.V.PasinduMadubhashanaJa.Multi-MediaDownloader"
+  publisher: "CN=52B3F3CF-807B-4DF5-B9CB-E3115AA527F8"
+  publisherDisplayName: "H.V. Pasindu Madubhashana Jayarathna"
+  displayName: "Multi-Media Downloader"
+  languages:
+    - en-US
+
+toolsets:
+  winCodeSign: "1.0.0"
+# Exclude previous Google Drive build from Microsoft Store package
+files:
+  - '!dist/**'
+  - '!dist-store/**'
